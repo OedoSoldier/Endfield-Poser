@@ -86,6 +86,11 @@ static void *g_transform_GetChild = nullptr;
 static void *g_transform_get_parent = nullptr;
 static void *g_object_get_name = nullptr;
 static void *g_component_get_transform = nullptr;
+static void *g_component_get_gameObject = nullptr;
+static void *g_componentClass = nullptr; // UnityEngine.Component（GetComponents(Type) 用）
+static void *g_gameObjectClass = nullptr; // UnityEngine.GameObject
+static void *g_gameObject_GetComponent = nullptr; // GameObject.GetComponent(Type)
+static void *g_gameObject_GetComponents = nullptr; // GameObject.GetComponents(Type)
 
 // 动态解析的字段偏移（-1 = 未解析，读时走 SafeOff 回退）
 static int OFF_pcEntity = -1;            // PlayerController -> Entity
@@ -138,14 +143,24 @@ static void ResolveGameApi() {
       g_object_get_name = FindMethod(objClass, "get_name", 0);
 
     void *compClass = FindClass("UnityEngine", "Component", asms, ac);
-    if (compClass)
+    if (compClass) {
+      g_componentClass = compClass;
       g_component_get_transform = FindMethod(compClass, "get_transform", 0);
+      g_component_get_gameObject = FindMethod(compClass, "get_gameObject", 0);
+    }
+
+    void *goClass = FindClass("UnityEngine", "GameObject", asms, ac);
+    if (goClass) {
+      g_gameObjectClass = goClass;
+      g_gameObject_GetComponent = FindMethod(goClass, "GetComponent", 1);
+      g_gameObject_GetComponents = FindMethod(goClass, "GetComponents", 1);
+    }
 
     Log("[POSER] Game API resolved: GetBoneTransform=%p set_enabled=%p "
-        "SetLocalRot=%p SetLocalPos=%p GetChild=%p",
+        "SetLocalRot=%p SetLocalPos=%p GetChild=%p GetComponents=%p",
         g_animator_GetBoneTransform, g_animator_set_enabled,
         g_transform_set_localRotation, g_transform_set_localPosition,
-        g_transform_GetChild);
+        g_transform_GetChild, g_gameObject_GetComponents);
   } __except (1) {
     Log("[POSER] ResolveGameApi exception");
   }

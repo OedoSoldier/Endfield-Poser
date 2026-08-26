@@ -11,7 +11,7 @@
 // 不做每帧快照重写——否则 FK 拖骨会被立刻打回。编辑直接写骨骼，
 // 因为 Animator 已关，姿势自然稳定。
 
-#include "game/skeleton.h"
+#include "game/accessory.h"
 
 #include <cstring>
 
@@ -31,18 +31,17 @@ static bool AnimatorIsEnabled() {
 
 // 抑制除 Animator 外的骨骼写者。
 // 说明（[in-game] 探针，随对应 Task 补全）：
-//   - 从骨动态骨骼/布料物理 → Task 2.4 accessory.h SetPhysicsEnabled
+//   - 从骨动态骨骼/布料物理 → SetAllPhysicsEnabled(false)（本模块）
 //   - FinalIK（BipedIK/Grounder/LookAt）→ 按 {EIEM} s_bipedIK/s_grounderIK
 //     收集逻辑，把 IKSolver weight 写 0 或禁用组件（Task 3.2 联动）
 //   - SkeletalMorphCore.Update（写 m_allMorphBoneDirty=false 跳过）→ Task 4.2
 //   - 角色 ParticleSystem.Pause → 可选
-// 现阶段：Animator 已关即可稳定大部分姿势；其余随 Task 逐项接入。
 static void SuppressPoseWriters() {
-  // 留空骨架；各 Task 在此追加抑制逻辑。
+  SetAllPhysicsEnabled(false); // 从骨物理关闭：物理不再每帧写骨
 }
 
 static void RestorePoseWriters() {
-  // 与 SuppressPoseWriters 对应恢复；各 Task 追加。
+  SetAllPhysicsEnabled(true); // 解冻恢复从骨物理
 }
 
 static void FreezeCharacter() {
@@ -58,8 +57,9 @@ static void FreezeCharacter() {
     } __except (1) {
     }
   }
-  // 2. 固化当前帧姿势为编辑基线
+  // 2. 固化当前帧姿势为编辑基线（含从骨）
   PinCurrentPose();
+  CaptureAccessorySnapshot();
   // 3. 抑制其余写者
   SuppressPoseWriters();
   g_frozen = true;

@@ -79,14 +79,6 @@ static void ApplyTPose() {
   }
 }
 
-// 每帧维护：角色切换时重建列表（供主循环/编辑层调用）
-static void SkeletonFrameTick() {
-  if (g_charChanged) {
-    g_charChanged = false;
-    RebuildHumanBones();
-  }
-}
-
 // 按 HumanBodyBones 找骨骼在列表中的下标（找不到返回 -1）
 static int FindHumanBoneIndex(HumanBodyBones bone) {
   for (int i = 0; i < s_humanBoneCount; i++)

@@ -665,20 +665,20 @@ git commit -m "feat(game): skeleton bone list + pose snapshot/restore"
 
 > 从骨 = 除 Humanoid 55 根外、角色根下其余所有骨骼（头发/帽饰/飘带/衣角/挂件等），通常是 DynamicBone / 程序化布料驱动的链。
 
-- [ ] **Step 1: 枚举从骨链**
+- [x] **Step 1: 枚举从骨链**
 
-从 `g_charAnimator` 根 Transform 递归 `GetChild` 遍历全部子骨；对每条**非 Humanoid** 分支按"父子连续链"分组（如 `hair_01 → hair_02 → …`）。每条链记录：根骨、链上全部 bone name、所在 GameObject 上挂的物理组件（`DynamicBone`/`CommonDynamicBone`/`Cloth`/`MagicaCloth` 等，探针确认实际组件类名）。输出到日志 `[ACCESSORY]` 与面板列表。
+从 `g_charAnimator` 根 Transform 递归 `GetChild` 遍历全部子骨；对每条**非 Humanoid** 分支按"父子连续链"分组（如 `hair_01 → hair_02 → …`）。每条链记录：根骨、链上全部 bone name、所在 GameObject 上挂的物理组件（`DynamicBone`/`CommonDynamicBone`/`Cloth`/`MagicaCloth` 等，探针确认实际组件类名）。输出到日志 `[ACCESSORY]` 与面板列表。**已完成**：`src/game/accessory.h` 实现 `RebuildAccessories()`（`WalkTransforms` 递归遍历非 Humanoid 子骨 → 按父链分组为 `s_accessoryChains`/`s_accessoryBones`，`CollectPhysicsComponents` 用 `GameObject.GetComponents(Component)` 枚举类名命中 `kPhysicsClassSubstrings` 的组件）。
 
-- [ ] **Step 2: 逐链/逐骨物理开关**
+- [x] **Step 2: 逐链/逐骨物理开关**
 
 对每条链（或单骨）提供 `SetPhysicsEnabled(chain, bool)`：
 - 方案 A（首选）：`Component.enabled = false` 禁用 DynamicBone/Cloth 组件（探针确认字段/方法），物理不再每帧写骨。
 - 方案 B（兜底）：每帧在冻结逻辑里把该链骨 local rot/pos 钉在快照值（等价"物理禁写"）。
-开关状态随冻结态生效；解冻时恢复原 enabled。
+开关状态随冻结态生效；解冻时恢复原 enabled。**已完成**：`SetPhysicsEnabled()`/`SetAllPhysicsEnabled()` 用 `Behaviour.set_enabled` 开关链上各骨的物理组件；`freeze.h` 的 `SuppressPoseWriters()`/`RestorePoseWriters()` 分别调 `SetAllPhysicsEnabled(false/true)` 联动。
 
-- [ ] **Step 3: 锁定**
+- [x] **Step 3: 锁定**
 
-每个从骨提供 `locked` 标记：锁定时 `ApplyPoseSnapshot`/FK/IK/镜像等**跳过该骨**，且物理开关置"禁用写回"。默认行为：锁定的骨永远保持冻结帧姿态。
+每个从骨提供 `locked` 标记：锁定时 `ApplyPoseSnapshot`/FK/IK/镜像等**跳过该骨**，且物理开关置"禁用写回"。默认行为：锁定的骨永远保持冻结帧姿态。**已完成**：`SetAccessoryBoneLocked()`（锁定瞬间 `localPos/localRot` 钉住当前值）/`SetChainLocked()`（整链锁定），`ApplyAccessorySnapshot()` 跳过锁定骨。
 
 - [ ] **Step 4: `[in-game]` 验证**
 

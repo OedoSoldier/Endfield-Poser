@@ -11,7 +11,7 @@ if(WIN32)
     src/core/proxy_d3dcompiler.cpp
     src/core/game_hooks.h
     src/core/gui_overlay.h
-    src/game/skeleton.h src/game/freeze.h
+    src/game/skeleton.h src/game/freeze.h src/game/accessory.h
   )
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook/include deps/json deps/stb src)

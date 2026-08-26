@@ -10,6 +10,7 @@
 #include "core/gui_overlay.h"
 #include "core/game_hooks.h"
 #include "game/skeleton.h"
+#include "game/accessory.h"
 #include "game/freeze.h"
 #include "config.h"
 
@@ -60,7 +61,12 @@ APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 static void GameFrameTick() {
-  SkeletonFrameTick(); // 角色切换 → 重建骨骼列表
+  // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
+  if (g_charChanged) {
+    g_charChanged = false;
+    RebuildHumanBones();
+    RebuildAccessories();
+  }
   // 阶段 3+：冻结态下的 IK 写回、姿态操作、相机控制
 }
 
