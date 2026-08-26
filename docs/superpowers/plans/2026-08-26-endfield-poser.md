@@ -727,13 +727,13 @@ git commit -m "feat(editor): fk editing via imguizmo + sliders"
 - Create: `src/game/ik_driver.h`
 - Modify: `src/editor/panel_pose.h`
 
-- [ ] **Step 1: 实现 2-bone IK 驱动**
+- [x] **Step 1: 实现 2-bone IK 驱动**
 
-对选中"手/脚"端点：`ik_driver.h` 收集 根→中→末端 三根骨的世界坐标（`GetBoneLocalPos` + 父级链相乘，或直接用 `Transform.GetPosition`/`GetRotation` icall），调 `SolveTwoBone`，再把 a/b 的旋转差写回各自局部旋转（`Quat::Delta(当前局部, 目标局部)`）。
+对选中"手/脚"端点：`ik_driver.h` 收集 根→中→末端 三根骨的世界坐标（`GetBoneLocalPos` + 父级链相乘，或直接用 `Transform.GetPosition`/`GetRotation` icall），调 `SolveTwoBone`，再把 a/b 的旋转差写回各自局部旋转（`Quat::Delta(当前局部, 目标局部)`）。**已完成**：`src/game/ik_driver.h` 定义四肢链（`kIkChains`：左/右臂 = UpperArm→LowerArm→Hand，左/右腿 = UpperLeg→LowerLeg→Foot）+ 状态（`g_ikActive`/`g_ikNative`/`g_ikChain`/`g_ikTarget`）。`SolveTwoBoneChain()` 每帧读取世界坐标 → `SolveTwoBone`（pole 取当前肘/膝，保证弯折方向不翻转）→ 用 `Quat::FromTo`（`quat_math.h` 新增，已单测）求根/中骨方向差 → `ApplyWorldRotDelta()` 把世界旋转增量经 `localDelta = conj(parentWorld)*d*parentWorld` 折算写回局部旋转。`IkFrameTick()` 冻结态每帧驱动（根/中骨被锁定则跳过）。`panel_pose.h` 新增 IK 区（链下拉 + 启用/原生开关 + 目标读数 + "还原目标"），IK 模式下 gizmo 改拖目标点（`DrawIkTargetGizmo`，WORLD 平移）。`poser.cpp` 的 `GameFrameTick` 每帧调 `IkFrameTick`，角色切换时置 `g_ikTargetValid=false`。数学层已用纯 C++ 模拟驱动链路单测通过（test_ik：deltas rotate chain to reach target）。
 
-- [ ] **Step 2: 驱动原生 BipedIK（可选增强，复用 EIEM 偏移表）**
+- [x] **Step 2: 驱动原生 BipedIK（可选增强，复用 EIEM 偏移表）**
 
-利用 `{EIEM}/globals.h` 的 `OFF_BIPEDIK_SOLVERS`/`OFF_IKSOLVER_IKPOS`/`OFF_IKTRIG_TARGET` 偏移，把末端目标 transform 拖到 gizmo 位置、weight 写 1，让游戏自带求解器接力。作为 mode 开关（自研解算 / 原生解算）。
+利用 `{EIEM}/globals.h` 的 `OFF_BIPEDIK_SOLVERS`/`OFF_IKSOLVER_IKPOS`/`OFF_IKTRIG_TARGET` 偏移，把末端目标 transform 拖到 gizmo 位置、weight 写 1，让游戏自带求解器接力。作为 mode 开关（自研解算 / 原生解算）。**已完成（骨架）**：`ik_driver.h` 的 `CollectBipedIK()`（角色根 `GetComponents(Component)` 按类名含 "BipedIK" 匹配，解析 `solvers` 字段）、`ResolveNativeLimbSolver()`（按当前链解析 `leftArm/rightArm/leftLeg/rightLeg` 的 `IKPosition`/`IKPositionWeight` 偏移，`SafeOff` 兜底）、`NativeIkFrameTick()`（把 `g_ikTarget` 写入 `IKPosition`、权重置 1）。偏移与类名依赖 `[in-game]` 探针收敛（计划已在自评标注此风险）。
 
 - [ ] **Step 3: `[in-game]` 验证**
 
@@ -742,7 +742,7 @@ git commit -m "feat(editor): fk editing via imguizmo + sliders"
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/game/ik_driver.h src/editor/panel_pose.h
+git add src/game/ik_driver.h src/editor/panel_pose.h src/math/quat_math.h tests/test_quat.cpp tests/test_ik.cpp
 git commit -m "feat(editor): ik posing via two-bone solver (+ native bipedik mode)"
 ```
 
