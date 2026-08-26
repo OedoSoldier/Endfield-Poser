@@ -81,6 +81,7 @@ static void *g_transform_set_localRotation = nullptr;
 static void *g_transform_get_localPosition = nullptr;
 static void *g_transform_set_localPosition = nullptr;
 static void *g_transform_get_position = nullptr;
+static void *g_transform_get_rotation = nullptr; // 世界旋转（gizmo 相机朝向用）
 static void *g_transform_get_childCount = nullptr;
 static void *g_transform_GetChild = nullptr;
 static void *g_transform_get_parent = nullptr;
@@ -91,6 +92,9 @@ static void *g_componentClass = nullptr; // UnityEngine.Component（GetComponent
 static void *g_gameObjectClass = nullptr; // UnityEngine.GameObject
 static void *g_gameObject_GetComponent = nullptr; // GameObject.GetComponent(Type)
 static void *g_gameObject_GetComponents = nullptr; // GameObject.GetComponents(Type)
+static void *g_cameraClass = nullptr;     // UnityEngine.Camera（get_main 用）
+static void *g_camera_get_main = nullptr; // Camera.get_main（gizmo 取视锥）
+static void *g_camera_get_fieldOfView = nullptr;
 
 // 动态解析的字段偏移（-1 = 未解析，读时走 SafeOff 回退）
 static int OFF_pcEntity = -1;            // PlayerController -> Entity
@@ -133,6 +137,7 @@ static void ResolveGameApi() {
       g_transform_set_localPosition =
           FindMethod(trClass, "set_localPosition", 1);
       g_transform_get_position = FindMethod(trClass, "get_position", 0);
+      g_transform_get_rotation = FindMethod(trClass, "get_rotation", 0);
       g_transform_get_childCount = FindMethod(trClass, "get_childCount", 0);
       g_transform_GetChild = FindMethod(trClass, "GetChild", 1);
       g_transform_get_parent = FindMethod(trClass, "get_parent", 0);
@@ -156,11 +161,20 @@ static void ResolveGameApi() {
       g_gameObject_GetComponents = FindMethod(goClass, "GetComponents", 1);
     }
 
+    void *camClass = FindClass("UnityEngine", "Camera", asms, ac);
+    if (camClass) {
+      g_cameraClass = camClass;
+      g_camera_get_main = FindMethod(camClass, "get_main", 0);
+      g_camera_get_fieldOfView = FindMethod(camClass, "get_fieldOfView", 0);
+    }
+
     Log("[POSER] Game API resolved: GetBoneTransform=%p set_enabled=%p "
-        "SetLocalRot=%p SetLocalPos=%p GetChild=%p GetComponents=%p",
+        "SetLocalRot=%p SetLocalPos=%p GetChild=%p GetComponents=%p "
+        "cam_main=%p cam_fov=%p",
         g_animator_GetBoneTransform, g_animator_set_enabled,
         g_transform_set_localRotation, g_transform_set_localPosition,
-        g_transform_GetChild, g_gameObject_GetComponents);
+        g_transform_GetChild, g_gameObject_GetComponents,
+        g_camera_get_main, g_camera_get_fieldOfView);
   } __except (1) {
     Log("[POSER] ResolveGameApi exception");
   }
@@ -393,4 +407,31 @@ static void GetBoneName(void *transform, char *buf, int sz) {
       ReadStrUtf8(nameStr, buf, sz);
   } __except (1) {
   }
+}
+
+// ---- 世界空间位姿（IK 求解 / gizmo 定位用）----
+static Vec3 GetBoneWorldPos(void *t) {
+  Vec3 p{0, 0, 0};
+  if (!t || !g_transform_get_position)
+    return p;
+  __try {
+    void *boxed = Invoke(g_transform_get_position, t);
+    if (boxed)
+      p = *(Vec3 *)((char *)boxed + 16);
+  } __except (1) {
+  }
+  return p;
+}
+
+static Quat GetBoneWorldRot(void *t) {
+  Quat q{0, 0, 0, 1};
+  if (!t || !g_transform_get_rotation)
+    return q;
+  __try {
+    void *boxed = Invoke(g_transform_get_rotation, t);
+    if (boxed)
+      q = *(Quat *)((char *)boxed + 16);
+  } __except (1) {
+  }
+  return q;
 }

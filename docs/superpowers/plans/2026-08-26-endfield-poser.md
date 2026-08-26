@@ -702,13 +702,13 @@ git commit -m "feat(game): accessory bone chains with physics toggle + lock"
 - Modify: `src/editor/panel_pose.h`（骨骼树 + 旋转滑条）
 - Dep: `deps/imguizmo/`（从 https://github.com/CedricGuillemet/ImGuizmo 拉取 `ImGuizmo.h/.cpp`，与 imgui 同目录编译）
 
-- [ ] **Step 1: 集成 ImGuizmo**
+- [x] **Step 1: 集成 ImGuizmo**
 
-`gizmo.h` 提供 `DrawGizmo(drawList, viewProj, boneWorldMat)`：对当前选中骨用 `ImGuizmo::Manipulate` 旋转/移动，把 delta 转成 `SetBoneLocalRot`（用 `Quat::Delta(旧, 新)` 得到相对旋转，叠加到局部旋转）。
+`gizmo.h` 提供 `DrawGizmo(drawList, viewProj, boneWorldMat)`：对当前选中骨用 `ImGuizmo::Manipulate` 旋转/移动，把 delta 转成 `SetBoneLocalRot`（用 `Quat::Delta(旧, 新)` 得到相对旋转，叠加到局部旋转）。**已完成**：`src/editor/gizmo.h` 提供列主序矩阵辅助（`Mat4Compose`/`Mat4Decompose`/`Mat4Mul`，沙箱已单测往返）、`GetBoneWorldMatrix()`（沿父链组合世界矩阵）、`GetCameraViewProj()`（由主相机 `Transform.get_position/get_rotation` + `Camera.get_fieldOfView` 构建 view/proj，`game_hooks.h` 已补 `g_transform_get_rotation`/`g_camera_get_main`/`g_camera_get_fieldOfView`）、`DrawBoneGizmo()`（LOCAL 模式，`local' = local * deltaRot` 右乘叠加）。`game_hooks.h` 另补世界位姿读取 `GetBoneWorldPos/GetBoneWorldRot`（IK 驱动也依赖）。
 
-- [ ] **Step 2: FK 面板**
+- [x] **Step 2: FK 面板**
 
-`panel_pose.h`：骨骼树（按 HumanBodyBones 分组：身体/头/左臂/右臂/左腿/右腿/手指）+ 选中项的三个 Euler 滑条（`ToEulerDeg`/`FromEulerDeg` 实时写回）。手指用细分滑条页。
+`panel_pose.h`：骨骼树（按 HumanBodyBones 分组：身体/头/左臂/右臂/左腿/右腿/手指）+ 选中项的三个 Euler 滑条（`ToEulerDeg`/`FromEulerDeg` 实时写回）。手指用细分滑条页。**已完成**：`src/editor/panel_pose.h` 实现 `DrawPosePanel()`（`kBoneGroups` 八组树 + 选中骨 X/Y/Z Euler 滑条实时回读、局部位置滑条、逐骨锁定复选框）+ `DrawPoseGizmoOverlay()`（冻结时 gizmo 叠加层）。`poser.cpp` 主面板新增"姿态 (FK)"窗口并接入 gizmo 覆盖层；`CMakeLists.txt` 加入 editor 头与可选的 `deps/imguizmo/ImGuizmo.cpp`。
 
 - [ ] **Step 3: `[in-game]` 验证**
 

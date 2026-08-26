@@ -12,6 +12,7 @@
 #include "game/skeleton.h"
 #include "game/accessory.h"
 #include "game/freeze.h"
+#include "editor/panel_pose.h"
 #include "config.h"
 
 // ---- Applepie 插件协议（与 {EIEM}/src/applepie_mgr.h 一致）----
@@ -70,9 +71,10 @@ static void GameFrameTick() {
   // 阶段 3+：冻结态下的 IK 写回、姿态操作、相机控制
 }
 
-// ---- 主面板（占位）：Task 0.3 只验证窗口弹出；editor/gui.h 将替换 ----
+// ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
 void DrawPoserGui() {
   GameFrameTick(); // 每帧：骨骼列表维护、冻结维持、IK 写回、相机控制
+
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
@@ -86,8 +88,23 @@ void DrawPoserGui() {
       else
         FreezeCharacter();
     }
+    if (!g_frozen)
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                         u8"\u8bf7\u5148\u51bb\u7ed3\u89d2\u8272\u518d\u6446\u59ff");
   }
   ImGui::End();
+
+  // 姿态编辑面板（独立窗口，可拖到一侧）
+  ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_FirstUseEver);
+  if (ImGui::Begin(u8"\u59ff\u6001 (FK)", nullptr,
+                   ImGuiWindowFlags_NoCollapse)) {
+    DrawPosePanel();
+  }
+  ImGui::End();
+
+  // 3D 手柄覆盖整个视口
+  DrawPoseGizmoOverlay();
 }
 
 static DWORD WINAPI InitThread(LPVOID) {
