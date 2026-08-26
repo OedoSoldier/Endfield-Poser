@@ -74,6 +74,7 @@ static volatile bool g_charChanged = false; // hook 捕获新角色后置真，G
 // 已解析的运行时方法指针（对应 {EIEM} globals.h 的 g_animator_*/g_transform_*）
 static void *g_animator_GetBoneTransform = nullptr;
 static void *g_animator_get_isHuman = nullptr;
+static void *g_animator_get_enabled = nullptr;  // 来自 Behaviour.get_enabled
 static void *g_animator_set_enabled = nullptr; // 来自 Behaviour.set_enabled
 static void *g_transform_get_localRotation = nullptr;
 static void *g_transform_set_localRotation = nullptr;
@@ -110,8 +111,10 @@ static void ResolveGameApi() {
       g_animator_GetBoneTransform = FindMethod(animClass, "GetBoneTransform", 1);
       g_animator_get_isHuman = FindMethod(animClass, "get_isHuman", 0);
       void *behClass = FindClass("UnityEngine", "Behaviour", asms, ac);
-      if (behClass)
+      if (behClass) {
+        g_animator_get_enabled = FindMethod(behClass, "get_enabled", 0);
         g_animator_set_enabled = FindMethod(behClass, "set_enabled", 1);
+      }
     }
 
     void *trClass = FindClass("UnityEngine", "Transform", asms, ac);

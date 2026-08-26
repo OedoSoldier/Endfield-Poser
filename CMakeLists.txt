@@ -7,7 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(WIN32)
   add_library(poser SHARED
     src/poser.cpp
+    src/config.h
     src/core/proxy_d3dcompiler.cpp
+    src/core/game_hooks.h
+    src/core/gui_overlay.h
+    src/game/skeleton.h src/game/freeze.h
   )
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook/include deps/json deps/stb src)

@@ -9,6 +9,8 @@
 #include "core/il2cpp_api.h"
 #include "core/gui_overlay.h"
 #include "core/game_hooks.h"
+#include "game/skeleton.h"
+#include "game/freeze.h"
 #include "config.h"
 
 // ---- Applepie 插件协议（与 {EIEM}/src/applepie_mgr.h 一致）----
@@ -56,22 +58,28 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
-// ---- 每帧更新（占位）：后续由冻结/IK/相机模块填充 ----
+// ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 static void GameFrameTick() {
-  // 阶段 2+：维持冻结、IK 写回、相机控制
+  SkeletonFrameTick(); // 角色切换 → 重建骨骼列表
+  // 阶段 3+：冻结态下的 IK 写回、姿态操作、相机控制
 }
 
 // ---- 主面板（占位）：Task 0.3 只验证窗口弹出；editor/gui.h 将替换 ----
 void DrawPoserGui() {
+  GameFrameTick(); // 每帧：骨骼列表维护、冻结维持、IK 写回、相机控制
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
                    ImGuiWindowFlags_NoCollapse)) {
     ImGui::Text("v%s", POSER_VERSION);
-    ImGui::Text("GUI shell loaded. (Placeholder)");
+    ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
     ImGui::Separator();
-    if (ImGui::Button("Toggle Freeze (WIP)"))
-      GameFrameTick();
+    if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
+      if (g_frozen)
+        UnfreezeCharacter();
+      else
+        FreezeCharacter();
+    }
   }
   ImGui::End();
 }

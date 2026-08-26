@@ -593,7 +593,7 @@ git commit -m "feat(game): capture character animator via SetMainCharacter hook"
 **Files:**
 - Create: `src/game/freeze.h`
 
-- [ ] **Step 1: 实现基础冻结**
+- [x] **Step 1: 实现基础冻结**
 
 ```cpp
 static bool g_frozen=false;
@@ -614,6 +614,7 @@ void UnfreezeCharacter(){
     g_frozen=false; Log("[POSER] Unfrozen");
 }
 ```
+**已完成**：`src/game/freeze.h` 实现 `FreezeCharacter()`/`UnfreezeCharacter()`（记录并关闭/恢复 Animator.enabled + `PinCurrentPose()` 固化基线），并留出 `SuppressPoseWriters()`/`RestorePoseWriters()` 供后续 Task（IK/形态/布料）追加抑制逻辑。**关键设计**：冻结不做每帧快照重写，否则 FK 拖骨会被打回——直接关 Animator 即让姿势稳定。
 
 - [ ] **Step 2: 调研并补全"场景级冻结"（探针任务）**
 
@@ -640,12 +641,9 @@ git commit -m "feat(game): character freeze (animator + time + ik + cloth)"
 **Files:**
 - Create: `src/game/skeleton.h`
 
-- [ ] **Step 1: 实现骨骼列表 + 快照/恢复**
+- [x] **Step 1: 实现骨骼列表 + 快照/恢复**
 
-- 枚举 `HumanBodyBones`（55 根）经 `GetHumanoidBone` 收集到 `s_bones[]`（name + transform）。
-- `CapturePoseSnapshot()`：把每根骨 local pos/rot 存进 `g_poseSnapshot[]`。
-- `ApplyPoseSnapshot()`：写回。
-- `PinCurrentPose()`：冻结动画后，用快照作为可编辑基线（FK 面板显示的就是它）。
+- 枚举 `HumanBodyBones`（55 根）经 `GetHumanoidBone` 收集到 `s_bones[]`（name + transform）。**已完成**：`src/game/skeleton.h` 定义 `BoneHandle`（humanBone/transform/name/locked/localPos/localRot）与 `s_humanBones[]`；`RebuildHumanBones()` 在角色切换时重建（含锁定标记，Task 2.4 用）；`CapturePoseSnapshot()`/`ApplyPoseSnapshot()`（跳过锁定骨）/`PinCurrentPose()`/`ApplyTPose()`/`SkeletonFrameTick()`/`FindHumanBoneIndex()` 均已实现。
 
 - [ ] **Step 2: `[in-game]` 验证**
 
