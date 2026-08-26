@@ -17,6 +17,7 @@
 #include "imgui_impl_dx11.h"
 
 #include "base.h"
+#include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -28,7 +29,6 @@ static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
 static volatile bool g_guiVisible = false;
 static volatile bool g_guiRunning = false;
-static int g_guiToggleVK = VK_INSERT;
 
 static ID3D11Device *g_pd3dDevice = nullptr;
 static ID3D11DeviceContext *g_pd3dDeviceContext = nullptr;
