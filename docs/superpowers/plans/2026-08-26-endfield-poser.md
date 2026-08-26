@@ -561,11 +561,11 @@ git commit -m "feat(math): pose file json serialization, TDD"
 - Create: `src/core/game_hooks.h`
 - Reference: `{EIEM}/src/init.h` 中 `PlayerController.SetMainCharacter` hook（约 L985-L1121）
 
-- [ ] **Step 1: 移植 SetMainCharacter hook**
+- [x] **Step 1: 移植 SetMainCharacter hook**
 
-结构：`ResolveGameApi()`（解析 `g_animator_*`、`g_transform_*`、`g_smr_*`、`g_camera_*` 等，参照 `{EIEM}` 的 init 段）→ MinHook 挂 `PlayerController.SetMainCharacter`（或当版本变化的等价方法）→ hook 里从参数提取 Entity，经 `OFF_entityComplexAnim`/`OFF_complexAnimAnimator` 拿到 `Animator`，存入 `g_charAnimator`，触发 `g_charChanged=true`。
+结构：`ResolveGameApi()`（解析 `g_animator_*`、`g_transform_*`、`g_smr_*`、`g_camera_*` 等，参照 `{EIEM}` 的 init 段）→ MinHook 挂 `PlayerController.SetMainCharacter`（或当版本变化的等价方法）→ hook 里从参数提取 Entity，经 `OFF_entityComplexAnim`/`OFF_complexAnimAnimator` 拿到 `Animator`，存入 `g_charAnimator`，触发 `g_charChanged=true`。**已完成**：`src/core/game_hooks.h` 实现 `ResolveGameApi()`（Animator/Transform/Object/Component 方法）、`InstallSetMainCharacterHook()`（含 `TryCaptureFromPlayerController()` 补捞已就绪角色）、`ResolveEntityOffsets()` 懒解析两级偏移。
 
-- [ ] **Step 2: 写骨骼句柄封装（供 FK 层用）**
+- [x] **Step 2: 写骨骼句柄封装（供 FK 层用）**
 
 在 `game_hooks.h` 暴露：
 ```cpp
@@ -575,6 +575,7 @@ void  SetBoneLocalRot(void* t, Quat q);              // SafeSetLocalRotation
 Vec3  GetBoneLocalPos(void* t);
 void  SetBoneLocalPos(void* t, Vec3 p);
 ```
+（另含 `SafeGetComponentTransform`/`GetCharRootTransform`/`GetBoneName`；`HumanBodyBones` 枚举与 55 根名称表已内建。）
 
 - [ ] **Step 3: `[in-game]` 验证捕获**
 

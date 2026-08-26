@@ -8,6 +8,7 @@
 #include "core/base.h"
 #include "core/il2cpp_api.h"
 #include "core/gui_overlay.h"
+#include "core/game_hooks.h"
 #include "config.h"
 
 // ---- Applepie 插件协议（与 {EIEM}/src/applepie_mgr.h 一致）----
@@ -82,7 +83,9 @@ static DWORD WINAPI InitThread(LPVOID) {
     Log("[POSER] ERROR: GameAssembly.dll not found or exports missing");
     return 0;
   }
-  Log("[POSER] IL2CPP resolved. Starting GUI thread.");
+  Log("[POSER] IL2CPP resolved. Initializing game hooks.");
+  InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
+  Log("[POSER] Starting GUI thread.");
   StartGuiThread();
   return 0;
 }
