@@ -17,7 +17,7 @@ if(WIN32)
     src/core/proxy_d3dcompiler.cpp
     src/core/game_hooks.h
     src/core/gui_overlay.h
-    src/game/skeleton.h src/game/freeze.h src/game/accessory.h
+    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/ik_driver.h
     src/editor/gizmo.h src/editor/panel_pose.h
     ${POSER_IMGUIZMO_SRC}
   )

@@ -52,6 +52,20 @@ struct Quat {
     }
     static Quat Delta(Quat from, Quat to){ return NormQ(Conj(from) * to); } // to = Delta(from,to) * from
     static float Angle(Quat a, Quat b){ float d=std::fabs(DotQ(a,b)); if(d>1)d=1; return 2.0f*std::acos(d); }
+    // 把方向向量 from 旋转到 to 的最短旋转（IK 根/中间骨写回用）
+    static Quat FromTo(Vec3 from, Vec3 to){
+        from = Norm(from); to = Norm(to);
+        float d = Dot(from, to);
+        if (d > 0.99999f) return Quat{0,0,0,1};          // 同向
+        if (d < -0.99999f) {                              // 180°：任取垂直轴
+            Vec3 axis = Norm(Cross(from, Vec3{0,1,0}));
+            if (Len(axis) < 1e-5f) axis = Norm(Cross(from, Vec3{0,0,1}));
+            return AxisAngle(axis, 3.14159265358979f);
+        }
+        Vec3 c = Cross(from, to);               // 幅度=sinθ（from/to 已归一）
+        float s = std::sqrt((1.0f + d) * 2.0f); // 2*cos(θ/2)
+        return NormQ(Quat{c.x / s, c.y / s, c.z / s, s * 0.5f}); // xyz=sin(θ/2)*axis
+    }
 };
 
 inline Quat operator*(Quat a, Quat b){

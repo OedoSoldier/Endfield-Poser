@@ -21,6 +21,20 @@ int main() {
     Vec3 vd = d * va;
     CHECK(fabsf(vd.x - vb.x) < 1e-3f && fabsf(vd.y - vb.y) < 1e-3f, "delta composition");
 
+    // FromTo：把 +Z 转到 +X 应为绕 Y +90°（与 q90 等价）
+    Quat ft = Quat::FromTo({0,0,1}, {1,0,0});
+    CHECK(Quat::Angle(ft, q90) < 1e-3f, "fromto z->x equals 90deg yaw");
+    // FromTo 应用于方向应精确命中目标
+    Vec3 src = Norm({1, 2, -3});
+    Vec3 dst = Norm({-4, 0, 5});
+    Vec3 turned = Quat::FromTo(src, dst) * src;
+    CHECK(Len(turned - dst) < 1e-4f, "fromto rotates vector to target");
+    // 同向 → 单位四元数；反向 → 仍有意义且结果单位
+    Quat same = Quat::FromTo(src, src);
+    CHECK(Quat::Angle(same, Quat{0,0,0,1}) < 1e-3f, "fromto same direction is identity");
+    Quat opp = Quat::FromTo(src, src * -1.0f);
+    CHECK(QuatLen(opp) > 0.99f, "fromto opposite direction stays normalized");
+
     Vec3 e = q90.ToEulerDeg();
     CHECK(fabsf(e.y - 90.0f) < 0.5f, "euler round trip");
     Quat back = Quat::FromEulerDeg(e);

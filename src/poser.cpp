@@ -12,6 +12,7 @@
 #include "game/skeleton.h"
 #include "game/accessory.h"
 #include "game/freeze.h"
+#include "game/ik_driver.h"
 #include "editor/panel_pose.h"
 #include "config.h"
 
@@ -67,8 +68,11 @@ static void GameFrameTick() {
     g_charChanged = false;
     RebuildHumanBones();
     RebuildAccessories();
+    g_ikTargetValid = false; // 角色切换 → IK 目标失效，按新末端重建
   }
-  // 阶段 3+：冻结态下的 IK 写回、姿态操作、相机控制
+  // 冻结态下的 IK 写回（Task 3.2）
+  IkFrameTick();
+  // 阶段 3+：姿态操作、相机控制
 }
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----

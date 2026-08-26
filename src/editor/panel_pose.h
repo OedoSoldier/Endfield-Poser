@@ -8,6 +8,7 @@
 #include "imgui.h"
 #include "core/game_hooks.h"
 #include "game/skeleton.h"
+#include "game/ik_driver.h"
 #include "math/quat_math.h"
 #include "editor/gizmo.h"
 
@@ -86,6 +87,26 @@ static void DrawPosePanel() {
     if (g_selectedBone >= 0) {
       // 刷新选中骨 Euler 显示
     }
+  }
+
+  ImGui::Separator();
+
+  // ---- IK 编辑（Task 3.2）：链选择 + 开关；IK 模式下 gizmo 拖目标 ----
+  ImGui::Checkbox(u8"\u542f\u7528 IK", &g_ikActive);
+  ImGui::SameLine();
+  ImGui::Checkbox(u8"\u539f\u751f BipedIK", &g_ikNative);
+  const char *chainNames[kIkChainCount] = {kIkChains[0].name, kIkChains[1].name,
+                                           kIkChains[2].name, kIkChains[3].name};
+  int chainIdx = (int)g_ikChain;
+  ImGui::SameLine();
+  if (ImGui::Combo(u8"IK \u94fe", &chainIdx, chainNames, kIkChainCount))
+    IkSetChain((IkChainId)chainIdx);
+  if (g_ikActive) {
+    Vec3 t = IkTargetPos();
+    ImGui::TextDisabled(u8"\u76ee\u6807 (%.2f, %.2f, %.2f)", t.x, t.y, t.z);
+    ImGui::SameLine();
+    if (ImGui::SmallButton(u8"\u8fd8\u539f\u76ee\u6807"))
+      IkSetChain(g_ikChain); // 目标回到当前末端位置
   }
 
   ImGui::Separator();
@@ -184,8 +205,36 @@ static void DrawPosePanel() {
   ImGui::EndChild();
 }
 
+// ---- IK 目标 3D 手柄（IK 模式下替代骨手柄；拖拽改写 g_ikTarget）----
+static bool DrawIkTargetGizmo() {
+  float view[16], proj[16];
+  if (!GetCameraViewProj(view, proj))
+    return false;
+  Vec3 t = IkTargetPos();
+  float obj[16], delta[16];
+  Mat4Compose(t, Quat{0, 0, 0, 1}, obj);
+  Mat4Identity(delta);
+
+  ImGuiIO &io = ImGui::GetIO();
+  ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+  ImGuizmo::SetGizmoSizeClipSpace(g_gizmoSize);
+  bool used = ImGuizmo::Manipulate(view, proj, ImGuizmo::TRANSLATE,
+                                   ImGuizmo::WORLD, obj, delta);
+  if (used) {
+    Vec3 dPos;
+    Quat dRot;
+    Mat4Decompose(delta, dPos, dRot);
+    IkSetTarget(t + dPos);
+  }
+  return used;
+}
+
 // ---- 3D 手柄叠加层（在主窗口之外调用，覆盖整个视口）----
 static void DrawPoseGizmoOverlay() {
+  if (g_ikActive) {
+    DrawIkTargetGizmo(); // IK 模式：手柄拖 IK 目标，骨骼由求解器跟随
+    return;
+  }
   if (!g_gizmoEnabled || g_selectedBone < 0 ||
       g_selectedBone >= s_humanBoneCount)
     return;
