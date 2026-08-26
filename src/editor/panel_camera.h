@@ -72,6 +72,10 @@ static void ResolveMainCamera() {
 
 // 接管/释放相机：禁用/启用 CinemachineBrain，记录或还原 FOV
 static void CameraTakeover(bool on) {
+  if (!g_cameraTakeover) {
+    Log("[CAM] camera takeover disabled by config (camera_takeover=0)");
+    return;
+  }
   if (on && !g_camTakeover)
     ResolveMainCamera();
   if (on && !g_camTakeover && g_mainCamera && g_camera_get_fieldOfView) {

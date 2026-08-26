@@ -20,6 +20,7 @@
 #include "editor/panel_morph.h"
 #include "editor/panel_camera.h"
 #include "config.h"
+#include "core/web_server.h"
 
 // ---- Applepie 插件协议（与 {EIEM}/src/applepie_mgr.h 一致）----
 #define APPLEPIE_PLUGIN_API_VERSION 1
@@ -67,25 +68,53 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
-static void GameFrameTick() {
-  // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
-  if (g_charChanged) {
+void GameFrameTick() {
+  __try {
+    // 光标管理：面板显示时解锁鼠标（方便拖面板），隐藏时恢复锁定
+    static bool s_cursorManaged = false;
+    if (g_guiVisible) {
+      if (!s_cursorManaged && g_cursor_set_lockState && g_cursor_set_visible) {
+        int v0 = 0; void *p0[] = {&v0};
+        Invoke(g_cursor_set_lockState, nullptr, p0);
+        int v1 = 1; void *p1[] = {&v1};
+        Invoke(g_cursor_set_visible, nullptr, p1);
+        s_cursorManaged = true;
+      }
+    } else if (s_cursorManaged) {
+      int v = 1; void *p[] = {&v};
+      Invoke(g_cursor_set_lockState, nullptr, p);
+      s_cursorManaged = false;
+    }
+    // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
+    if (g_charChanged) {
     g_charChanged = false;
     RebuildHumanBones();
+    RebuildAllBones();
     RebuildAccessories();
-    RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
-    g_ikTargetValid = false; // 角色切换 → IK 目标失效，按新末端重建
+      RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
+      for (int i = 0; i < kIkChainCount; i++)
+        g_ikTargetValidChain[i] = false; // 角色切换 → IK 目标失效，按新末端重建
+    }
+    // 冻结态维持：每帧强制 Animator 关闭，防止游戏逻辑重新启用
+    if (g_frozen && g_charAnimator && g_animator_set_enabled) {
+      int v = 0;
+      void *params[] = {&v};
+      Invoke(g_animator_set_enabled, g_charAnimator, params);
+    }
+    // 冻结态下的 IK 写回（Task 3.2）
+    IkFrameTick();
+    // 双模式：Tab 切换 + 按模式驱动相机（Task 3.4）
+    ModeFrameTick();
+  } __except (1) {
+    Log("[POSER] GameFrameTick SEH exception caught");
   }
-  // 冻结态下的 IK 写回（Task 3.2）
-  IkFrameTick();
-  // 双模式：Tab 切换 + 按模式驱动相机（Task 3.4）
-  ModeFrameTick();
-  // 阶段 3+：姿态操作、相机控制
 }
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
 void DrawPoserGui() {
-  GameFrameTick(); // 每帧：骨骼列表维护、冻结维持、IK 写回、相机控制
+  __try { GameFrameTick(); } __except (1) {
+    Log("[POSER] GameFrameTick SEH exception caught");
+  }
 
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
@@ -151,15 +180,105 @@ void DrawPoserGui() {
   DrawPoseGizmoOverlay();
 }
 
+// 外部控制（PostMessage WM_APP+90 触发，绕过反作弊输入拦截）：
+// 0=切换摆姿/镜头模式 1=冻结/解冻 2=T-pose
+static void ExtControl(int code) {
+  switch (code) {
+  case 0:
+    SetMode(g_mode == PoserMode::Pose ? PoserMode::Camera : PoserMode::Pose);
+    break;
+  case 1:
+    if (g_frozen) {
+      UnfreezeCharacter();
+      RestoreBlendShapes();
+      CameraTakeover(false);
+    } else {
+      FreezeCharacter();
+      CameraTakeover(true);
+    }
+    break;
+  case 2:
+    ApplyTPose();
+    break;
+  default:
+    break;
+  }
+}
+
+// 控制文件通道：外部（Codex）往 plugin\poser_control.txt 写命令，每帧执行后清空。
+// 命令：toggle / mode / freeze / tpose / reset
+static void ProcessControlFile() {
+  FILE *f = fopen("plugin\\poser_control.txt", "r");
+  if (!f)
+    return;
+  char line[64];
+  while (fgets(line, sizeof(line), f)) {
+    char *e = line + strlen(line) - 1;
+    while (e > line && (*e == '\n' || *e == '\r' || *e == ' '))
+      *e-- = 0;
+    if (!*line)
+      continue;
+    if (strcmp(line, "toggle") == 0) {
+      g_guiVisible = !g_guiVisible;
+      Log("[CTRL] file toggle -> %d", (int)g_guiVisible);
+    } else if (strcmp(line, "mode") == 0) {
+      SetMode(g_mode == PoserMode::Pose ? PoserMode::Camera : PoserMode::Pose);
+    } else if (strcmp(line, "freeze") == 0) {
+      if (g_frozen) {
+        UnfreezeCharacter();
+        RestoreBlendShapes();
+        CameraTakeover(false);
+      } else {
+        FreezeCharacter();
+        CameraTakeover(true);
+      }
+    } else if (strcmp(line, "tpose") == 0) {
+      ApplyTPose();
+    } else if (strcmp(line, "reset") == 0) {
+      ApplyPoseSnapshot();
+    } else if (strncmp(line, "select ", 7) == 0) {
+      const char *boneName = line + 7;
+      if (SelectBoneByName(boneName))
+        Log("[CTRL] selected bone '%s' -> idx %d", boneName, g_selectedBone);
+      else
+        Log("[CTRL] bone not found: '%s'", boneName);
+    } else if (strcmp(line, "bones") == 0) {
+      Log("[CTRL] %d human bones:", s_humanBoneCount);
+      for (int i = 0; i < s_humanBoneCount; i++)
+        Log("[CTRL]   [%d] name='%s' human=%s", i, s_humanBones[i].name,
+            HumanBoneName(s_humanBones[i].humanBone));
+    } else {
+      Log("[CTRL] unknown command: %s", line);
+    }
+  }
+  fclose(f);
+  remove("plugin\\poser_control.txt");
+}
+
 static DWORD WINAPI InitThread(LPVOID) {
   LoadPoserConfig();
+  // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
+  SetExtControl(ExtControl);
+  SetExtPollFn(ProcessControlFile);
+  // 等待 GameAssembly.dll 加载并让 IL2CPP 域初始化（参照 {EIEM}/src/init.h）
+  while (!GetModuleHandleW(L"GameAssembly.dll"))
+    Sleep(500);
+  Sleep(3000);
   Log("[POSER] Resolving IL2CPP...");
   if (!Resolve()) {
     Log("[POSER] ERROR: GameAssembly.dll not found or exports missing");
     return 0;
   }
+  // 附加到 IL2CPP 域（域内方法/对象操作必需）
+  void *domain = il2cpp_domain_get();
+  if (domain)
+    il2cpp_thread_attach(domain);
+  // MinHook 初始化（MH_CreateHook 前置）
+  if (MH_Initialize() != MH_OK)
+    Log("[POSER] WARN: MH_Initialize failed");
   Log("[POSER] IL2CPP resolved. Initializing game hooks.");
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
+  StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）
   Log("[POSER] Starting GUI thread.");
   StartGuiThread();
   return 0;

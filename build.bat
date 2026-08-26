@@ -1,9 +1,15 @@
 @echo off
 setlocal
 cd /d %~dp0
-if not exist build mkdir build
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release || exit /b 1
-cmake --build build --config Release || exit /b 1
+where cmake >nul 2>&1
+if %errorlevel%==0 (
+  if not exist build mkdir build
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release || exit /b 1
+  cmake --build build --config Release || exit /b 1
+) else (
+  echo [build.bat] cmake not found - falling back to tools\build_msvc.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_msvc.ps1 || exit /b 1
+)
 if not exist plugin mkdir plugin
 echo Build OK. plugin\ folder contains:
 echo   - poser.dll             (Endfield Poser plugin)

@@ -1223,7 +1223,7 @@ namespace ImGuizmo
             gContext.mRadiusSquareCenter = radiusAxis;
          }
 
-         drawList->AddPolyline(circlePos, circleMul * halfCircleSegmentCount + 1, colors[3 - axis], false, 2);
+         drawList->AddPolyline(circlePos, circleMul * halfCircleSegmentCount + 1, colors[3 - axis], ImDrawFlags_None, 2.0f);
       }
       if(hasRSC)
       {
@@ -1246,7 +1246,7 @@ namespace ImGuizmo
             circlePos[i] = worldToPos(pos + gContext.mModel.v.position, gContext.mViewProjection);
          }
          drawList->AddConvexPolyFilled(circlePos, halfCircleSegmentCount, IM_COL32(0xFF, 0x80, 0x10, 0x80));
-         drawList->AddPolyline(circlePos, halfCircleSegmentCount, IM_COL32(0xFF, 0x80, 0x10, 0xFF), true, 2);
+         drawList->AddPolyline(circlePos, halfCircleSegmentCount, IM_COL32(0xFF, 0x80, 0x10, 0xFF), ImDrawFlags_Closed, 2.0f);
 
          ImVec2 destinationPosOnScreen = circlePos[1];
          char tmps[512];
@@ -1878,7 +1878,7 @@ namespace ImGuizmo
       // move
       if (gContext.mbUsing && (gContext.mActualID == -1 || gContext.mActualID == gContext.mEditingID) && IsTranslateType(gContext.mCurrentOperation))
       {
-         ImGui::CaptureMouseFromApp();
+         ImGui::SetNextFrameWantCaptureMouse(true);
          const float len = fabsf(IntersectRayPlane(gContext.mRayOrigin, gContext.mRayVector, gContext.mTranslationPlan)); // near plan
          vec_t newPos = gContext.mRayOrigin + gContext.mRayVector * len;
 
@@ -1948,7 +1948,7 @@ namespace ImGuizmo
          type = GetMoveType(op, &gizmoHitProportion);
          if (type != MT_NONE)
          {
-            ImGui::CaptureMouseFromApp();
+            ImGui::SetNextFrameWantCaptureMouse(true);
          }
          if (CanActivate() && type != MT_NONE)
          {
@@ -1993,7 +1993,7 @@ namespace ImGuizmo
          type = GetScaleType(op);
          if (type != MT_NONE)
          {
-            ImGui::CaptureMouseFromApp();
+            ImGui::SetNextFrameWantCaptureMouse(true);
          }
          if (CanActivate() && type != MT_NONE)
          {
@@ -2016,7 +2016,7 @@ namespace ImGuizmo
       // scale
       if (gContext.mbUsing && (gContext.mActualID == -1 || gContext.mActualID == gContext.mEditingID) && IsScaleType(gContext.mCurrentOperation))
       {
-         ImGui::CaptureMouseFromApp();
+         ImGui::SetNextFrameWantCaptureMouse(true);
          const float len = IntersectRayPlane(gContext.mRayOrigin, gContext.mRayVector, gContext.mTranslationPlan);
          vec_t newPos = gContext.mRayOrigin + gContext.mRayVector * len;
          vec_t newOrigin = newPos - gContext.mRelativeOrigin * gContext.mScreenFactor;
@@ -2107,7 +2107,7 @@ namespace ImGuizmo
 
          if (type != MT_NONE)
          {
-            ImGui::CaptureMouseFromApp();
+            ImGui::SetNextFrameWantCaptureMouse(true);
          }
 
          if (type == MT_ROTATE_SCREEN)
@@ -2141,7 +2141,7 @@ namespace ImGuizmo
       // rotation
       if (gContext.mbUsing && (gContext.mActualID == -1 || gContext.mActualID == gContext.mEditingID) && IsRotateType(gContext.mCurrentOperation))
       {
-         ImGui::CaptureMouseFromApp();
+         ImGui::SetNextFrameWantCaptureMouse(true);
          gContext.mRotationAngle = ComputeAngleOnPlan();
          if (snap)
          {

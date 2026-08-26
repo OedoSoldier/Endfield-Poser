@@ -104,19 +104,47 @@ static bool GetBoneWorldMatrix(void *transform, float out[16]) {
   }
 }
 
+// 最近一次 GetCameraViewProj 的相机世界坐标（诊断用）
+static Vec3 g_diagCamPos = {0, 0, 0};
+
 // 从主相机构建 view + projection（列主序）。返回 false 表示相机不可用。
 static bool GetCameraViewProj(float view[16], float proj[16]) {
-  if (!g_camera_get_main || !g_component_get_transform)
+  if (!g_camera_get_main || !g_component_get_transform) {
+    Log("[GIZMO] camera api missing: get_main=%p get_transform=%p",
+        g_camera_get_main, g_component_get_transform);
     return false;
+  }
   __try {
     void *cam = Invoke(g_camera_get_main, nullptr);
-    if (!cam)
+    if (!cam) {
+      Log("[GIZMO] Camera.get_main returned null");
       return false;
+    }
+    // 优先用 Unity 的 worldToCameraMatrix + projectionMatrix（与游戏渲染完全一致，
+    // 避免手动四元数→矩阵/坐标系/万向问题）
+    if (g_camera_get_worldToCameraMatrix && g_camera_get_projectionMatrix) {
+      void *vbox = Invoke(g_camera_get_worldToCameraMatrix, cam);
+      void *pbox = Invoke(g_camera_get_projectionMatrix, cam);
+      if (vbox && pbox) {
+        memcpy(view, (char *)vbox + 16, 16 * sizeof(float));
+        memcpy(proj, (char *)pbox + 16, 16 * sizeof(float));
+        // 诊断用相机位置
+        void *ctc = Invoke(g_component_get_transform, cam);
+        if (ctc)
+          g_diagCamPos = GetBoneWorldPos(ctc);
+        Log("[GIZMO] using Unity worldToCameraMatrix + projectionMatrix");
+        return true;
+      }
+    }
+    Log("[GIZMO] Unity camera matrices unavailable, manual fallback");
     void *ct = Invoke(g_component_get_transform, cam);
-    if (!ct)
+    if (!ct) {
+      Log("[GIZMO] camera get_transform null");
       return false;
+    }
     Vec3 pos = GetBoneWorldPos(ct);
     Quat rot = GetBoneWorldRot(ct);
+    g_diagCamPos = pos;
 
     // view = inverse(TR)：转置旋转部分，平移取负
     float wm[16];
@@ -124,9 +152,11 @@ static bool GetCameraViewProj(float view[16], float proj[16]) {
     view[0] = wm[0];  view[1] = wm[4];  view[2] = wm[8];  view[3] = 0;
     view[4] = wm[1];  view[5] = wm[5];  view[6] = wm[9];  view[7] = 0;
     view[8] = wm[2];  view[9] = wm[6];  view[10] = wm[10]; view[11] = 0;
-    view[12] = -(wm[0] * pos.x + wm[1] * pos.y + wm[2] * pos.z);
-    view[13] = -(wm[4] * pos.x + wm[5] * pos.y + wm[6] * pos.z);
-    view[14] = -(wm[8] * pos.x + wm[9] * pos.y + wm[10] * pos.z);
+    // 平移必须是 -R^T * pos：与旋转部分（已转置）保持一致，
+    // 用 wm 的同一行（wm[0],wm[4],wm[8]）而不是列（wm[0],wm[1],wm[2]）。
+    view[12] = -(wm[0] * pos.x + wm[4] * pos.y + wm[8] * pos.z);
+    view[13] = -(wm[1] * pos.x + wm[5] * pos.y + wm[9] * pos.z);
+    view[14] = -(wm[2] * pos.x + wm[6] * pos.y + wm[10] * pos.z);
     view[15] = 1;
 
     float fov = 60.0f;
@@ -153,10 +183,39 @@ static bool GetCameraViewProj(float view[16], float proj[16]) {
 }
 
 // 状态：gizmo 开关与当前操作（在 panel_pose.h 里由 UI 切换）
-static bool g_gizmoEnabled = true;
+static bool g_gizmoEnabled = false; // 默认关闭手柄，直接用滑条调坐标/旋转（面板可开启）
 static ImGuizmo::OPERATION g_gizmoOp = ImGuizmo::ROTATE;
 static ImGuizmo::MODE g_gizmoMode = ImGuizmo::LOCAL;
 static float g_gizmoSize = 0.12f;
+
+// 诊断：把手柄世界坐标投影到屏幕，确认手柄画在哪（一次）
+static void LogGizmoDiagnostics(const float view[16], const float proj[16],
+                                const Vec3 &worldPos, const char *label) {
+  static bool s_logged = false;
+  if (s_logged)
+    return;
+  s_logged = true;
+  float px = worldPos.x, py = worldPos.y, pz = worldPos.z;
+  // 视图空间坐标（含深度，判断是否在相机前方）
+  float vx = view[0] * px + view[4] * py + view[8] * pz + view[12];
+  float vy = view[1] * px + view[5] * py + view[9] * pz + view[13];
+  float vz = view[2] * px + view[6] * py + view[10] * pz + view[14];
+  float vw = view[3] * px + view[7] * py + view[11] * pz + view[15];
+  float cx = proj[0] * vx + proj[4] * vy + proj[8] * vz + proj[12] * vw;
+  float cy = proj[1] * vx + proj[5] * vy + proj[9] * vz + proj[13] * vw;
+  float cw = proj[3] * vx + proj[7] * vy + proj[11] * vz + proj[15] * vw;
+  ImGuiIO &io = ImGui::GetIO();
+  float sx = -1, sy = -1;
+  if (fabsf(cw) > 1e-6f) {
+    float nx = cx / cw, ny = cy / cw;
+    sx = (nx + 1.0f) * 0.5f * io.DisplaySize.x;
+    sy = (1.0f - ny) * 0.5f * io.DisplaySize.y;
+  }
+  Log("[GIZMO] %s cam=(%.1f,%.1f,%.1f) world=(%.1f,%.1f,%.1f) "
+      "view=(%.1f,%.1f,%.1f) screen=(%.0f,%.0f) winsize=(%.0fx%.0f)",
+      label, g_diagCamPos.x, g_diagCamPos.y, g_diagCamPos.z,
+      px, py, pz, vx, vy, vz, sx, sy, io.DisplaySize.x, io.DisplaySize.y);
+}
 
 // 对指定骨绘制 3D 手柄；拖拽时把 delta 写回 localRotation/localPosition。
 // LOCAL 模式下 delta 为骨局部系增量：local' = local * deltaRot（右乘），
@@ -170,6 +229,7 @@ static bool DrawBoneGizmo(void *transform) {
   float obj[16], delta[16];
   if (!GetBoneWorldMatrix(transform, obj))
     return false;
+  LogGizmoDiagnostics(view, proj, Vec3{obj[12], obj[13], obj[14]}, "bone");
   Mat4Identity(delta);
 
   ImGuiIO &io = ImGui::GetIO();

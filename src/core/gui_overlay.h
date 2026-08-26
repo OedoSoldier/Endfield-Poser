@@ -17,6 +17,7 @@
 #include "imgui_impl_dx11.h"
 
 #include "base.h"
+#include "il2cpp_api.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -24,6 +25,15 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 
 // 由 poser.cpp / editor/gui.h 实现：每帧绘制主面板
 void DrawPoserGui();
+void GameFrameTick(); // poser.cpp 定义：每帧游戏逻辑（冻结维持/IK写回），隐藏时也跑
+
+// 外部控制回调（poser.cpp 注册）：code 0=切模式 1=冻结/解冻 2=T-pose
+typedef void (*ExtControlFn)(int code);
+static ExtControlFn g_extControl = nullptr;
+static void SetExtControl(ExtControlFn fn) { g_extControl = fn; }
+// 外部轮询回调（poser.cpp 注册）：每帧调用，用于处理控制文件等外部指令
+static void (*g_extPollFn)() = nullptr;
+static void SetExtPollFn(void (*fn)()) { g_extPollFn = fn; }
 
 static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
@@ -43,7 +53,12 @@ static BOOL CALLBACK EnumWindowProc(HWND hwnd, LPARAM lParam) {
   auto *ctx = reinterpret_cast<EnumWindowCtx *>(lParam);
   DWORD pid = 0;
   GetWindowThreadProcessId(hwnd, &pid);
-  if (pid == ctx->pid) {
+  if (pid != ctx->pid)
+    return TRUE;
+  // 精确匹配 Unity 主窗口（游戏进程含 Qt/CEF 等子窗口，不能取第一个）
+  char cls[64] = {};
+  GetClassNameA(hwnd, cls, sizeof(cls));
+  if (strcmp(cls, "UnityWndClass") == 0 && IsWindowVisible(hwnd)) {
     ctx->result = hwnd;
     return FALSE;
   }
@@ -53,6 +68,23 @@ static BOOL CALLBACK EnumWindowProc(HWND hwnd, LPARAM lParam) {
 static HWND FindGameHwnd() {
   EnumWindowCtx ctx = {GetCurrentProcessId(), nullptr};
   EnumWindows(EnumWindowProc, reinterpret_cast<LPARAM>(&ctx));
+  return ctx.result;
+}
+
+static BOOL CALLBACK EnumAnyWindowProc(HWND hwnd, LPARAM lParam) {
+  auto *ctx = reinterpret_cast<EnumWindowCtx *>(lParam);
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid == ctx->pid) {
+    ctx->result = hwnd;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static HWND FindAnyHwnd() {
+  EnumWindowCtx ctx = {GetCurrentProcessId(), nullptr};
+  EnumWindows(EnumAnyWindowProc, reinterpret_cast<LPARAM>(&ctx));
   return ctx.result;
 }
 
@@ -163,12 +195,37 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
     ShowWindow(hWnd, SW_HIDE);
     g_guiVisible = false;
     return 0;
+  case WM_APP + 1: // 外部控制：切换面板显示（PostMessage 通道，绕过反作弊输入拦截）
+    g_guiVisible = !g_guiVisible;
+    Log("[CTRL] external toggle -> %d", (int)g_guiVisible);
+    return 0;
+  case WM_APP + 90: // 外部控制：转发业务指令（wParam = code）
+    if (g_extControl)
+      g_extControl((int)wParam);
+    return 0;
   }
   return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
 static DWORD WINAPI GuiThread(LPVOID) {
-  g_gameHwnd = FindGameHwnd();
+  // 附加到 IL2CPP 域：GUI 线程每帧会经 DrawPoserGui->GameFrameTick 触碰游戏对象，
+  // 不附加会让 GC 从"未知线程"收集托管对象，触发 fatal error 崩溃。
+  if (il2cpp_domain_get && il2cpp_thread_attach) {
+    void *domain = il2cpp_domain_get();
+    if (domain) {
+      il2cpp_thread_attach(domain);
+      Log("[GUI] attached to IL2CPP domain");
+    }
+  }
+  // 游戏启动较慢：先轮询等 Unity 主窗口出现（最多 60 秒），再回退任意窗口
+  g_gameHwnd = nullptr;
+  for (int i = 0; i < 60 && !g_gameHwnd; i++) {
+    g_gameHwnd = FindGameHwnd();
+    if (!g_gameHwnd)
+      Sleep(1000);
+  }
+  if (!g_gameHwnd)
+    g_gameHwnd = FindAnyHwnd();
   if (!g_gameHwnd) {
     Log("[GUI] No game hwnd, GUI thread exits");
     return 0;
@@ -190,8 +247,17 @@ static DWORD WINAPI GuiThread(LPVOID) {
       gr.left, gr.top, gr.right - gr.left, gr.bottom - gr.top,
       nullptr, nullptr, wc.hInstance, nullptr);
 
-  if (!CreateDeviceD3D(g_guiHwnd)) {
-    Log("[GUI] ERROR: CreateDeviceD3D failed!");
+  // DComp 合成在游戏刚启动时可能暂不可用（0x887A0001），重试几次
+  bool d3dOk = false;
+  for (int i = 0; i < 8 && !d3dOk; i++) {
+    d3dOk = CreateDeviceD3D(g_guiHwnd);
+    if (!d3dOk) {
+      Log("[GUI] CreateDeviceD3D attempt %d failed, retrying...", i + 1);
+      Sleep(1000);
+    }
+  }
+  if (!d3dOk) {
+    Log("[GUI] ERROR: CreateDeviceD3D failed after retries!");
     CleanupDeviceD3D();
     DestroyWindow(g_guiHwnd);
     return 0;
@@ -243,6 +309,8 @@ static DWORD WINAPI GuiThread(LPVOID) {
   ZeroMemory(&msg, sizeof(msg));
   bool s_panelShown = false;
   while (g_guiRunning) {
+    if (g_extPollFn)
+      g_extPollFn(); // 控制文件轮询（面板隐藏时也执行）
     while (PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
       TranslateMessage(&msg);
       DispatchMessage(&msg);
@@ -256,9 +324,12 @@ static DWORD WINAPI GuiThread(LPVOID) {
     }
 
     // 快捷键：切换面板显示
-    if ((GetAsyncKeyState(g_guiToggleVK) & 0x8000) &&
-        (GetAsyncKeyState(g_guiToggleVK) & 1))
+    // GetAsyncKeyState 只能调用一次：bit0(按下边沿)会被调用消费掉，
+    // 同一表达式调两次会让第二次永远为 0，热键失效。
+    if (GetAsyncKeyState(g_guiToggleVK) & 1) {
       g_guiVisible = !g_guiVisible;
+      Log("[GUI] toggle -> visible=%d", (int)g_guiVisible);
+    }
 
     bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd);
     if (shouldShow) {
@@ -268,6 +339,17 @@ static DWORD WINAPI GuiThread(LPVOID) {
         ShowWindow(g_guiHwnd, SW_SHOWNOACTIVATE);
         s_panelShown = true;
       }
+      // 跟随游戏窗口位置/尺寸（游戏全屏/切窗口后覆盖层仍贴合）
+      RECT gr, ow;
+      GetWindowRect(g_gameHwnd, &gr);
+      GetWindowRect(g_guiHwnd, &ow);
+      if (gr.left != ow.left || gr.top != ow.top ||
+          (gr.right - gr.left) != (ow.right - ow.left) ||
+          (gr.bottom - gr.top) != (ow.bottom - ow.top)) {
+        SetWindowPos(g_guiHwnd, HWND_TOPMOST, gr.left, gr.top,
+                     gr.right - gr.left, gr.bottom - gr.top,
+                     SWP_NOACTIVATE);
+      }
     } else if (s_panelShown) {
       SetWindowPos(g_guiHwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -275,7 +357,11 @@ static DWORD WINAPI GuiThread(LPVOID) {
       s_panelShown = false;
     }
     if (!s_panelShown) {
-      Sleep(60);
+      // 隐藏覆盖层时仍跑游戏逻辑（冻结维持/IK写回/控制文件）
+      __try { GameFrameTick(); } __except (1) {
+        Log("[GUI] hidden GameFrameTick exception");
+      }
+      Sleep(30);
       continue;
     }
 
@@ -283,7 +369,9 @@ static DWORD WINAPI GuiThread(LPVOID) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    DrawPoserGui();
+    __try { DrawPoserGui(); } __except (1) {
+      Log("[GUI] DrawPoserGui exception caught");
+    }
 
     ImGui::Render();
     const float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};

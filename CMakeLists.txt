@@ -34,6 +34,11 @@ if(WIN32)
   target_compile_definitions(d3dcompiler_47 PRIVATE _CRT_SECURE_NO_WARNINGS)
   set_target_properties(d3dcompiler_47 PROPERTIES OUTPUT_NAME "d3dcompiler_47")
 
+  # Vulkan 代理 DLL（摘自 EIEM，转发 System32\vulkan-1）
+  add_library(vulkan-1 SHARED src/core/proxy_vulkan_full.cpp)
+  target_compile_definitions(vulkan-1 PRIVATE _CRT_SECURE_NO_WARNINGS)
+  set_target_properties(vulkan-1 PROPERTIES OUTPUT_NAME "vulkan-1")
+
   # 部署：把 poser.dll 与 d3dcompiler_47.dll 拷到 plugin/
   add_custom_command(TARGET poser POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/plugin
@@ -42,7 +47,10 @@ if(WIN32)
             ${CMAKE_CURRENT_SOURCE_DIR}/plugin/poser.dll
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:d3dcompiler_47>
-            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/d3dcompiler_47.dll)
+            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/d3dcompiler_47.dll
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:vulkan-1>
+            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/vulkan-1.dll)
 endif()
 
 # ---- 数学单测（跨平台，Linux g++ 也可编；每个测试独立可执行）----

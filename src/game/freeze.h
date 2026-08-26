@@ -57,11 +57,19 @@ static void FreezeCharacter() {
     } __except (1) {
     }
   }
+  // 1b. 连游戏自己的动画组件一起禁（ECS/自定义动画会绕过 Animator.enabled 直接写骨）
+  if (g_charAnimComp && g_animator_set_enabled) {
+    __try {
+      int v = 0;
+      void *params[] = {&v};
+      Invoke(g_animator_set_enabled, g_charAnimComp, params);
+    } __except (1) {
+    }
+  }
   // 2. 固化当前帧姿势为编辑基线（含从骨）
   PinCurrentPose();
   CaptureAccessorySnapshot();
-  // 3. 抑制其余写者
-  SuppressPoseWriters();
+  // 3. 不冻结从骨物理/布料：让头发/裙摆继续模拟，自然垂坠在摆好的姿势上。
   g_frozen = true;
   Log("[POSER] Frozen (animator was enabled=%d)", g_animatorWasEnabled ? 1 : 0);
 }
@@ -69,12 +77,21 @@ static void FreezeCharacter() {
 static void UnfreezeCharacter() {
   if (!g_frozen)
     return;
-  RestorePoseWriters();
+  // 先恢复动画驱动（Animator + 游戏动画组件），再恢复从骨物理/布料，
+  // 否则布料/物理在动画未驱动时重启会卡在冻结姿态。
   if (g_animator_set_enabled && g_animatorWasEnabled) {
     __try {
       int v = 1;
       void *params[] = {&v};
       Invoke(g_animator_set_enabled, g_charAnimator, params);
+    } __except (1) {
+    }
+  }
+  if (g_charAnimComp && g_animator_set_enabled) {
+    __try {
+      int v = 1;
+      void *params[] = {&v};
+      Invoke(g_animator_set_enabled, g_charAnimComp, params);
     } __except (1) {
     }
   }

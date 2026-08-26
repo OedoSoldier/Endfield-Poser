@@ -69,6 +69,8 @@ static const char *HumanBoneName(int b) {
 static void *g_playerController = nullptr;
 static void *g_mainCharEntity = nullptr;
 static void *g_charAnimator = nullptr;
+static void *g_charAnimComp = nullptr; // Entity 上的 ComplexAnimationComponent（冻结时一并禁用）
+static void *g_animatorClass = nullptr; // UnityEngine.Animator 类（角色捕获字段扫描用）
 static volatile bool g_charChanged = false; // hook 捕获新角色后置真，GUI 消费后复位
 
 // 已解析的运行时方法指针（对应 {EIEM} globals.h 的 g_animator_*/g_transform_*）
@@ -98,12 +100,16 @@ static void *g_cameraClass = nullptr;     // UnityEngine.Camera（get_main 用�
 static void *g_camera_get_main = nullptr; // Camera.get_main（gizmo 取视锥）
 static void *g_camera_get_fieldOfView = nullptr;
 static void *g_camera_set_fieldOfView = nullptr; // Camera.set_fieldOfView（FOV 滑条）
+static void *g_camera_get_worldToCameraMatrix = nullptr; // Camera.get_worldToCameraMatrix
+static void *g_camera_get_projectionMatrix = nullptr;    // Camera.get_projectionMatrix
 static void *g_skinnedMeshRendererClass = nullptr; // UnityEngine.SkinnedMeshRenderer
 static void *g_smr_get_sharedMesh = nullptr;        // get_sharedMesh
 static void *g_smr_GetBlendShapeWeight = nullptr;   // GetBlendShapeWeight(int)
 static void *g_smr_SetBlendShapeWeight = nullptr;   // SetBlendShapeWeight(int,float)
 static void *g_mesh_get_blendShapeCount = nullptr;  // Mesh.get_blendShapeCount
 static void *g_mesh_GetBlendShapeName = nullptr;    // Mesh.GetBlendShapeName(int)
+static void *g_cursor_set_lockState = nullptr;      // Cursor.set_lockState(enum)
+static void *g_cursor_set_visible = nullptr;        // Cursor.set_visible(bool)
 
 // 动态解析的字段偏移（-1 = 未解析，读时走 SafeOff 回退）
 static int OFF_pcEntity = -1;            // PlayerController -> Entity
@@ -113,19 +119,15 @@ static int OFF_complexAnimAnimator = -1; // ComplexAnimationComponent -> Animato
 // 运行时方法解析（在 IL2CPP Resolve() 之后调用）
 static void ResolveGameApi() {
   __try {
-    void *asms[8] = {};
     size_t ac = 0;
+    void **asms = nullptr;
     void *domain = il2cpp_domain_get();
-    if (domain) {
-      void **buf = il2cpp_domain_get_assemblies(domain, &ac);
-      for (size_t i = 0; i < ac && i < 8; i++)
-        asms[i] = buf[i];
-      if (ac > 8)
-        ac = 8;
-    }
+    if (domain)
+      asms = il2cpp_domain_get_assemblies(domain, &ac);
 
     void *animClass = FindClass("UnityEngine", "Animator", asms, ac);
     if (animClass) {
+      g_animatorClass = animClass;
       g_animator_GetBoneTransform = FindMethod(animClass, "GetBoneTransform", 1);
       g_animator_get_isHuman = FindMethod(animClass, "get_isHuman", 0);
       void *behClass = FindClass("UnityEngine", "Behaviour", asms, ac);
@@ -178,6 +180,12 @@ static void ResolveGameApi() {
       g_camera_get_main = FindMethod(camClass, "get_main", 0);
       g_camera_get_fieldOfView = FindMethod(camClass, "get_fieldOfView", 0);
       g_camera_set_fieldOfView = FindMethod(camClass, "set_fieldOfView", 1);
+      g_camera_get_worldToCameraMatrix =
+          FindMethod(camClass, "get_worldToCameraMatrix", 0);
+      g_camera_get_projectionMatrix =
+          FindMethod(camClass, "get_projectionMatrix", 0);
+      Log("[POSER] Camera: wtc=%p proj=%p", g_camera_get_worldToCameraMatrix,
+          g_camera_get_projectionMatrix);
     }
 
     // Task 4.1：面部/身体 BlendShape 读写
@@ -194,6 +202,15 @@ static void ResolveGameApi() {
     if (meshClass) {
       g_mesh_get_blendShapeCount = FindMethod(meshClass, "get_blendShapeCount", 0);
       g_mesh_GetBlendShapeName = FindMethod(meshClass, "GetBlendShapeName", 1);
+    }
+
+    // 面板显示时解锁鼠标（Unity Cursor.lockState=None + visible=true）
+    void *cursorClass = FindClass("UnityEngine", "Cursor", asms, ac);
+    if (cursorClass) {
+      g_cursor_set_lockState = FindMethod(cursorClass, "set_lockState", 1);
+      g_cursor_set_visible = FindMethod(cursorClass, "set_visible", 1);
+      Log("[POSER] Cursor: set_lockState=%p set_visible=%p",
+          g_cursor_set_lockState, g_cursor_set_visible);
     }
 
     Log("[POSER] Game API resolved: GetBoneTransform=%p set_enabled=%p "
@@ -255,10 +272,29 @@ static void SetCharacterEntity(void *entity) {
   ResolveEntityOffsets(entity);
   __try {
     int ecOff = SafeOff(OFF_entityComplexAnim, 0x110, "entityComplexAnim");
-    int caOff =
-        SafeOff(OFF_complexAnimAnimator, 0x148, "complexAnimAnimator");
     void *cac = *(void **)((char *)entity + ecOff);
-    void *animator = cac ? *(void **)((char *)cac + caOff) : nullptr;
+    if (cac)
+      g_charAnimComp = cac;
+    void *animator = nullptr;
+    // 1) 先按已知偏移读
+    if (cac && OFF_complexAnimAnimator >= 0)
+      animator = *(void **)((char *)cac + OFF_complexAnimAnimator);
+    // 2) 动态扫描 ComplexAnimationComponent 字段，找值类型为 Animator 的
+    //    （不依赖硬编码偏移，角色/场景变化也能捕获）
+    if (!animator && cac && g_animatorClass) {
+      void *cacClass = il2cpp_object_get_class(cac);
+      void *it = nullptr, *f;
+      while ((f = il2cpp_class_get_fields(cacClass, &it))) {
+        size_t off = il2cpp_field_get_offset(f);
+        void *val = *(void **)((char *)cac + off);
+        if (val && il2cpp_object_get_class(val) == g_animatorClass) {
+          OFF_complexAnimAnimator = (int)off;
+          animator = val;
+          Log("[POSER] Animator found via field scan @0x%X", off);
+          break;
+        }
+      }
+    }
     if (animator && animator != g_charAnimator) {
       g_mainCharEntity = entity;
       g_charAnimator = animator;
@@ -284,16 +320,11 @@ static void TryCaptureFromPlayerController() {
 // 安装 PlayerController.SetMainCharacter hook（IL2CPP Resolve() 之后调用）
 static void InstallSetMainCharacterHook() {
   __try {
-    void *asms[8] = {};
     size_t ac = 0;
+    void **asms = nullptr;
     void *domain = il2cpp_domain_get();
-    if (domain) {
-      void **buf = il2cpp_domain_get_assemblies(domain, &ac);
-      for (size_t i = 0; i < ac && i < 8; i++)
-        asms[i] = buf[i];
-      if (ac > 8)
-        ac = 8;
-    }
+    if (domain)
+      asms = il2cpp_domain_get_assemblies(domain, &ac);
 
     void *pcClass =
         FindClass("Beyond.Gameplay.Core", "PlayerController", asms, ac);
@@ -345,7 +376,14 @@ static void InstallSetMainCharacterHook() {
 
 // 总入口：在 IL2CPP Resolve() 成功后调用一次
 static void InitGameHooks() {
-  ResolveGameApi();
+  // 程序集枚举与游戏加载存在竞态：UnityEngine 类可能暂未就绪，重试直到解析到 Animator
+  for (int i = 0; i < 10; i++) {
+    ResolveGameApi();
+    if (g_animator_GetBoneTransform)
+      break;
+    Log("[POSER] Game API not ready, retrying (%d/10)...", i + 1);
+    Sleep(1000);
+  }
   InstallSetMainCharacterHook();
 }
 

@@ -39,10 +39,11 @@ static const IkChainDef kIkChains[kIkChainCount] = {
 
 // ---- 状态（editor 面板读写）----
 static IkChainId g_ikChain = IK_CHAIN_ARMR;
-static bool g_ikActive = false;   // IK 求解开关（冻结态生效）
+static bool g_ikActiveChain[kIkChainCount] = {}; // 每条链独立 IK 开关（可同时多链）
+static bool g_ikActive = false;   // 聚合：任一链开启（面板/兼容）
 static bool g_ikNative = false;   // true=驱动原生 BipedIK；false=自研 2-bone
-static Vec3 g_ikTarget{0, 0, 0};  // IK 目标世界坐标（gizmo 拖拽更新）
-static bool g_ikTargetValid = false;
+static Vec3 g_ikTargets[kIkChainCount] = {};      // 每链独立目标（gizmo 拖拽更新）
+static bool g_ikTargetValidChain[kIkChainCount] = {};
 
 static bool IkBoneLocked(HumanBodyBones b) {
   int i = FindHumanBoneIndex(b);
@@ -53,23 +54,35 @@ static bool IkBoneLocked(HumanBodyBones b) {
 static void IkSetChain(IkChainId c) {
   if (c >= 0 && c < kIkChainCount) {
     g_ikChain = c;
-    g_ikTargetValid = false;
+    g_ikTargetValidChain[c] = false;
   }
+}
+
+// 设置某条链的 IK 开关，并重算聚合 g_ikActive
+static void SetChainIkActive(IkChainId c, bool on) {
+  if (c < 0 || c >= kIkChainCount)
+    return;
+  g_ikActiveChain[c] = on;
+  g_ikTargetValidChain[c] = false;
+  g_ikActive = false;
+  for (int i = 0; i < kIkChainCount; i++)
+    if (g_ikActiveChain[i])
+      g_ikActive = true;
 }
 
 static Vec3 IkTargetPos() {
   const IkChainDef &ch = kIkChains[(int)g_ikChain];
   void *endT = GetHumanoidBone(ch.end);
-  if (!g_ikTargetValid && endT) {
-    g_ikTarget = GetBoneWorldPos(endT);
-    g_ikTargetValid = true;
+  if (!g_ikTargetValidChain[(int)g_ikChain] && endT) {
+    g_ikTargets[(int)g_ikChain] = GetBoneWorldPos(endT);
+    g_ikTargetValidChain[(int)g_ikChain] = true;
   }
-  return g_ikTarget;
+  return g_ikTargets[(int)g_ikChain];
 }
 
 static void IkSetTarget(Vec3 p) {
-  g_ikTarget = p;
-  g_ikTargetValid = true;
+  g_ikTargets[(int)g_ikChain] = p;
+  g_ikTargetValidChain[(int)g_ikChain] = true;
 }
 
 // 把世界旋转增量 d 作用到 transform 的局部旋转（考虑父系链）
@@ -97,17 +110,39 @@ static void SolveTwoBoneChain(void *rootT, void *midT, void *endT, Vec3 target) 
   Vec3 a = GetBoneWorldPos(rootT);
   Vec3 b0 = GetBoneWorldPos(midT);
   Vec3 c0 = GetBoneWorldPos(endT);
+  float len1 = Len(b0 - a), len2 = Len(c0 - b0);
+  // 骨骼退化或目标太近（奇点）时跳过，避免手/脚乱飞
+  if (len1 < 1e-4f || len2 < 1e-4f)
+    return;
+  if (Len(target - a) < len2 * 0.5f)
+    return;
   Vec3 b = b0, c = c0;
   SolveTwoBone(a, b, c, target, b0 /*pole=当前肘/膝方向*/, true);
+  if (!(b.x == b.x) || !(c.x == c.x)) // NaN 保护
+    return;
   // 根骨：上臂/大腿方向对齐（b 由求解器给出）
   Vec3 curUp = Norm(b0 - a), newUp = Norm(b - a);
+  if (Len(newUp) < 1e-4f)
+    return;
   ApplyWorldRotDelta(rootT, Quat::FromTo(curUp, newUp));
   // 中骨：前臂/小腿方向对齐（c 已命中 target）
   Vec3 curFore = Norm(c0 - b0), newFore = Norm(c - b);
+  if (Len(newFore) < 1e-4f)
+    return;
   ApplyWorldRotDelta(midT, Quat::FromTo(curFore, newFore));
 }
 
 // ---- 原生 BipedIK（可选增强，[in-game] 探针收敛）----
+// 复用参考（EIEM 已验证，AGPL-3.0，见 D:\PROJECTS\EIEM\src\globals.h / init.h）：
+//   BipedIK → solvers 字段偏移        OFF_BIPEDIK_SOLVERS 0x40
+//   solvers → 各链 LimbIK 偏移        LEFT_FOOT 0x10 / RIGHT_FOOT 0x18 /
+//                                    LEFT_HAND 0x20 / RIGHT_HAND 0x28
+//   IKSolver → IKPosition 偏移        IKPOS_X 0x14 / Y 0x18 / Z 0x1C
+//   IKSolver → IKPositionWeight 偏移  IKPOS_WEIGHT 0x20
+//   hook 点（均可用 FindMethod 动态解析，失败再按 RVA 回退）：
+//     SolverManager.LateUpdate        RVA 0x035BD200
+//     BipedIK.UpdateSolver            RVA 0x0326A380
+//     IKSolverTrigonometric.OnUpdate  RVA 0x032759E0
 static void *g_bipedIK = nullptr;     // RootMotion.FinalIK.BipedIK 组件
 static void *g_bipedSolvers = nullptr; // solvers 字段（BipedIKSolvers）
 static int OFF_limbSolver = -1;       // 当前链 LimbIK 在 solvers 上的偏移
@@ -202,13 +237,13 @@ static void NativeIkFrameTick(const IkChainDef &ch) {
     void *limb = *(void **)((char *)g_bipedSolvers + OFF_limbSolver);
     if (!limb)
       return;
-    if (!g_ikTargetValid) {
+    if (!g_ikTargetValidChain[(int)g_ikChain]) {
       void *endT = GetHumanoidBone(ch.end);
       if (endT)
-        g_ikTarget = GetBoneWorldPos(endT);
-      g_ikTargetValid = true;
+        g_ikTargets[(int)g_ikChain] = GetBoneWorldPos(endT);
+      g_ikTargetValidChain[(int)g_ikChain] = true;
     }
-    *(Vec3 *)((char *)limb + OFF_ikPosition) = g_ikTarget;
+    *(Vec3 *)((char *)limb + OFF_ikPosition) = g_ikTargets[(int)g_ikChain];
     *(float *)((char *)limb + OFF_ikWeight) = 1.0f;
   } __except (1) {
   }
@@ -216,23 +251,37 @@ static void NativeIkFrameTick(const IkChainDef &ch) {
 
 // 每帧驱动（冻结态 + IK 开启时调用；editor 的 gizmo 先改 g_ikTarget）
 static void IkFrameTick() {
-  if (!g_frozen || !g_ikActive)
+  if (!g_frozen)
     return;
-  const IkChainDef &ch = kIkChains[(int)g_ikChain];
-  void *rootT = GetHumanoidBone(ch.root);
-  void *midT = GetHumanoidBone(ch.mid);
-  void *endT = GetHumanoidBone(ch.end);
-  if (!rootT || !midT || !endT)
-    return;
-  if (IkBoneLocked(ch.root) || IkBoneLocked(ch.mid))
-    return; // 链上根/中骨被锁定则不做 IK
+  // 原生模式：仍只驱动当前选中单链（实验功能）
   if (g_ikNative) {
-    NativeIkFrameTick(ch);
+    if (g_ikActiveChain[(int)g_ikChain]) {
+      const IkChainDef &ch = kIkChains[(int)g_ikChain];
+      void *rootT = GetHumanoidBone(ch.root);
+      void *midT = GetHumanoidBone(ch.mid);
+      void *endT = GetHumanoidBone(ch.end);
+      if (rootT && midT && endT &&
+          !IkBoneLocked(ch.root) && !IkBoneLocked(ch.mid))
+        NativeIkFrameTick(ch);
+    }
     return;
   }
-  if (!g_ikTargetValid) {
-    g_ikTarget = GetBoneWorldPos(endT);
-    g_ikTargetValid = true;
+  // 自研 2-bone：遍历所有开启 IK 的链（可多链同时，FK/IK 混合）
+  for (int ci = 0; ci < kIkChainCount; ci++) {
+    if (!g_ikActiveChain[ci])
+      continue;
+    const IkChainDef &ch = kIkChains[ci];
+    void *rootT = GetHumanoidBone(ch.root);
+    void *midT = GetHumanoidBone(ch.mid);
+    void *endT = GetHumanoidBone(ch.end);
+    if (!rootT || !midT || !endT)
+      continue;
+    if (IkBoneLocked(ch.root) || IkBoneLocked(ch.mid))
+      continue; // 链上根/中骨被锁定则不做 IK
+    if (!g_ikTargetValidChain[ci]) {
+      g_ikTargets[ci] = GetBoneWorldPos(endT);
+      g_ikTargetValidChain[ci] = true;
+    }
+    SolveTwoBoneChain(rootT, midT, endT, g_ikTargets[ci]);
   }
-  SolveTwoBoneChain(rootT, midT, endT, g_ikTarget);
 }

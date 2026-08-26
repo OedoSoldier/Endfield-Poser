@@ -1,3 +1,13 @@
 build/
 plugin/
 debug/
+build/
+plugin/poser.dll
+plugin/d3dcompiler_47.dll
+plugin/*.lib
+plugin/*.exp
+deps/winsdk/
+deps/winsdkcpp/
+tools/zhipu_api_key.txt
+*.obj
+*.pdb

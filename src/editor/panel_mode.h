@@ -142,7 +142,8 @@ static void ModeFrameTick() {
     SetMode(g_mode == PoserMode::Pose ? PoserMode::Camera : PoserMode::Pose);
   s_tabPrev = tab;
 
-  if (g_mode == PoserMode::Camera || (g_mode == PoserMode::Pose && !g_camLocked))
+  if (g_cameraTakeover &&
+      (g_mode == PoserMode::Camera || (g_mode == PoserMode::Pose && !g_camLocked)))
     ApplyFreeCamera();
 }
 

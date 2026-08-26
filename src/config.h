@@ -5,9 +5,12 @@
 #include <cstdio>
 #include <cstring>
 
+void Log(const char *fmt, ...);
+
 static int g_guiToggleVK = VK_INSERT;   // 呼出/隐藏 GUI
 static int g_screenshotVK = VK_F8;      // 截图
 static float g_cameraSpeed = 5.0f;      // 自由相机移动速度
+static bool g_cameraTakeover = false;   // 相机接管（默认关：用游戏自带相机，避免干扰）
 static char g_defaultPoseDir[MAX_PATH] = "plugin\\poses";
 
 static int ParseVK(const char *s, int fallback) {
@@ -18,11 +21,23 @@ static int ParseVK(const char *s, int fallback) {
   return (int)strtoul(s, nullptr, 0);
 }
 
+static void StripBom(char *line) {
+  // 去掉 UTF-8 BOM（EF BB BF），兼容 PowerShell/记事本写出的配置文件
+  unsigned char *p = (unsigned char *)line;
+  if (p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) {
+    char *dst = line;
+    char *src = line + 3;
+    while ((*dst++ = *src++))
+      ;
+  }
+}
+
 static bool LoadPoserConfig() {
   FILE *f = fopen("plugin\\poser_config.txt", "r");
   if (!f) return false;
   char line[512];
   while (fgets(line, sizeof(line), f)) {
+    StripBom(line);
     char *e = line + strlen(line) - 1;
     while (e > line && (*e == '\n' || *e == '\r' || *e == ' ')) *e-- = 0;
     char *eq = strchr(line, '=');
@@ -37,9 +52,12 @@ static bool LoadPoserConfig() {
     if (strcmp(key, "gui_toggle_key") == 0)       g_guiToggleVK = ParseVK(val, VK_INSERT);
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
     else if (strcmp(key, "camera_speed") == 0)    g_cameraSpeed = (float)atof(val);
+    else if (strcmp(key, "camera_takeover") == 0) g_cameraTakeover = (atoi(val) != 0);
     else if (strcmp(key, "default_pose_dir") == 0)
       snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "%s", val);
   }
   fclose(f);
+  Log("[CFG] gui_toggle_key=%d (0x%X) screenshot_key=%d camera_speed=%.1f",
+      g_guiToggleVK, g_guiToggleVK, g_screenshotVK, g_cameraSpeed);
   return true;
 }
