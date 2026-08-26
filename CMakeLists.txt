@@ -3,32 +3,49 @@ project(endfield_poser CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 插件 DLL（仅 Windows/MSVC；沙箱 Linux 跳过）
+# 输出目录统一到 plugin/（与 build.bat 的部署布局一致）
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ---- 插件 DLL + 代理 DLL（仅 Windows/MSVC；沙箱 Linux 跳过）----
 if(WIN32)
-  # ImGuizmo 源文件（依赖 deps/imguizmo，未放置时自动跳过——此时 editor 层需手编）
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/imguizmo/ImGuizmo.cpp")
-    set(POSER_IMGUIZMO_SRC deps/imguizmo/ImGuizmo.cpp)
-  else()
-    set(POSER_IMGUIZMO_SRC "")
-  endif()
+  # ImGuizmo 源文件（deps/imguizmo 随仓库自包含）
+  set(POSER_IMGUIZMO_SRC deps/imguizmo/ImGuizmo.cpp)
+
+  # 主插件 DLL
   add_library(poser SHARED
     src/poser.cpp
     src/config.h
-    src/core/proxy_d3dcompiler.cpp
     src/core/game_hooks.h
     src/core/gui_overlay.h
-    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/ik_driver.h
-    src/editor/gizmo.h src/editor/panel_pose.h
+    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/ik_driver.h src/game/morph.h
+    src/editor/gizmo.h src/editor/panel_pose.h src/editor/panel_library.h src/editor/panel_mode.h src/editor/panel_morph.h src/editor/panel_camera.h
     ${POSER_IMGUIZMO_SRC}
   )
   target_include_directories(poser PRIVATE
-    deps deps/imgui deps/imguizmo deps/minhook/include deps/json deps/stb src)
+    deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src)
   target_compile_definitions(poser PRIVATE
     APPLEPIE_PLUGIN_IMPL _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
-  target_link_libraries(poser PRIVATE d3d11 dxgi d3dcompiler dwmapi ole32)
+  target_link_libraries(poser PRIVATE
+    d3d11 dxgi d3dcompiler dwmapi ole32
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+
+  # 代理 DLL：本地编译 src/core/proxy_d3dcompiler.cpp，不再依赖 EIEM 编译产物
+  add_library(d3dcompiler_47 SHARED src/core/proxy_d3dcompiler.cpp)
+  target_compile_definitions(d3dcompiler_47 PRIVATE _CRT_SECURE_NO_WARNINGS)
+  set_target_properties(d3dcompiler_47 PROPERTIES OUTPUT_NAME "d3dcompiler_47")
+
+  # 部署：把 poser.dll 与 d3dcompiler_47.dll 拷到 plugin/
+  add_custom_command(TARGET poser POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/plugin
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:poser>
+            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/poser.dll
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:d3dcompiler_47>
+            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/d3dcompiler_47.dll)
 endif()
 
-# 数学单测（跨平台，Linux g++ 也可编；每个测试独立可执行）
+# ---- 数学单测（跨平台，Linux g++ 也可编；每个测试独立可执行）----
 function(add_poser_test name src)
   add_executable(${name} ${src} src/math/quat_math.h src/math/ik_two_bone.h src/math/pose_file.h)
   target_include_directories(${name} PRIVATE src deps/json)

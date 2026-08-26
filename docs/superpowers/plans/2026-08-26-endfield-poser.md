@@ -17,7 +17,7 @@
 ## 范围决策（已与用户确认）
 
 - 目标游戏：明日方舟：终末地（复用 EIEM 的 IL2CPP/hook 基建）
-- 形态：独立新项目（本目录 `poser/`），不动 EIEM
+- 形态：独立新项目（本目录 `endfield-poser/`），不动 EIEM，依赖自包含
 - 形态键：面部 BlendShape + 身体 SkeletalMorph 都要
 - 摆姿交互：FK + 2-bone IK + 手指 FK（不需要物理模拟/运动合成）
 - 从骨（头发/配饰/衣角等动态骨骼）：可自由摆姿、**可逐链/逐骨禁用物理**（DynamicBone/Cloth 类组件）、**可锁定**（锁定的骨不受 FK/快照影响）
@@ -29,14 +29,14 @@
 ## 项目结构
 
 ```
-poser/
-├── CMakeLists.txt               # Windows: 插件 DLL；tests: 数学单测（跨平台）
-├── build.bat                    # Windows 一键构建（复制 deps + 产出 plugin/）
+endfield-poser/
+├── CMakeLists.txt               # Windows: 插件 DLL + 代理 DLL；tests: 数学单测（跨平台）
+├── build.bat                    # Windows 一键构建（产出 plugin/）
 ├── plugin/                      # 输出布局（放入游戏目录）
-│   ├── d3dcompiler_47.dll       # 代理 DLL（复制 EIEM 编译产物）
+│   ├── d3dcompiler_47.dll       # 代理 DLL（本地编译自 src/core/proxy_d3dcompiler.cpp）
 │   ├── vulkan-1.dll             # 代理 DLL（可选）
 │   └── poser.dll                # 本插件
-├── deps/                        # 第三方：imgui、imgui_impl_dx11/win32、imguizmo、MinHook、json.hpp、stb_image_write.h
+├── deps/                        # 自包含第三方：imgui、imgui_impl_dx11/win32、imguizmo、minhook_lib、json.hpp、stb_image_write.h
 ├── src/
 │   ├── poser.cpp                # DLL 入口 + Applepie 插件协议 + 版本信息
 │   ├── config.h                 # poser_config.txt 读写、快捷键
@@ -784,7 +784,7 @@ git commit -m "feat(editor): pose operations (reset/tpose/copy/mirror) + library
 
 > 类比 Blender：Pose Mode 里相机保持固定、专注摆角色；也可临时切到相机视角微调取景。两个模式一键互切。
 
-- [ ] **Step 1: 模式状态机**
+- [x] **Step 1: 模式状态机**
 
 ```cpp
 enum class Mode { Pose, Camera };
@@ -792,15 +792,15 @@ static Mode g_mode = Mode::Pose;
 // Pose 模式：相机锁定在当前位置（不响应 WSAD/鼠标转向），鼠标/手柄全用于选骨与摆姿
 // Camera 模式：自由相机接管（WSAD + 鼠标转向 + 滚轮缩放），面板显示 FOV/景深/机位
 ```
-顶栏 `panel_mode.h` 放两个按钮/热键（默认 `Tab` 或配置键）切换，`g_mode` 变化时通知 freeze/相机模块。
+顶栏 `panel_mode.h` 放两个按钮/热键（默认 `Tab` 或配置键）切换，`g_mode` 变化时通知 freeze/相机模块。**已完成**：`src/editor/panel_mode.h` 定义 `PoserMode{Pose,Camera}`/`g_mode`/`DrawModeBar()`（顶栏双按钮 + Tab 边沿触发）、`SetMode()`（切 Camera 记忆机位，切回 Pose 恢复并锁定）。
 
-- [ ] **Step 2: 摆姿模式相机固定**
+- [x] **Step 2: 摆姿模式相机固定**
 
-Pose 模式下每帧 `ApplyFreeCamera` 跳过（相机 transform 不被写），仅在用户显式"解锁镜头"（拖相机 gizmo 或切到 Camera 模式）时才写。切回 Pose 时记忆上次相机位姿。
+Pose 模式下每帧 `ApplyFreeCamera` 跳过（相机 transform 不被写），仅在用户显式"解锁镜头"（拖相机 gizmo 或切到 Camera 模式）时才写。切回 Pose 时记忆上次相机位姿。**已完成**：`ModeFrameTick()` 仅在 `Camera` 或 `Pose&&!g_camLocked` 时调 `ApplyFreeCamera`；Pose 模式默认 `g_camLocked=true`，顶栏提供"锁定镜头"开关；切回 Pose 时 `SetMode` 恢复 `g_camSavedPos/Rot`。
 
-- [ ] **Step 3: Camera 模式角色不动**
+- [x] **Step 3: Camera 模式角色不动**
 
-Camera 模式下 gizmo 隐藏/停用（避免误改骨骼），输入全给相机；角色保持冻结帧姿势。
+Camera 模式下 gizmo 隐藏/停用（避免误改骨骼），输入全给相机；角色保持冻结帧姿势。**已完成**：`panel_pose.h` 的 `DrawPoseGizmoOverlay()` 开头 `if (!InPoseMode()) return;`。
 
 - [ ] **Step 4: `[in-game]` 验证**
 
@@ -823,9 +823,9 @@ git commit -m "feat(editor): pose/camera dual modes with camera lock"
 - Create: `src/game/morph.h`（BlendShape 部分）
 - Modify: `src/editor/panel_morph.h`
 
-- [ ] **Step 1: 枚举并读写 BlendShape**
+- [x] **Step 1: 枚举并读写 BlendShape**
 
-从 `g_charAnimator` 根下找 `SkinnedMeshRenderer`（复用 `{EIEM}` 的 `g_smr_get_sharedMesh`/`g_mesh_get_blendShapeCount`/`g_mesh_GetBlendShapeName`/`g_smr_SetBlendShapeWeight`），枚举全部名称到面板，滑条 0-100 实时 `SetBlendShapeWeight`。冻结态下直接写生效（不受动画覆盖）。
+从 `g_charAnimator` 根下找 `SkinnedMeshRenderer`（复用 `{EIEM}` 的 `g_smr_get_sharedMesh`/`g_mesh_get_blendShapeCount`/`g_mesh_GetBlendShapeName`/`g_smr_SetBlendShapeWeight`），枚举全部名称到面板，滑条 0-100 实时 `SetBlendShapeWeight`。冻结态下直接写生效（不受动画覆盖）。**已完成**：`game_hooks.h` 补 `SkinnedMeshRenderer/Mesh` 方法解析；`src/game/morph.h` 实现 `WalkForBlendShapes()`（递归收集全角色 SMR 的 BlendShape，含原始权重）+ `SetBlendShapeWeight()`/`RestoreBlendShapes()`；`src/editor/panel_morph.h` 按网格分组滑条 + 搜索过滤 + 恢复原始；`poser.cpp` 角色切换时 `RebuildBlendShapes()`、解冻时恢复。
 
 - [ ] **Step 2: `[in-game]` 验证**
 
@@ -877,9 +877,9 @@ git commit -m "feat(morph): skeletal morph panel (body shape)"
 - Create: `src/editor/panel_camera.h`
 - Reference: `{EIEM}/src/camera_control.h`（`ResolveMainCamera`/`CaptureAndDisableCinemachine`/`RestoreCinemachine`）
 
-- [ ] **Step 1: 相机接管**
+- [x] **Step 1: 相机接管**
 
-复用 `camera_control.h` 的接管逻辑：禁用 `CinemachineBrain`，记录原 FOV。新增自由相机模式：WSAD 平移 + 鼠标转向/滚轮缩放（每帧 `ApplyFreeCamera()` 直接写主相机 transform，参照其 `g_nativeSetPos/SetRot` 手法；配合 `Transform` icall 钩子防止游戏覆盖，见 `{EIEM}` `Hook_SetPos` 等）。
+复用 `camera_control.h` 的接管逻辑：禁用 `CinemachineBrain`，记录原 FOV。新增自由相机模式：WSAD 平移 + 鼠标转向/滚轮缩放（每帧 `ApplyFreeCamera()` 直接写主相机 transform，参照其 `g_nativeSetPos/SetRot` 手法；配合 `Transform` icall 钩子防止游戏覆盖，见 `{EIEM}` `Hook_SetPos` 等）。**已完成**：`game_hooks.h` 补 `Transform.set_position/set_rotation` 与 `Camera.set_fieldOfView`；`src/editor/panel_camera.h` 实现 `ResolveMainCamera()`（找主相机 + 枚举 GameObject 组件识别 `CinemachineBrain`）、`CameraTakeover(bool)`（禁用/启用 brain、记录/还原 FOV）；`poser.cpp` 冻结→`CameraTakeover(true)`、解冻→`false`。自由相机移动在 `panel_mode.h` 的 `ApplyFreeCamera()`。
 
 - [ ] **Step 2: `[in-game]` 验证**
 
@@ -894,9 +894,9 @@ git commit -m "feat(photo): free camera with game takeover"
 
 ### Task 5.2：FOV 与景深
 
-- [ ] **Step 1: FOV 滑条**
+- [x] **Step 1: FOV 滑条**
 
-复用 `g_camera_set_fieldOfView`（`{EIEM}` `globals.h`），滑条 20-90°。
+复用 `g_camera_set_fieldOfView`（`{EIEM}` `globals.h`），滑条 20-90°。**已完成**：`panel_camera.h` 的 `DrawCameraPanel()` 提供 FOV 滑条（20-90°，实时写）+ 还原按钮 + 相机速度滑条 + 机位记录/返回。
 
 - [ ] **Step 2: 景深（探针）**
 

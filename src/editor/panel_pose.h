@@ -11,9 +11,14 @@
 #include "game/ik_driver.h"
 #include "math/quat_math.h"
 #include "editor/gizmo.h"
+#include "editor/panel_mode.h"
 
 // 当前选中骨在 s_humanBones 中的下标（-1 = 无）
 static int g_selectedBone = -1;
+
+// 复制/粘贴选中骨缓冲区（Task 3.3）
+static PoseBone g_copyBuffer;
+static bool g_hasCopy = false;
 
 // ---- 骨骼分组（树形展示用）----
 struct BoneGroupDef {
@@ -87,6 +92,35 @@ static void DrawPosePanel() {
     if (g_selectedBone >= 0) {
       // 刷新选中骨 Euler 显示
     }
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("T-Pose"))
+    ApplyTPose();
+  ImGui::SameLine();
+  if (ImGui::SmallButton(u8"\u955c\u50cf L\u2192R"))
+    MirrorPose(true);
+  ImGui::SameLine();
+  if (ImGui::SmallButton(u8"\u955c\u50cf R\u2192L"))
+    MirrorPose(false);
+
+  // 复制/粘贴选中骨
+  ImGui::Spacing();
+  if (g_selectedBone >= 0) {
+    ImGui::PushID("copy1");
+    if (ImGui::SmallButton(u8"\u590d\u5236\u9009\u4e2d\u9aa8")) {
+      BoneHandle &sb = s_humanBones[g_selectedBone];
+      g_copyBuffer.name = sb.name;
+      g_copyBuffer.pos = GetBoneLocalPos(sb.transform);
+      g_copyBuffer.rot = GetBoneLocalRot(sb.transform);
+      g_hasCopy = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(u8"\u7c98\u8d34") && g_hasCopy && !s_humanBones[g_selectedBone].locked) {
+      BoneHandle &db = s_humanBones[g_selectedBone];
+      SetBoneLocalPos(db.transform, g_copyBuffer.pos);
+      SetBoneLocalRot(db.transform, g_copyBuffer.rot);
+    }
+    ImGui::PopID();
   }
 
   ImGui::Separator();
@@ -231,6 +265,8 @@ static bool DrawIkTargetGizmo() {
 
 // ---- 3D 手柄叠加层（在主窗口之外调用，覆盖整个视口）----
 static void DrawPoseGizmoOverlay() {
+  if (!InPoseMode())
+    return; // 镜头模式下隐藏骨骼手柄，避免误改
   if (g_ikActive) {
     DrawIkTargetGizmo(); // IK 模式：手柄拖 IK 目标，骨骼由求解器跟随
     return;

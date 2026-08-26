@@ -81,7 +81,9 @@ static void *g_transform_set_localRotation = nullptr;
 static void *g_transform_get_localPosition = nullptr;
 static void *g_transform_set_localPosition = nullptr;
 static void *g_transform_get_position = nullptr;
+static void *g_transform_set_position = nullptr; // 世界平移（自由相机写）
 static void *g_transform_get_rotation = nullptr; // 世界旋转（gizmo 相机朝向用）
+static void *g_transform_set_rotation = nullptr; // 世界旋转（自由相机写）
 static void *g_transform_get_childCount = nullptr;
 static void *g_transform_GetChild = nullptr;
 static void *g_transform_get_parent = nullptr;
@@ -95,6 +97,13 @@ static void *g_gameObject_GetComponents = nullptr; // GameObject.GetComponents(T
 static void *g_cameraClass = nullptr;     // UnityEngine.Camera（get_main 用）
 static void *g_camera_get_main = nullptr; // Camera.get_main（gizmo 取视锥）
 static void *g_camera_get_fieldOfView = nullptr;
+static void *g_camera_set_fieldOfView = nullptr; // Camera.set_fieldOfView（FOV 滑条）
+static void *g_skinnedMeshRendererClass = nullptr; // UnityEngine.SkinnedMeshRenderer
+static void *g_smr_get_sharedMesh = nullptr;        // get_sharedMesh
+static void *g_smr_GetBlendShapeWeight = nullptr;   // GetBlendShapeWeight(int)
+static void *g_smr_SetBlendShapeWeight = nullptr;   // SetBlendShapeWeight(int,float)
+static void *g_mesh_get_blendShapeCount = nullptr;  // Mesh.get_blendShapeCount
+static void *g_mesh_GetBlendShapeName = nullptr;    // Mesh.GetBlendShapeName(int)
 
 // 动态解析的字段偏移（-1 = 未解析，读时走 SafeOff 回退）
 static int OFF_pcEntity = -1;            // PlayerController -> Entity
@@ -137,7 +146,9 @@ static void ResolveGameApi() {
       g_transform_set_localPosition =
           FindMethod(trClass, "set_localPosition", 1);
       g_transform_get_position = FindMethod(trClass, "get_position", 0);
+      g_transform_set_position = FindMethod(trClass, "set_position", 1);
       g_transform_get_rotation = FindMethod(trClass, "get_rotation", 0);
+      g_transform_set_rotation = FindMethod(trClass, "set_rotation", 1);
       g_transform_get_childCount = FindMethod(trClass, "get_childCount", 0);
       g_transform_GetChild = FindMethod(trClass, "GetChild", 1);
       g_transform_get_parent = FindMethod(trClass, "get_parent", 0);
@@ -166,15 +177,32 @@ static void ResolveGameApi() {
       g_cameraClass = camClass;
       g_camera_get_main = FindMethod(camClass, "get_main", 0);
       g_camera_get_fieldOfView = FindMethod(camClass, "get_fieldOfView", 0);
+      g_camera_set_fieldOfView = FindMethod(camClass, "set_fieldOfView", 1);
+    }
+
+    // Task 4.1：面部/身体 BlendShape 读写
+    void *smrClass = FindClass("UnityEngine", "SkinnedMeshRenderer", asms, ac);
+    if (smrClass) {
+      g_skinnedMeshRendererClass = smrClass;
+      g_smr_get_sharedMesh = FindMethod(smrClass, "get_sharedMesh", 0);
+      g_smr_GetBlendShapeWeight =
+          FindMethod(smrClass, "GetBlendShapeWeight", 1);
+      g_smr_SetBlendShapeWeight =
+          FindMethod(smrClass, "SetBlendShapeWeight", 2);
+    }
+    void *meshClass = FindClass("UnityEngine", "Mesh", asms, ac);
+    if (meshClass) {
+      g_mesh_get_blendShapeCount = FindMethod(meshClass, "get_blendShapeCount", 0);
+      g_mesh_GetBlendShapeName = FindMethod(meshClass, "GetBlendShapeName", 1);
     }
 
     Log("[POSER] Game API resolved: GetBoneTransform=%p set_enabled=%p "
         "SetLocalRot=%p SetLocalPos=%p GetChild=%p GetComponents=%p "
-        "cam_main=%p cam_fov=%p",
+        "cam_main=%p cam_fov=%p smr_setBS=%p",
         g_animator_GetBoneTransform, g_animator_set_enabled,
         g_transform_set_localRotation, g_transform_set_localPosition,
         g_transform_GetChild, g_gameObject_GetComponents,
-        g_camera_get_main, g_camera_get_fieldOfView);
+        g_camera_get_main, g_camera_get_fieldOfView, g_smr_SetBlendShapeWeight);
   } __except (1) {
     Log("[POSER] ResolveGameApi exception");
   }
@@ -434,4 +462,25 @@ static Quat GetBoneWorldRot(void *t) {
   } __except (1) {
   }
   return q;
+}
+
+// ---- 世界空间写（自由相机/IK 目标移动用）----
+static void SetBoneWorldPos(void *t, Vec3 p) {
+  if (!t || !g_transform_set_position)
+    return;
+  __try {
+    void *params[] = {&p};
+    Invoke(g_transform_set_position, t, params);
+  } __except (1) {
+  }
+}
+
+static void SetBoneWorldRot(void *t, Quat q) {
+  if (!t || !g_transform_set_rotation)
+    return;
+  __try {
+    void *params[] = {&q};
+    Invoke(g_transform_set_rotation, t, params);
+  } __except (1) {
+  }
 }
