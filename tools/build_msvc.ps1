@@ -72,7 +72,6 @@ $poserArgs = "$common /DAPPLEPIE_PLUGIN_IMPL $inc /LD " +
   'src\poser.cpp ' +
   'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp ' +
   'deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp ' +
-  'deps\imguizmo\ImGuizmo.cpp ' +
   '/Fe:plugin\poser.dll ' +
   "/link /NODEFAULTLIB:LIBCMT /MAP:plugin\poser.map $sdkLibFlags d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib ole32.lib deps\minhook_lib\lib\libMinHook.x64.lib"
 Invoke-Cl $poserArgs

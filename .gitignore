@@ -11,3 +11,4 @@ deps/winsdkcpp/
 tools/zhipu_api_key.txt
 *.obj
 *.pdb
+__pycache__/

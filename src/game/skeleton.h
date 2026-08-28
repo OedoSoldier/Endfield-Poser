@@ -239,6 +239,7 @@ struct AllBone {
   int parentIdx = -1; // -1 = 根
 };
 static std::vector<AllBone> s_allBones;
+static int s_bonesRev = 0; // 骨骼列表版本号（角色切换重建时 +1，Blender 桥接据此自动刷新）
 
 static void CollectAllBonesRecursive(void *t, void *parent, int depth) {
   if (!t || depth > 64 || s_allBones.size() > 512)
@@ -291,4 +292,5 @@ static void RebuildAllBones() {
     }
   }
   Log("[POSER] All bones rebuilt: %d", (int)s_allBones.size());
+  s_bonesRev++;
 }

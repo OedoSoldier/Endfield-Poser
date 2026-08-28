@@ -76,6 +76,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
   if (path == "/api/status") {
     HttpJson(c, {{"ok", true}, {"frozen", g_frozen},
                  {"bones", s_humanBoneCount},
+                 {"bones_rev", s_bonesRev},
                  {"selected", g_selectedBone}});
     return;
   }
@@ -101,7 +102,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
       }
       arr.push_back(o);
     }
-    HttpJson(c, {{"ok", true}, {"bones", arr}});
+    HttpJson(c, {{"ok", true}, {"rev", s_bonesRev}, {"bones", arr}});
     return;
   }
   if (path == "/api/select") {
@@ -185,9 +186,35 @@ static void HandleRequest(SOCKET c, const std::string &path,
   if (path == "/api/pose") {
     auto j = nlohmann::json::parse(body, nullptr, false);
     if (j.contains("pose")) {
+      int applied = 0;
       for (auto &e : j["pose"]) {
-        int i = e.value("i", -1);
-        if (i < 0 || i >= s_humanBoneCount || s_humanBones[i].locked)
+        if (!e.is_object())
+          continue;
+        void *tr = nullptr;
+        bool locked = false;
+        if (e.contains("n")) {
+          // 按名字匹配全骨骼（Blender 桥接主路径，含手指/配饰）
+          std::string nm = e["n"].get<std::string>();
+          for (size_t k = 0; k < s_allBones.size(); k++) {
+            if (strcmp(s_allBones[k].name, nm.c_str()) == 0) {
+              tr = s_allBones[k].transform;
+              for (int h = 0; h < s_humanBoneCount; h++) {
+                if (strcmp(s_humanBones[h].name, nm.c_str()) == 0) {
+                  locked = s_humanBones[h].locked;
+                  break;
+                }
+              }
+              break;
+            }
+          }
+        } else if (e.contains("i")) {
+          int i = e.value("i", -1);
+          if (i >= 0 && i < s_humanBoneCount) {
+            tr = s_humanBones[i].transform;
+            locked = s_humanBones[i].locked;
+          }
+        }
+        if (!tr || locked)
           continue;
         if (e.contains("q")) {
           Quat q{0, 0, 0, 1};
@@ -198,7 +225,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
             q.z = qq[2].get<float>();
             q.w = qq[3].get<float>();
           }
-          SetBoneLocalRot(s_humanBones[i].transform, NormQ(q));
+          SetBoneLocalRot(tr, NormQ(q));
         }
         if (e.contains("p")) {
           Vec3 p{0, 0, 0};
@@ -208,19 +235,23 @@ static void HandleRequest(SOCKET c, const std::string &path,
             p.y = pp[1].get<float>();
             p.z = pp[2].get<float>();
           }
-          SetBoneLocalPos(s_humanBones[i].transform, p);
+          SetBoneLocalPos(tr, p);
         }
+        applied++;
       }
-      HttpJson(c, {{"ok", true}});
+      HttpJson(c, {{"ok", true}, {"applied", applied}});
       return;
     }
-    // 返回当前姿势（整姿，供 Blender 同步）
+    // 返回当前姿势（整姿，供 Blender 同步）：全骨骼（含手指/配饰），按名匹配
     nlohmann::json arr = nlohmann::json::array();
-    for (int i = 0; i < s_humanBoneCount; i++) {
-      Quat q = GetBoneLocalRot(s_humanBones[i].transform);
-      Vec3 p = GetBoneLocalPos(s_humanBones[i].transform);
-      arr.push_back(
-          {{"i", i}, {"q", {q.x, q.y, q.z, q.w}}, {"p", {p.x, p.y, p.z}}});
+    for (size_t i = 0; i < s_allBones.size(); i++) {
+      if (!s_allBones[i].transform)
+        continue;
+      Quat q = GetBoneLocalRot(s_allBones[i].transform);
+      Vec3 p = GetBoneLocalPos(s_allBones[i].transform);
+      arr.push_back({{"n", s_allBones[i].name},
+                     {"q", {q.x, q.y, q.z, q.w}},
+                     {"p", {p.x, p.y, p.z}}});
     }
     HttpJson(c, {{"ok", true}, {"pose", arr}});
     return;
@@ -311,6 +342,14 @@ static DWORD WINAPI WebServerThread(LPVOID) {
   Log("[WEB] UI server: http://127.0.0.1:%d", g_webPort);
   g_webRunning = true;
   while (g_webRunning) {
+    // 非阻塞 accept：500ms 超时轮询，g_webRunning 置假后可干净退出
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(s, &rfds);
+    timeval tv = {0, 500000};
+    int sel = select(0, &rfds, nullptr, nullptr, &tv);
+    if (sel <= 0)
+      continue;
     SOCKET c = accept(s, nullptr, nullptr);
     if (c == INVALID_SOCKET)
       break;

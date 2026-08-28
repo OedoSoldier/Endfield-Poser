@@ -179,7 +179,31 @@ static void CleanupDeviceD3D() {
 
 static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
                                     LPARAM lParam) {
-  if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+  bool imguiHandled =
+      ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+  // 面板未捕获鼠标时，把鼠标消息转发给游戏窗口：
+  // 覆盖层是全屏置顶窗口，不转发会吞掉游戏 UI/退出按钮的点击（"游戏很难关闭"）。
+  switch (msg) {
+  case WM_MOUSEMOVE:
+  case WM_LBUTTONDOWN:
+  case WM_LBUTTONUP:
+  case WM_LBUTTONDBLCLK:
+  case WM_RBUTTONDOWN:
+  case WM_RBUTTONUP:
+  case WM_RBUTTONDBLCLK:
+  case WM_MBUTTONDOWN:
+  case WM_MBUTTONUP:
+  case WM_MBUTTONDBLCLK:
+  case WM_MOUSEWHEEL:
+  case WM_MOUSEHWHEEL:
+    if (g_gameHwnd && ImGui::GetCurrentContext() &&
+        !ImGui::GetIO().WantCaptureMouse) {
+      SendMessage(g_gameHwnd, msg, wParam, lParam);
+      return 0;
+    }
+    break;
+  }
+  if (imguiHandled)
     return true;
   switch (msg) {
   case WM_SIZE:

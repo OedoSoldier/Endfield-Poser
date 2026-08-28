@@ -14,11 +14,10 @@
 #include "game/freeze.h"
 #include "game/ik_driver.h"
 #include "game/morph.h"
+#include "game/smc_morph.h"
 #include "editor/panel_pose.h"
 #include "editor/panel_library.h"
-#include "editor/panel_mode.h"
 #include "editor/panel_morph.h"
-#include "editor/panel_camera.h"
 #include "config.h"
 #include "core/web_server.h"
 
@@ -92,25 +91,21 @@ void GameFrameTick() {
     RebuildAllBones();
     RebuildAccessories();
       RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
+      ResetSMCState();      // Task 4.2：SMC 表情状态随角色重置
       for (int i = 0; i < kIkChainCount; i++)
         g_ikTargetValidChain[i] = false; // 角色切换 → IK 目标失效，按新末端重建
     }
-    // 冻结态维持：每帧强制 Animator 关闭，防止游戏逻辑重新启用
-    if (g_frozen && g_charAnimator && g_animator_set_enabled) {
-      int v = 0;
-      void *params[] = {&v};
-      Invoke(g_animator_set_enabled, g_charAnimator, params);
-    }
-    // 冻结态下的 IK 写回（Task 3.2）
-    IkFrameTick();
-    // 双模式：Tab 切换 + 按模式驱动相机（Task 3.4）
-    ModeFrameTick();
+    // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
+    MaintainFreeze();
   } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
 }
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
+// 图钉：锁定全部面板窗口位置，防止拖火柴人/滑块时窗口跟着动
+static bool g_pinPanels = true;
+
 void DrawPoserGui() {
   __try { GameFrameTick(); } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
@@ -119,9 +114,13 @@ void DrawPoserGui() {
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
-                   ImGuiWindowFlags_NoCollapse)) {
+                   ImGuiWindowFlags_NoCollapse |
+                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     ImGui::Text("v%s", POSER_VERSION);
-    DrawModeBar(); // 摆姿/镜头双模式切换（Task 3.4）
+    ImGui::SameLine();
+    ImGui::Checkbox(u8"\u56fe\u9489", &g_pinPanels);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u9501\u5b9a\u9762\u677f\u4f4d\u7f6e\uff1a\u62d6\u706b\u67f4\u4eba\u65f6\u7a97\u53e3\u4e0d\u8ddf\u7740\u52a8\uff1b\u53d6\u6d88\u540e\u53ef\u62d6\u6807\u9898\u79fb\u52a8");
     ImGui::Separator();
     ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
     ImGui::Separator();
@@ -129,10 +128,8 @@ void DrawPoserGui() {
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();     // 形态键恢复冻结前原始值
-        CameraTakeover(false);    // 释放相机接管（Task 5.1）
       } else {
         FreezeCharacter();
-        CameraTakeover(true);     // 接管相机，防游戏覆盖（Task 5.1）
       }
     }
     if (!g_frozen)
@@ -145,7 +142,8 @@ void DrawPoserGui() {
   ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_FirstUseEver);
   if (ImGui::Begin(u8"\u59ff\u6001 (FK)", nullptr,
-                   ImGuiWindowFlags_NoCollapse)) {
+                   ImGuiWindowFlags_NoCollapse |
+                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     DrawPosePanel();
   }
   ImGui::End();
@@ -154,7 +152,8 @@ void DrawPoserGui() {
   ImGui::SetNextWindowPos(ImVec2(340, 500), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
   if (ImGui::Begin(u8"\u59ff\u6001\u5e93", nullptr,
-                   ImGuiWindowFlags_NoCollapse)) {
+                   ImGuiWindowFlags_NoCollapse |
+                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     DrawLibraryPanel();
   }
   ImGui::End();
@@ -163,38 +162,24 @@ void DrawPoserGui() {
   ImGui::SetNextWindowPos(ImVec2(680, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 300), ImGuiCond_FirstUseEver);
   if (ImGui::Begin(u8"\u5f62\u6001\u952e", nullptr,
-                   ImGuiWindowFlags_NoCollapse)) {
+                   ImGuiWindowFlags_NoCollapse |
+                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     DrawMorphPanel();
   }
   ImGui::End();
 
-  // 相机面板（接管 / FOV / 机位预设，Task 5.1-5.2）
-  ImGui::SetNextWindowPos(ImVec2(680, 320), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
-  if (ImGui::Begin(u8"\u76f8\u673a", nullptr, ImGuiWindowFlags_NoCollapse)) {
-    DrawCameraPanel();
-  }
-  ImGui::End();
-
-  // 3D 手柄覆盖整个视口
-  DrawPoseGizmoOverlay();
 }
 
 // 外部控制（PostMessage WM_APP+90 触发，绕过反作弊输入拦截）：
-// 0=切换摆姿/镜头模式 1=冻结/解冻 2=T-pose
+// 1=冻结/解冻 2=T-pose
 static void ExtControl(int code) {
   switch (code) {
-  case 0:
-    SetMode(g_mode == PoserMode::Pose ? PoserMode::Camera : PoserMode::Pose);
-    break;
   case 1:
     if (g_frozen) {
       UnfreezeCharacter();
       RestoreBlendShapes();
-      CameraTakeover(false);
     } else {
       FreezeCharacter();
-      CameraTakeover(true);
     }
     break;
   case 2:
@@ -206,7 +191,7 @@ static void ExtControl(int code) {
 }
 
 // 控制文件通道：外部（Codex）往 plugin\poser_control.txt 写命令，每帧执行后清空。
-// 命令：toggle / mode / freeze / tpose / reset
+// 命令：toggle / freeze / tpose / reset
 static void ProcessControlFile() {
   FILE *f = fopen("plugin\\poser_control.txt", "r");
   if (!f)
@@ -221,16 +206,12 @@ static void ProcessControlFile() {
     if (strcmp(line, "toggle") == 0) {
       g_guiVisible = !g_guiVisible;
       Log("[CTRL] file toggle -> %d", (int)g_guiVisible);
-    } else if (strcmp(line, "mode") == 0) {
-      SetMode(g_mode == PoserMode::Pose ? PoserMode::Camera : PoserMode::Pose);
     } else if (strcmp(line, "freeze") == 0) {
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();
-        CameraTakeover(false);
       } else {
         FreezeCharacter();
-        CameraTakeover(true);
       }
     } else if (strcmp(line, "tpose") == 0) {
       ApplyTPose();
@@ -278,6 +259,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     Log("[POSER] WARN: MH_Initialize failed");
   Log("[POSER] IL2CPP resolved. Initializing game hooks.");
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
+  InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）
   Log("[POSER] Starting GUI thread.");
   StartGuiThread();

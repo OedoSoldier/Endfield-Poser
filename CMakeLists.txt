@@ -3,23 +3,31 @@ project(endfield_poser CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# MSVC：源码含 UTF-8 中文注释/字符串，缺 /utf-8 时 GBK 误读会把
+# 行尾字节解析成反斜杠续行符，导致下一行被吞（C2046 等假错误）。
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 # 输出目录统一到 plugin/（与 build.bat 的部署布局一致）
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- 插件 DLL + 代理 DLL（仅 Windows/MSVC；沙箱 Linux 跳过）----
 if(WIN32)
-  # ImGuizmo 源文件（deps/imguizmo 随仓库自包含）
-  set(POSER_IMGUIZMO_SRC deps/imguizmo/ImGuizmo.cpp)
-
   # 主插件 DLL
   add_library(poser SHARED
     src/poser.cpp
     src/config.h
     src/core/game_hooks.h
     src/core/gui_overlay.h
-    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/ik_driver.h src/game/morph.h
-    src/editor/gizmo.h src/editor/panel_pose.h src/editor/panel_library.h src/editor/panel_mode.h src/editor/panel_morph.h src/editor/panel_camera.h
-    ${POSER_IMGUIZMO_SRC}
+    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/ik_driver.h src/game/morph.h src/game/smc_morph.h
+    src/editor/panel_pose.h src/editor/panel_library.h src/editor/panel_morph.h
+    deps/imgui/imgui.cpp
+    deps/imgui/imgui_draw.cpp
+    deps/imgui/imgui_tables.cpp
+    deps/imgui/imgui_widgets.cpp
+    deps/imgui/imgui_impl_dx11.cpp
+    deps/imgui/imgui_impl_win32.cpp
   )
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src)

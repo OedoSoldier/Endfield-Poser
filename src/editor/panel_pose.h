@@ -1,8 +1,8 @@
 #pragma once
 
 // Task 3.1：FK 姿态编辑面板。
-// 结构：按身体部位分组的骨骼树 → 选中骨后可用 3D gizmo 拖拽（gizmo.h）或
-// 三轴 Euler 滑条微调；锁定开关让该骨在姿态操作中不被改写。
+// 结构：顶部工具行（重置/T-Pose/镜像） + 面板骨骼小人（点选中、拖摆姿）
+// + 左右分布的骨骼树/选中骨控制（Euler/位置滑条）。
 // 依赖 skeleton.h 的 s_humanBones[] 与冻结态（freeze.h）。
 
 #include "imgui.h"
@@ -10,8 +10,6 @@
 #include "game/skeleton.h"
 #include "game/ik_driver.h"
 #include "math/quat_math.h"
-#include "editor/gizmo.h"
-#include "editor/panel_mode.h"
 
 // 当前选中骨在 s_humanBones 中的下标（-1 = 无）
 static int g_selectedBone = -1;
@@ -35,10 +33,6 @@ static bool SelectBoneByName(const char *name) {
   }
   return false;
 }
-
-// 复制/粘贴选中骨缓冲区（Task 3.3）
-static PoseBone g_copyBuffer;
-static bool g_hasCopy = false;
 
 // ---- 骨骼分组（树形展示用）----
 struct BoneGroupDef {
@@ -91,6 +85,40 @@ static const char *BoneGroupName(HumanBodyBones b) {
   return u8"\u5176\u4ed6";
 }
 
+// 一次性 IK：以当前末端世界位置为目标，反向求解根/中骨，写完即停。
+// 不做每帧驱动——实时求解是 EIEM 跳舞功能的做法，摆姿场景下会一直抢 FK。
+static void IkSolveChainOnce(int ci) {
+  if (ci < 0 || ci >= kIkChainCount)
+    return;
+  const IkChainDef &ch = kIkChains[ci];
+  void *rootT = GetHumanoidBone(ch.root);
+  void *midT = GetHumanoidBone(ch.mid);
+  void *endT = GetHumanoidBone(ch.end);
+  if (!rootT || !midT || !endT)
+    return;
+  if (IkBoneLocked(ch.root) || IkBoneLocked(ch.mid))
+    return;
+  SolveTwoBoneChain(rootT, midT, endT, GetBoneWorldPos(endT));
+  Log("[POSER] IK one-shot solve: %s", kIkChains[ci].name);
+}
+
+// 返回包含该骨的 IK 链下标（-1 = 无）。四肢链互不重叠，最多命中一条。
+static int IkChainForBone(HumanBodyBones b) {
+  for (int ci = 0; ci < kIkChainCount; ci++) {
+    const IkChainDef &ch = kIkChains[ci];
+    if (ch.root == b || ch.mid == b || ch.end == b)
+      return ci;
+  }
+  return -1;
+}
+
+// 编辑末端骨（手/脚）位置后，一次性反向求解该链的其它骨骼
+static void IkSolveIfEndBone(HumanBodyBones b) {
+  int ch = IkChainForBone(b);
+  if (ch >= 0 && kIkChains[ch].end == b)
+    IkSolveChainOnce(ch);
+}
+
 // ---- 骨骼树 + 选中骨控制 ----
 static void DrawSkeletonSchematic(); // 面板骨骼小人（定义在文件后部）
 
@@ -100,20 +128,9 @@ static void DrawPosePanel() {
     return;
   }
 
-  // 工具行：gizmo 开关 / 操作类型 / 复位
-  ImGui::Checkbox(u8"\u63d0\u793a\u624b\u67c4", &g_gizmoEnabled);
-  ImGui::SameLine();
-  ImGui::RadioButton(u8"\u65cb\u8f6c", (int *)&g_gizmoOp, ImGuizmo::ROTATE);
-  ImGui::SameLine();
-  ImGui::RadioButton(u8"\u79fb\u52a8", (int *)&g_gizmoOp, ImGuizmo::TRANSLATE);
-  ImGui::SameLine();
-  ImGui::RadioButton(u8"\u7f29\u653e", (int *)&g_gizmoOp, ImGuizmo::SCALE);
-  ImGui::SameLine();
+  // 工具行：重置 / T-Pose / 镜像（简化：去掉 gizmo 开关与复制粘贴）
   if (ImGui::SmallButton(u8"\u91cd\u7f6e")) {
     ApplyPoseSnapshot();
-    if (g_selectedBone >= 0) {
-      // 刷新选中骨 Euler 显示
-    }
   }
   ImGui::SameLine();
   if (ImGui::SmallButton("T-Pose"))
@@ -125,55 +142,11 @@ static void DrawPosePanel() {
   if (ImGui::SmallButton(u8"\u955c\u50cf R\u2192L"))
     MirrorPose(false);
 
-  // 复制/粘贴选中骨
-  ImGui::Spacing();
-  if (g_selectedBone >= 0) {
-    ImGui::PushID("copy1");
-    if (ImGui::SmallButton(u8"\u590d\u5236\u9009\u4e2d\u9aa8")) {
-      BoneHandle &sb = s_humanBones[g_selectedBone];
-      g_copyBuffer.name = sb.name;
-      g_copyBuffer.pos = GetBoneLocalPos(sb.transform);
-      g_copyBuffer.rot = GetBoneLocalRot(sb.transform);
-      g_hasCopy = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton(u8"\u7c98\u8d34") && g_hasCopy && !s_humanBones[g_selectedBone].locked) {
-      BoneHandle &db = s_humanBones[g_selectedBone];
-      SetBoneLocalPos(db.transform, g_copyBuffer.pos);
-      SetBoneLocalRot(db.transform, g_copyBuffer.rot);
-    }
-    ImGui::PopID();
-  }
-
   ImGui::Separator();
 
   // 面板骨骼小人：点关节选骨，拖关节摆姿势（正视图，绕世界 Z 旋转）
   DrawSkeletonSchematic();
   ImGui::Separator();
-
-  // ---- IK 编辑（Task 3.2）：链选择 + 开关；IK 模式下 gizmo 拖目标 ----
-  ImGui::TextDisabled(u8"IK \u94fe\uff08\u53ef\u591a\u9009\uff0c\u5f00\u542f\u7684\u94fe\u7531\u6c42\u89e3\u5668\u9a71\u52a8\uff0c\u5176\u4f59 FK\uff09");
-  for (int ci = 0; ci < kIkChainCount; ci++) {
-    bool on = g_ikActiveChain[ci];
-    if (ImGui::Checkbox(kIkChains[ci].name, &on))
-      SetChainIkActive((IkChainId)ci, on);
-    if (ci < kIkChainCount - 1)
-      ImGui::SameLine();
-  }
-  ImGui::Checkbox(u8"\u539f\u751f BipedIK", &g_ikNative);
-  ImGui::SameLine();
-  const char *chainNames[kIkChainCount] = {kIkChains[0].name, kIkChains[1].name,
-                                           kIkChains[2].name, kIkChains[3].name};
-  int chainIdx = (int)g_ikChain;
-  if (ImGui::Combo(u8"\u76ee\u6807\u94fe", &chainIdx, chainNames, kIkChainCount))
-    IkSetChain((IkChainId)chainIdx);
-  if (g_ikActive) {
-    Vec3 t = IkTargetPos();
-    ImGui::TextDisabled(u8"\u76ee\u6807 (%.2f, %.2f, %.2f)", t.x, t.y, t.z);
-    ImGui::SameLine();
-    if (ImGui::SmallButton(u8"\u8fd8\u539f\u76ee\u6807"))
-      IkSetChain(g_ikChain); // 目标回到当前末端位置
-  }
 
   ImGui::Separator();
 
@@ -265,70 +238,23 @@ static void DrawPosePanel() {
   ImGui::Separator();
   ImGui::TextDisabled(u8"\u4f4d\u7f6e");
   Vec3 pos = GetBoneLocalPos(bh.transform);
-  if (ImGui::SliderFloat(u8"X##px", &pos.x, -3.0f, 3.0f, "%.3f"))
+  if (ImGui::SliderFloat(u8"X##px", &pos.x, -3.0f, 3.0f, "%.3f")) {
     if (!bh.locked)
       SetBoneLocalPos(bh.transform, pos);
-  if (ImGui::SliderFloat(u8"Y##py", &pos.y, -3.0f, 3.0f, "%.3f"))
+    IkSolveIfEndBone(bh.humanBone);
+  }
+  if (ImGui::SliderFloat(u8"Y##py", &pos.y, -3.0f, 3.0f, "%.3f")) {
     if (!bh.locked)
       SetBoneLocalPos(bh.transform, pos);
-  if (ImGui::SliderFloat(u8"Z##pz", &pos.z, -3.0f, 3.0f, "%.3f"))
+    IkSolveIfEndBone(bh.humanBone);
+  }
+  if (ImGui::SliderFloat(u8"Z##pz", &pos.z, -3.0f, 3.0f, "%.3f")) {
     if (!bh.locked)
       SetBoneLocalPos(bh.transform, pos);
+    IkSolveIfEndBone(bh.humanBone);
+  }
 
   ImGui::EndChild();
-}
-
-// ---- IK 目标 3D 手柄（IK 模式下替代骨手柄；拖拽改写 g_ikTarget）----
-static bool DrawIkTargetGizmo() {
-  float view[16], proj[16];
-  if (!GetCameraViewProj(view, proj))
-    return false;
-  Vec3 t = IkTargetPos();
-  LogGizmoDiagnostics(view, proj, t, "ik_target");
-  float obj[16], delta[16];
-  Mat4Compose(t, Quat{0, 0, 0, 1}, obj);
-  Mat4Identity(delta);
-
-  ImGuiIO &io = ImGui::GetIO();
-  ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
-  ImGuizmo::SetGizmoSizeClipSpace(g_gizmoSize);
-  bool used = ImGuizmo::Manipulate(view, proj, ImGuizmo::TRANSLATE,
-                                   ImGuizmo::WORLD, obj, delta);
-  if (used) {
-    Vec3 dPos;
-    Quat dRot;
-    Mat4Decompose(delta, dPos, dRot);
-    IkSetTarget(t + dPos);
-  }
-  return used;
-}
-
-// ---- 3D 手柄叠加层（在主窗口之外调用，覆盖整个视口）----
-static void DrawPoseGizmoOverlay() {
-  // 诊断：跳转原因变化时记录一次
-  static int s_lastSkip = -2;
-  int skip = -1;
-  if (!g_gizmoEnabled) skip = 2; // 默认关手柄：滑条直调
-  else if (!InPoseMode()) skip = 0;
-  else if (g_ikActive) skip = 1;
-  else if (g_selectedBone < 0 || g_selectedBone >= s_humanBoneCount) skip = 3;
-  else if (s_humanBones[g_selectedBone].locked) skip = 4;
-  if (skip != s_lastSkip) {
-    s_lastSkip = skip;
-    static const char *kWhy[] = {
-        "not pose mode", "ik active -> ik target gizmo", "gizmo disabled",
-        "no bone selected", "bone locked"};
-    Log("[GIZMO] %s", skip >= 0 ? kWhy[skip] : "drawing");
-  }
-  if (skip == 0)
-    return; // 镜头模式下隐藏骨骼手柄，避免误改
-  if (skip == 1) {
-    DrawIkTargetGizmo(); // IK 模式：手柄拖 IK 目标，骨骼由求解器跟随
-    return;
-  }
-  if (skip == 2 || skip == 3 || skip == 4)
-    return;
-  DrawBoneGizmo(s_humanBones[g_selectedBone].transform);
 }
 
 // 在面板内找某个 transform 对应的骨骼下标（画父-子连线用）
@@ -342,8 +268,9 @@ static int FindTransformIndex(void *t) {
 }
 
 // ---- 面板骨骼小人（2D 正视图）----
-// 点关节 = 选中骨骼；拖关节 = FK 旋转其父骨，让该骨对准鼠标（绕世界 Z 轴，面板平面内）。
-// 完全绕开游戏相机矩阵/手柄投影问题。
+// 仅用于选择：点关节选中骨骼（再点取消）；拖拽摆姿已移除（绕世界 Z 转父骨的
+// 逻辑与四元数/欧拉换算不可靠），FK 用右侧滑条，IK 在编辑末端骨位置时一次性解算。
+// 关节颜色：黄=选中，红=锁定，蓝=普通。
 static void DrawSkeletonSchematic() {
   if (s_humanBoneCount <= 0) {
     ImGui::TextDisabled(u8"\u672a\u6355\u83b7\u89d2\u8272\u9aa8\u9abc");
@@ -396,29 +323,9 @@ static void DrawSkeletonSchematic() {
     }
   }
 
-  // 拖拽旋转（FK）：拖第 i 关节点 → 旋转其父骨，让 骨i 对准鼠标
-  static int s_dragBone = -1;
   ImVec2 mouse = ImGui::GetIO().MousePos;
-  bool mouseDown = ImGui::IsMouseDown(0);
-  if (mouseDown && s_dragBone >= 0 && s_dragBone < s_humanBoneCount) {
-    void *t = s_humanBones[s_dragBone].transform;
-    void *parent =
-        g_transform_get_parent ? Invoke(g_transform_get_parent, t) : nullptr;
-    if (parent && !s_humanBones[s_dragBone].locked) {
-      Vec3 pj = GetBoneWorldPos(t);
-      Vec3 pp = GetBoneWorldPos(parent);
-      // 鼠标 → 世界 XY（面板平面 = 世界 XY，视图轴 +Z）
-      float wx = midX + (mouse.x - (origin.x + w * 0.5f)) / sc;
-      float wy = midY - (mouse.y - (origin.y + kH * 0.5f)) / sc;
-      float curA = atan2f(pj.y - pp.y, pj.x - pp.x);
-      float tgtA = atan2f(wy - pp.y, wx - pp.x);
-      float da = tgtA - curA;
-      if (fabsf(da) > 1e-4f)
-        ApplyWorldRotDelta(parent, Quat::AxisAngle(Vec3{0, 0, 1}, da));
-    }
-  }
 
-  // 关节点 + 点击选中
+  // 关节点 + 点击选中（再点取消）
   for (int i = 0; i < s_humanBoneCount && i < 64; i++) {
     ImVec2 c = To2D(wpos[i]);
     bool sel = (i == g_selectedBone);
@@ -426,16 +333,11 @@ static void DrawSkeletonSchematic() {
                     : (s_humanBones[i].locked ? IM_COL32(255, 90, 90, 255)
                                               : IM_COL32(120, 200, 255, 255));
     dl->AddCircleFilled(c, sel ? 5.0f : 3.5f, col);
-    float d = fabsf(mouse.x - c.x) + fabsf(mouse.y - c.y);
-    if (ImGui::IsMouseClicked(0) && d < 10.0f) {
-      g_selectedBone = i;
-      s_dragBone = i;
-    }
-    if (ImGui::IsMouseReleased(0) && s_dragBone == i)
-      s_dragBone = -1;
+    float dx = mouse.x - c.x, dy = mouse.y - c.y;
+    float d = sqrtf(dx * dx + dy * dy);
+    if (ImGui::IsMouseClicked(0) && d < 10.0f)
+      g_selectedBone = sel ? -1 : i;
   }
-  if (!mouseDown)
-    s_dragBone = -1;
 
   ImGui::Dummy(ImVec2(w, kH));
 }

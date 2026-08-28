@@ -18,6 +18,114 @@
 static bool g_frozen = false;
 static bool g_animatorWasEnabled = true;
 
+// ---- FinalIK / 游戏 IK 组件抑制（参照 {EIEM} trojan.h 采集逻辑，AGPL-3.0）----
+// 冻结时把角色根上会写骨骼的 IK/动画组件一并禁用，解冻恢复。
+#define POSER_MAX_IK_COMPS 8
+static void *s_ikBiped[POSER_MAX_IK_COMPS];
+static int s_ikBipedCount = 0;
+static void *s_ikGrounder[POSER_MAX_IK_COMPS];
+static int s_ikGrounderCount = 0;
+static void *s_ikLookAt[POSER_MAX_IK_COMPS];
+static int s_ikLookAtCount = 0;
+static void *s_ikDamper[4];
+static int s_ikDamperCount = 0;
+static void *s_animatorMono = nullptr;
+
+// 递归采集：遍历角色整个 Transform 层级，按类名收集会写骨骼的组件
+static void CollectIKOnTransform(void *t, int depth) {
+  if (!t || depth > 6)
+    return;
+  __try {
+    if (g_component_get_gameObject && g_gameObject_GetComponents &&
+        g_componentClass) {
+      void *go = Invoke(g_component_get_gameObject, t);
+      if (go) {
+        void *type = il2cpp_class_get_type(g_componentClass);
+        void *typeObj = type ? il2cpp_type_get_object(type) : nullptr;
+        if (typeObj) {
+          void *args[] = {typeObj};
+          void *arr = Invoke(g_gameObject_GetComponents, go, args);
+          if (arr) {
+            int cnt = *(int *)((char *)arr + IL2CPP_ARRAY_LEN);
+            void **data = (void **)((char *)arr + IL2CPP_ARRAY_DATA);
+            for (int i = 0; i < cnt; i++) {
+              if (!data[i])
+                continue;
+              void *cls = il2cpp_object_get_class(data[i]);
+              const char *cn = cls ? il2cpp_class_get_name(cls) : "";
+              if (!cn)
+                continue;
+              if (strcmp(cn, "BipedIK") == 0 &&
+                  s_ikBipedCount < POSER_MAX_IK_COMPS)
+                s_ikBiped[s_ikBipedCount++] = data[i];
+              else if (strcmp(cn, "GrounderBipedIK") == 0 &&
+                       s_ikGrounderCount < POSER_MAX_IK_COMPS)
+                s_ikGrounder[s_ikGrounderCount++] = data[i];
+              else if (strcmp(cn, "LookAtComponent") == 0 &&
+                       s_ikLookAtCount < POSER_MAX_IK_COMPS)
+                s_ikLookAt[s_ikLookAtCount++] = data[i];
+              else if (strcmp(cn, "TransformFollowDamper") == 0 &&
+                       s_ikDamperCount < 4)
+                s_ikDamper[s_ikDamperCount++] = data[i];
+              else if (strcmp(cn, "AnimatorMono") == 0)
+                s_animatorMono = data[i];
+            }
+          }
+        }
+      }
+    }
+    // 子节点
+    if (g_transform_get_childCount && g_transform_GetChild) {
+      void *cntBoxed = Invoke(g_transform_get_childCount, t);
+      int cnt = cntBoxed ? *(int *)((char *)cntBoxed + 16) : 0;
+      for (int i = 0; i < cnt; i++) {
+        void *params[] = {&i};
+        void *ch = Invoke(g_transform_GetChild, t, params);
+        if (ch)
+          CollectIKOnTransform(ch, depth + 1);
+      }
+    }
+  } __except (1) {
+  }
+}
+
+static void CollectIKComponents() {
+  s_ikBipedCount = s_ikGrounderCount = s_ikLookAtCount = s_ikDamperCount = 0;
+  s_animatorMono = nullptr;
+  void *rootT = GetCharRootTransform();
+  if (!rootT)
+    return;
+  CollectIKOnTransform(rootT, 0);
+  Log("[POSER] IK comps: biped=%d grounder=%d lookAt=%d damper=%d mono=%p",
+      s_ikBipedCount, s_ikGrounderCount, s_ikLookAtCount, s_ikDamperCount,
+      s_animatorMono);
+}
+
+static void SetIKComponentsEnabled(bool on) {
+  if (!g_animator_set_enabled)
+    return;
+  int v = on ? 1 : 0;
+  void *params[] = {&v};
+  auto Apply = [&](void *c) {
+    if (!c)
+      return;
+    __try {
+      Invoke(g_animator_set_enabled, c, params);
+    } __except (1) {
+    }
+  };
+  for (int i = 0; i < s_ikBipedCount; i++)
+    Apply(s_ikBiped[i]);
+  for (int i = 0; i < s_ikGrounderCount; i++)
+    Apply(s_ikGrounder[i]);
+  for (int i = 0; i < s_ikLookAtCount; i++)
+    Apply(s_ikLookAt[i]);
+  for (int i = 0; i < s_ikDamperCount; i++)
+    Apply(s_ikDamper[i]);
+  Apply(s_animatorMono);
+  Log("[POSER] IK components %s", on ? "restored" : "disabled");
+}
+
 static bool AnimatorIsEnabled() {
   if (!g_charAnimator || !g_animator_get_enabled)
     return true;
@@ -37,11 +145,44 @@ static bool AnimatorIsEnabled() {
 //   - SkeletalMorphCore.Update（写 m_allMorphBoneDirty=false 跳过）→ Task 4.2
 //   - 角色 ParticleSystem.Pause → 可选
 static void SuppressPoseWriters() {
-  SetAllPhysicsEnabled(false); // 从骨物理关闭：物理不再每帧写骨
+  // 只禁用会写 Humanoid 肢体的 IK/动画组件（回弹根源）；
+  // 从骨/布料物理保持开启（头发裙摆继续结算），它们不写人体骨骼。
+  CollectIKComponents();         // 先采集角色身上的 FinalIK/动画组件
+  SetIKComponentsEnabled(false); // 再禁用：BipedIK/Grounder/LookAt/Damper 等
 }
 
 static void RestorePoseWriters() {
-  SetAllPhysicsEnabled(true); // 解冻恢复从骨物理
+  SetIKComponentsEnabled(true);
+}
+
+// 每帧维持冻结：游戏常会重新启用 Animator/动画组件/IK 组件，
+// 只在冻结瞬间关一次不够（"四肢一改就回弹"的根源）。逐帧强制关闭全部写者。
+static void MaintainFreeze() {
+  if (!g_frozen)
+    return;
+  if (g_animator_set_enabled) {
+    int v = 0;
+    void *params[] = {&v};
+    auto Disable = [&](void *c) {
+      if (!c)
+        return;
+      __try {
+        Invoke(g_animator_set_enabled, c, params);
+      } __except (1) {
+      }
+    };
+    Disable(g_charAnimator);
+    Disable(g_charAnimComp);
+    for (int i = 0; i < s_ikBipedCount; i++)
+      Disable(s_ikBiped[i]);
+    for (int i = 0; i < s_ikGrounderCount; i++)
+      Disable(s_ikGrounder[i]);
+    for (int i = 0; i < s_ikLookAtCount; i++)
+      Disable(s_ikLookAt[i]);
+    for (int i = 0; i < s_ikDamperCount; i++)
+      Disable(s_ikDamper[i]);
+    Disable(s_animatorMono);
+  }
 }
 
 static void FreezeCharacter() {
@@ -69,7 +210,9 @@ static void FreezeCharacter() {
   // 2. 固化当前帧姿势为编辑基线（含从骨）
   PinCurrentPose();
   CaptureAccessorySnapshot();
-  // 3. 不冻结从骨物理/布料：让头发/裙摆继续模拟，自然垂坠在摆好的姿势上。
+  // 3. 抑制其余骨骼写者：FinalIK/Grounder/LookAt/Damper + 从骨物理。
+  //    （之前这个调用缺失，导致四肢一直被游戏 IK 写回、一改就弹回去）
+  SuppressPoseWriters();
   g_frozen = true;
   Log("[POSER] Frozen (animator was enabled=%d)", g_animatorWasEnabled ? 1 : 0);
 }
@@ -95,6 +238,8 @@ static void UnfreezeCharacter() {
     } __except (1) {
     }
   }
+  // 恢复 IK/物理写者（在动画重新驱动之后，避免布料卡在冻结姿态）
+  RestorePoseWriters();
   g_frozen = false;
   Log("[POSER] Unfrozen");
 }

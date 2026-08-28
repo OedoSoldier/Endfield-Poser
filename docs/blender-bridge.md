@@ -72,13 +72,16 @@ B_rot = R_x(-90°) * U_rot     # 旋转（四元数）
 
 ## 里程碑
 
-- [ ] M1：Blender 插件骨架——连接、建臂、rest 对齐（验证坐标换算）
-- [ ] M2：单向 游戏→Blender 姿势导入（在 Blender 里看到游戏当前姿势）
-- [ ] M3：单向 Blender→游戏 导出（在 Blender 摆姿势，游戏角色跟着动，冻结态）
+- [x] M1：Blender 插件骨架——连接、建臂、rest 对齐（`tools/blender/endfield_poser_bridge/`，
+      已在 Blender 5.2.0 LTS 实测注册通过）
+- [x] M2：单向 游戏→Blender 姿势导入（在 Blender 里看到游戏当前姿势）
+- [x] M3：单向 Blender→游戏 导出（在 Blender 摆姿势，游戏角色跟着动，冻结态）
 - [ ] M4：体验打磨——自动同步开关、骨骼命名过滤、镜像、关键帧可选
 
 ## 现状备注
 
 - 已部署 build（04:52）含 web 线程 IL2CPP 附加修复（不再 abort）+ 桥接 API。
+- Blender 5.2 LTS 插件：`tools/blender/endfield_poser_bridge/`（N 面板 Endfield 分类，
+  连接/双向同步/自动同步；游戏侧 `/api/pose` 已返回骨骼名供按名映射）。
 - Web UI（http://127.0.0.1:18923）仍可用作兜底/快速查看。
 - 游戏内 HUD 已不必要（隐藏时冻结维持照常跑）。
