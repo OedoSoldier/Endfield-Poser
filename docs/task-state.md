@@ -25,6 +25,16 @@
 3. **写回**：`sync_to_game` 只导出蒙皮骨（游戏骨骼）最终姿态，控制骨不写回；现有 delta 换算逻辑保留。
 4. **验证**：无头测试仿照 `tests/mike_pose_probe.py`：切 IK/FK 看蒙皮骨是否跟随正确；再复制到腿 + snap 操作符 + 面板按钮。
 
+## 二·五、游戏侧补一个"简易旋转盘"（用户新需求，未开始）
+
+用户要求游戏内也保留一个简单摆姿入口：
+
+- 冻结后角色上**直接渲染骨骼**（叠加层，git 历史 `a28d143^` 的 `DrawWorldBonesOverlay` 可恢复）；
+- **点击骨骼选中**（屏幕空间最近关节/线段拾取，简单版即可）；
+- 选中骨上出现 **UE 风格旋转盘**（ImGuizmo ROTATE 或自绘圆环；`deps/imguizmo` 仍在，但 `ImGuizmo.cpp` 需加回 CMake 源）；
+- 拖动旋转盘 = FK 旋转该骨（localRotation 写回），仅冻结态可用；
+- 与 Blender 控制 Rig 并存：这只是快捷 FK 入口，数据仍走 `/api/pose`。
+
 ## 三、环境备忘
 
 - Blender 锁定 **5.2 LTS**（插件已实测；ARP manifest 无上限版本）。
