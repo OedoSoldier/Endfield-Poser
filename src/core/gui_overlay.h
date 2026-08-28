@@ -7,10 +7,12 @@
 #include <dxgi1_2.h>
 #include <dwmapi.h>
 #include <dcomp.h>
+#include <imm.h>
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "dcomp.lib")
+#pragma comment(lib, "imm32.lib")
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -240,7 +242,6 @@ static DWORD WINAPI GuiThread(LPVOID) {
     Log("[GUI] No game hwnd, GUI thread exits");
     return 0;
   }
-
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
   wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -258,6 +259,8 @@ static DWORD WINAPI GuiThread(LPVOID) {
       wc.lpszClassName, L"EndfieldPoserOverlay", WS_POPUP,
       gr.left, gr.top, gr.right - gr.left, gr.bottom - gr.top,
       nullptr, nullptr, wc.hInstance, nullptr);
+  // 覆盖层窗口不关联 IME：避免面板获得输入法上下文、一按键盘就弹输入法
+  ImmAssociateContext(g_guiHwnd, (HIMC)nullptr);
 
   // DComp 合成在游戏刚启动时可能暂不可用（0x887A0001），重试几次
   bool d3dOk = false;
@@ -279,7 +282,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
   io.IniFilename = nullptr;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // 关键盘导航，避免输入框被自动聚焦
   io.MouseDrawCursor = false;
   ImGui::StyleColorsDark();
   ImGuiStyle &style = ImGui::GetStyle();
@@ -346,15 +349,14 @@ static DWORD WINAPI GuiThread(LPVOID) {
     bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd);
     if (shouldShow) {
       if (!s_panelShown) {
-        // 面板模式：覆盖层激活并持有焦点（鼠标键盘都归面板，游戏不响应）
         SetWindowPos(g_guiHwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         ShowWindow(g_guiHwnd, SW_SHOWNOACTIVATE);
-        LONG_PTR ex = GetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE);
-        SetForegroundWindow(g_guiHwnd);
         s_panelShown = true;
       }
+      // 覆盖层永不抢焦点（WS_EX_NOACTIVATE 常驻）：键盘永远归游戏。
+      // 不为输入框临时激活覆盖层——任何情况都不抢焦点、不弹输入法。
+      // 文字输入（如姿态命名）走 WebUI，浏览器输入不依赖窗口焦点。
       // 跟随游戏窗口位置/尺寸（游戏全屏/切窗口后覆盖层仍贴合）
       RECT gr, ow;
       GetWindowRect(g_gameHwnd, &gr);
@@ -370,11 +372,6 @@ static DWORD WINAPI GuiThread(LPVOID) {
       SetWindowPos(g_guiHwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
       ShowWindow(g_guiHwnd, SW_HIDE);
-      // 恢复 NOACTIVATE 并把焦点还给游戏（游戏完全恢复控制）
-      LONG_PTR ex = GetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE);
-      SetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
-      if (GetForegroundWindow() == g_guiHwnd)
-        SetForegroundWindow(g_gameHwnd);
       s_panelShown = false;
     }
     if (!s_panelShown) {

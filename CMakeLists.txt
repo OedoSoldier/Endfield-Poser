@@ -28,6 +28,7 @@ if(WIN32)
     deps/imgui/imgui_widgets.cpp
     deps/imgui/imgui_impl_dx11.cpp
     deps/imgui/imgui_impl_win32.cpp
+    deps/imguizmo/ImGuizmo.cpp
   )
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src)

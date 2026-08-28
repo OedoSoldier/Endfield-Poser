@@ -92,6 +92,7 @@ static void *g_transform_GetChild = nullptr;
 static void *g_transform_get_parent = nullptr;
 static void *g_object_get_name = nullptr;
 static void *g_component_get_transform = nullptr;
+static void *g_object_FindObjectOfType = nullptr; // Object.FindObjectOfType(Type)
 static void *g_component_get_gameObject = nullptr;
 static void *g_componentClass = nullptr; // UnityEngine.Component（GetComponents(Type) 用）
 static void *g_gameObjectClass = nullptr; // UnityEngine.GameObject
@@ -160,8 +161,13 @@ static void ResolveGameApi() {
     }
 
     void *objClass = FindClass("UnityEngine", "Object", asms, ac);
-    if (objClass)
+    if (objClass) {
       g_object_get_name = FindMethod(objClass, "get_name", 0);
+      g_object_FindObjectOfType = FindMethod(objClass, "FindObjectOfType", 1);
+      if (!g_object_FindObjectOfType)
+        g_object_FindObjectOfType =
+            FindMethod(objClass, "FindFirstObjectByType", 1);
+    }
 
     void *compClass = FindClass("UnityEngine", "Component", asms, ac);
     if (compClass) {
@@ -187,8 +193,9 @@ static void ResolveGameApi() {
           FindMethod(camClass, "get_worldToCameraMatrix", 0);
       g_camera_get_projectionMatrix =
           FindMethod(camClass, "get_projectionMatrix", 0);
-      Log("[POSER] Camera: wtc=%p proj=%p", g_camera_get_worldToCameraMatrix,
-          g_camera_get_projectionMatrix);
+      Log("[POSER] Camera: class=%p get_main=%p wtc=%p proj=%p findOfType=%p",
+          camClass, g_camera_get_main, g_camera_get_worldToCameraMatrix,
+          g_camera_get_projectionMatrix, g_object_FindObjectOfType);
     }
 
     // Task 4.1：面部/身体 BlendShape 读写

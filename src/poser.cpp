@@ -15,9 +15,14 @@
 #include "game/morph.h"
 #include "game/smc_morph.h"
 #include "editor/selection.h"
+#include "editor/rig_gizmo.h"
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "config.h"
+
+// 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
+static void RefreshCharacterBones();
+
 #include "core/web_server.h"
 
 // ---- Applepie 插件协议（与 {EIEM}/src/applepie_mgr.h 一致）----
@@ -95,7 +100,8 @@ static bool CursorVisible() {
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 void GameFrameTick() {
   __try {
-    // 光标管理：面板显示时解锁鼠标（方便拖面板），隐藏时恢复锁定
+    // 光标管理：面板显示时隐藏 Unity 光标、由 ImGui 画唯一光标（避免双光标）；
+    // 隐藏时恢复游戏原始光标状态（锁定/隐藏）。
     static bool s_cursorManaged = false;
     if (g_guiVisible) {
       if (!s_cursorManaged) {
@@ -112,10 +118,11 @@ void GameFrameTick() {
           Invoke(g_cursor_set_lockState, nullptr, p0);
         }
         if (g_cursor_set_visible) {
-          int v1 = 1;
+          int v1 = 0; // 隐藏 Unity 光标，避免和覆盖层光标形成"双光标"
           void *p1[] = {&v1};
           Invoke(g_cursor_set_visible, nullptr, p1);
         }
+        ImGui::GetIO().MouseDrawCursor = true; // 覆盖层绘制唯一光标
         s_cursorManaged = true;
         // 释放游戏窗口可能持有的鼠标捕获，否则点击会被游戏窗口截走，
         // 覆盖层（ImGui 面板）收不到鼠标消息。
@@ -123,6 +130,7 @@ void GameFrameTick() {
         ReleaseCapture();
       }
     } else if (s_cursorManaged) {
+      ImGui::GetIO().MouseDrawCursor = false;
       if (g_cursor_set_lockState) {
         int v = s_origLockState;
         void *p[] = {&v};
@@ -175,6 +183,20 @@ void GameFrameTick() {
   }
 }
 
+// 手动刷新：重跑角色骨骼/从骨/形态键重建链（某些场景无法切换角色时用）
+static void RefreshCharacterBones() {
+  if (!g_charAnimator)
+    TryCaptureFromPlayerController();
+  g_charChanged = false;
+  RebuildHumanBones();
+  RebuildAllBones();
+  RebuildAccessories();
+  RebuildBlendShapes();
+  ResetSMCState();
+  ResetSkirtState();
+  Log("[POSER] Manual bone refresh: human=%d", s_humanBoneCount);
+}
+
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
 // 图钉：锁定全部面板窗口位置，防止拖火柴人/滑块时窗口跟着动
 static bool g_pinPanels = true;
@@ -183,6 +205,8 @@ void DrawPoserGui() {
   __try { GameFrameTick(); } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
+  DrawSkeletonOverlay();
+  HandleRigClick();
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
@@ -196,6 +220,14 @@ void DrawPoserGui() {
     ImGui::Separator();
     ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
     ImGui::Separator();
+    ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
+    ImGui::SameLine();
+    ImGui::TextDisabled(
+        g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount
+            ? s_humanBones[g_selectedBone].name
+            : u8"\u672a\u9009\u4e2d");
+    ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
+    ImGui::Separator();
     if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
       Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",
           (int)g_frozen, g_charAnimator, s_humanBoneCount);
@@ -206,6 +238,9 @@ void DrawPoserGui() {
         FreezeCharacter();
       }
     }
+    ImGui::SameLine();
+    if (ImGui::Button(u8"\u5237\u65b0\u9aa8\u9abc")) // 刷新骨骼
+      RefreshCharacterBones();
     bool accPrev = g_freezeAccessories;
     ImGui::Checkbox(u8"\u51bb\u7ed3\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1",
                     &g_freezeAccessories);
@@ -220,11 +255,39 @@ void DrawPoserGui() {
         SetAllPhysicsEnabled(true);
       }
     }
-    if (!g_frozen)
-      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
-                         u8"\u8bf7\u5148\u51bb\u7ed3\u89d2\u8272\u518d\u6446\u59ff");
+    // 位置微调：仅 spine(root)=Hips 选中时显示（整体位移；冻结态直接写回）
+    if (g_frozen && g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount &&
+        s_humanBones[g_selectedBone].humanBone == Hips &&
+        s_humanBones[g_selectedBone].transform) {
+      void *pt = s_humanBones[g_selectedBone].transform;
+      Vec3 lp = GetBoneLocalPos(pt);
+      float vx = lp.x, vy = lp.y, vz = lp.z;
+      bool changed = false;
+      changed |= ImGui::SliderFloat(u8"##px", &vx, -5.0f, 5.0f, "X %.2f");
+      changed |= ImGui::SliderFloat(u8"##py", &vy, -5.0f, 5.0f, "Y %.2f");
+      changed |= ImGui::SliderFloat(u8"##pz", &vz, -5.0f, 5.0f, "Z %.2f");
+      if (changed)
+        SetBoneLocalPos(pt, Vec3{vx, vy, vz});
+    }
   }
   ImGui::End();
+
+  // 旋转盘：全屏无交互窗口内绘制，避免被小窗口裁剪
+  {
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    if (ImGui::Begin(u8"##rig_gizmo_layer", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoInputs)) {
+      DrawBoneRotationGizmo();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+  }
 
   // 姿态预设库（独立窗口）
   ImGui::SetNextWindowPos(ImVec2(340, 500), ImGuiCond_FirstUseEver);

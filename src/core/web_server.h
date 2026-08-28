@@ -147,6 +147,11 @@ static void HandleRequest(SOCKET c, const std::string &path,
     HttpJson(c, {{"ok", true}});
     return;
   }
+  if (path == "/api/refresh") {
+    RefreshCharacterBones();
+    HttpJson(c, {{"ok", true}, {"bones", s_humanBoneCount}});
+    return;
+  }
   if (path == "/api/reset") {
     ApplyPoseSnapshot();
     HttpJson(c, {{"ok", true}});
