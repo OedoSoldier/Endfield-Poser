@@ -67,6 +67,7 @@ static const char *HumanBoneName(int b) {
 
 // ---- 全局状态 ----
 static void *g_playerController = nullptr;
+static void *g_pcClass = nullptr; // PlayerController 类（实例补捞用）
 static void *g_mainCharEntity = nullptr;
 static void *g_charAnimator = nullptr;
 static void *g_charAnimComp = nullptr; // Entity 上的 ComplexAnimationComponent（冻结时一并禁用）
@@ -110,6 +111,8 @@ static void *g_mesh_get_blendShapeCount = nullptr;  // Mesh.get_blendShapeCount
 static void *g_mesh_GetBlendShapeName = nullptr;    // Mesh.GetBlendShapeName(int)
 static void *g_cursor_set_lockState = nullptr;      // Cursor.set_lockState(enum)
 static void *g_cursor_set_visible = nullptr;        // Cursor.set_visible(bool)
+static void *g_cursor_get_lockState = nullptr;      // Cursor.get_lockState
+static void *g_cursor_get_visible = nullptr;        // Cursor.get_visible
 
 // 动态解析的字段偏移（-1 = 未解析，读时走 SafeOff 回退）
 static int OFF_pcEntity = -1;            // PlayerController -> Entity
@@ -209,8 +212,11 @@ static void ResolveGameApi() {
     if (cursorClass) {
       g_cursor_set_lockState = FindMethod(cursorClass, "set_lockState", 1);
       g_cursor_set_visible = FindMethod(cursorClass, "set_visible", 1);
-      Log("[POSER] Cursor: set_lockState=%p set_visible=%p",
-          g_cursor_set_lockState, g_cursor_set_visible);
+      g_cursor_get_lockState = FindMethod(cursorClass, "get_lockState", 0);
+      g_cursor_get_visible = FindMethod(cursorClass, "get_visible", 0);
+      Log("[POSER] Cursor: set_lock=%p set_vis=%p get_lock=%p get_vis=%p",
+          g_cursor_set_lockState, g_cursor_set_visible, g_cursor_get_lockState,
+          g_cursor_get_visible);
     }
 
     Log("[POSER] Game API resolved: GetBoneTransform=%p set_enabled=%p "
@@ -306,7 +312,70 @@ static void SetCharacterEntity(void *entity) {
 }
 
 // 插件加载时游戏可能已就绪：直接从 PlayerController 捞一次当前角色
+// 在层级里找指定名字的静态字段（返回 FieldInfo*，非偏移）
+static void *FindStaticFieldInfo(void *klass, const char *name) {
+  if (!klass || !il2cpp_class_get_parent)
+    return nullptr;
+  void *cur = klass;
+  int depth = 0;
+  while (cur && depth < 10) {
+    void *it = nullptr, *f;
+    while ((f = il2cpp_class_get_fields(cur, &it))) {
+      const char *fn = il2cpp_field_get_name(f);
+      if (!fn || strcmp(fn, name) != 0)
+        continue;
+      int flags = il2cpp_field_get_flags(f);
+      if (flags & 0x10) // FIELD_ATTRIBUTE_STATIC
+        return f;
+    }
+    cur = il2cpp_class_get_parent(cur);
+    depth++;
+  }
+  return nullptr;
+}
+
+// 独立解析 PlayerController 单例（不依赖 SetMainCharacter hook）：
+// 1) 静态字段 instance/m_instance/_instance/s_Instance
+// 2) 静态属性 get_Instance
+static void *FindPlayerControllerInstance() {
+  if (!g_pcClass)
+    return nullptr;
+  __try {
+    const char *names[] = {"instance", "m_instance", "_instance", "s_Instance"};
+    for (int i = 0; i < 4; i++) {
+      void *fi = FindStaticFieldInfo(g_pcClass, names[i]);
+      if (!fi)
+        continue;
+      void *obj = nullptr;
+      il2cpp_field_static_get_value(fi, &obj);
+      if (obj) {
+        Log("[POSER] PlayerController via static field '%s': %p", names[i],
+            obj);
+        return obj;
+      }
+    }
+    void *m = FindMethodInHierarchy(g_pcClass, "get_Instance", 0);
+    if (!m)
+      m = FindMethodInHierarchy(g_pcClass, "get_instance", 0);
+    if (m) {
+      void *exc = nullptr;
+      void *obj = il2cpp_runtime_invoke(m, nullptr, nullptr, &exc);
+      if (obj && !exc) {
+        Log("[POSER] PlayerController via get_Instance: %p", obj);
+        return obj;
+      }
+    }
+  } __except (1) {
+  }
+  return nullptr;
+}
+
 static void TryCaptureFromPlayerController() {
+  if (!g_playerController) {
+    g_playerController = FindPlayerControllerInstance();
+    if (g_playerController)
+      Log("[POSER] Resolved PlayerController: %p", g_playerController);
+  }
   if (!g_playerController || OFF_pcEntity < 0)
     return;
   __try {
@@ -332,6 +401,7 @@ static void InstallSetMainCharacterHook() {
       Log("[POSER] WARN: PlayerController class not found");
       return;
     }
+    g_pcClass = pcClass;
 
     const char *entNames[] = {"mainCharacter", "m_entity", "_entity",
                               "m_mainCharacter", "entity",

@@ -12,10 +12,9 @@
 #include "game/skeleton.h"
 #include "game/accessory.h"
 #include "game/freeze.h"
-#include "game/ik_driver.h"
 #include "game/morph.h"
 #include "game/smc_morph.h"
-#include "editor/panel_pose.h"
+#include "editor/selection.h"
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "config.h"
@@ -66,23 +65,98 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
+// ---- 光标状态：首次打开面板时记录游戏原始值，关闭时原样恢复 ----
+static bool s_cursorStateSaved = false;
+static int s_origLockState = 0;
+static bool s_origVisible = true;
+
+static int CursorLockState() {
+  if (!g_cursor_get_lockState)
+    return 0;
+  __try {
+    void *boxed = Invoke(g_cursor_get_lockState, nullptr);
+    return boxed ? *(int *)((char *)boxed + 16) : 0;
+  } __except (1) {
+    return 0;
+  }
+}
+
+static bool CursorVisible() {
+  if (!g_cursor_get_visible)
+    return true;
+  __try {
+    void *boxed = Invoke(g_cursor_get_visible, nullptr);
+    return boxed ? *(bool *)((char *)boxed + 16) : true;
+  } __except (1) {
+    return true;
+  }
+}
+
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 void GameFrameTick() {
   __try {
     // 光标管理：面板显示时解锁鼠标（方便拖面板），隐藏时恢复锁定
     static bool s_cursorManaged = false;
     if (g_guiVisible) {
-      if (!s_cursorManaged && g_cursor_set_lockState && g_cursor_set_visible) {
-        int v0 = 0; void *p0[] = {&v0};
-        Invoke(g_cursor_set_lockState, nullptr, p0);
-        int v1 = 1; void *p1[] = {&v1};
-        Invoke(g_cursor_set_visible, nullptr, p1);
+      if (!s_cursorManaged) {
+        if (!s_cursorStateSaved) {
+          s_origLockState = CursorLockState();
+          s_origVisible = CursorVisible();
+          s_cursorStateSaved = true;
+          Log("[POSER] Cursor saved: lock=%d visible=%d", s_origLockState,
+              (int)s_origVisible);
+        }
+        if (g_cursor_set_lockState) {
+          int v0 = 0;
+          void *p0[] = {&v0};
+          Invoke(g_cursor_set_lockState, nullptr, p0);
+        }
+        if (g_cursor_set_visible) {
+          int v1 = 1;
+          void *p1[] = {&v1};
+          Invoke(g_cursor_set_visible, nullptr, p1);
+        }
         s_cursorManaged = true;
+        // 释放游戏窗口可能持有的鼠标捕获，否则点击会被游戏窗口截走，
+        // 覆盖层（ImGui 面板）收不到鼠标消息。
+        SetCapture(nullptr);
+        ReleaseCapture();
       }
     } else if (s_cursorManaged) {
-      int v = 1; void *p[] = {&v};
-      Invoke(g_cursor_set_lockState, nullptr, p);
+      if (g_cursor_set_lockState) {
+        int v = s_origLockState;
+        void *p[] = {&v};
+        Invoke(g_cursor_set_lockState, nullptr, p);
+      }
+      if (g_cursor_set_visible) {
+        int v = s_origVisible ? 1 : 0;
+        void *p[] = {&v};
+        Invoke(g_cursor_set_visible, nullptr, p);
+      }
       s_cursorManaged = false;
+      Log("[POSER] Cursor restored: lock=%d visible=%d", s_origLockState,
+          (int)s_origVisible);
+    }
+    // 角色捕获自愈：SetMainCharacter hook 漏触发/时机错过时，
+    // 周期性从 PlayerController 补捞当前角色（约每 2 秒一次）。
+    static int s_captureRetry = 0;
+    if (!g_charAnimator) {
+      if (++s_captureRetry >= 60) {
+        s_captureRetry = 0;
+        TryCaptureFromPlayerController();
+      }
+    } else {
+      s_captureRetry = 0;
+    }
+    // 冻结热键 F9：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）
+    if (GetAsyncKeyState(VK_F9) & 1) {
+      Log("[CTRL] F9 hotkey -> toggle freeze");
+      if (g_frozen) {
+        UnfreezeCharacter();
+        RestoreBlendShapes();
+      } else {
+        FreezeCharacter();
+      }
     }
     // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
     if (g_charChanged) {
@@ -92,8 +166,7 @@ void GameFrameTick() {
     RebuildAccessories();
       RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
       ResetSMCState();      // Task 4.2：SMC 表情状态随角色重置
-      for (int i = 0; i < kIkChainCount; i++)
-        g_ikTargetValidChain[i] = false; // 角色切换 → IK 目标失效，按新末端重建
+      ResetSkirtState();    // 裙子碰撞：清空旧角色布料采集
     }
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
@@ -110,7 +183,6 @@ void DrawPoserGui() {
   __try { GameFrameTick(); } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
-
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
@@ -125,6 +197,8 @@ void DrawPoserGui() {
     ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
     ImGui::Separator();
     if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
+      Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",
+          (int)g_frozen, g_charAnimator, s_humanBoneCount);
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();     // 形态键恢复冻结前原始值
@@ -132,19 +206,23 @@ void DrawPoserGui() {
         FreezeCharacter();
       }
     }
+    bool accPrev = g_freezeAccessories;
+    ImGui::Checkbox(u8"\u51bb\u7ed3\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1",
+                    &g_freezeAccessories);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u5173\uff1a\u51bb\u7ed3\u540e\u4ece\u9aa8\u4fdd\u6301\u5b9e\u65f6\u6f14\u7b97\uff1b\u52fe\u9009\u540e\u8fde\u540c\u4e00\u8d77\u51bb\u7ed3");
+    if (g_frozen && accPrev != g_freezeAccessories) {
+      if (g_freezeAccessories) {
+        if (s_accessoryChains.empty())
+          RebuildAccessories();
+        SetAllPhysicsEnabled(false);
+      } else {
+        SetAllPhysicsEnabled(true);
+      }
+    }
     if (!g_frozen)
       ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
                          u8"\u8bf7\u5148\u51bb\u7ed3\u89d2\u8272\u518d\u6446\u59ff");
-  }
-  ImGui::End();
-
-  // 姿态编辑面板（独立窗口，可拖到一侧）
-  ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_FirstUseEver);
-  if (ImGui::Begin(u8"\u59ff\u6001 (FK)", nullptr,
-                   ImGuiWindowFlags_NoCollapse |
-                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
-    DrawPosePanel();
   }
   ImGui::End();
 

@@ -12,11 +12,14 @@
 // 因为 Animator 已关，姿势自然稳定。
 
 #include "game/accessory.h"
+#include "game/cloth.h"
 
 #include <cstring>
 
 static bool g_frozen = false;
 static bool g_animatorWasEnabled = true;
+// 冻结选项：勾选后连飘带/裙子/头发等从骨一起冻结；默认关 = 从骨保持实时演算。
+static bool g_freezeAccessories = false;
 
 // ---- FinalIK / 游戏 IK 组件抑制（参照 {EIEM} trojan.h 采集逻辑，AGPL-3.0）----
 // 冻结时把角色根上会写骨骼的 IK/动画组件一并禁用，解冻恢复。
@@ -160,6 +163,7 @@ static void RestorePoseWriters() {
 static void MaintainFreeze() {
   if (!g_frozen)
     return;
+  SkirtTick();
   if (g_animator_set_enabled) {
     int v = 0;
     void *params[] = {&v};
@@ -183,9 +187,13 @@ static void MaintainFreeze() {
       Disable(s_ikDamper[i]);
     Disable(s_animatorMono);
   }
+  if (g_freezeAccessories)
+    MaintainAccessoryPhysicsFreeze();
 }
 
 static void FreezeCharacter() {
+  Log("[POSER] FreezeCharacter called: animator=%p frozen=%d",
+      g_charAnimator, (int)g_frozen);
   if (!g_charAnimator || g_frozen)
     return;
   // 1. 记录并关闭 Animator
@@ -210,9 +218,19 @@ static void FreezeCharacter() {
   // 2. 固化当前帧姿势为编辑基线（含从骨）
   PinCurrentPose();
   CaptureAccessorySnapshot();
+  Log("[POSER] Freeze: pose pinned");
   // 3. 抑制其余骨骼写者：FinalIK/Grounder/LookAt/Damper + 从骨物理。
   //    （之前这个调用缺失，导致四肢一直被游戏 IK 写回、一改就弹回去）
   SuppressPoseWriters();
+  Log("[POSER] Freeze: writers suppressed");
+  SkirtBegin();
+  Log("[POSER] Freeze: skirt begin");
+  if (g_freezeAccessories) {
+    if (s_accessoryChains.empty())
+      RebuildAccessories();
+    SetAllPhysicsEnabled(false);
+    Log("[POSER] Freeze: accessory physics disabled (option ON)");
+  }
   g_frozen = true;
   Log("[POSER] Frozen (animator was enabled=%d)", g_animatorWasEnabled ? 1 : 0);
 }
@@ -240,6 +258,11 @@ static void UnfreezeCharacter() {
   }
   // 恢复 IK/物理写者（在动画重新驱动之后，避免布料卡在冻结姿态）
   RestorePoseWriters();
+  if (g_freezeAccessories) {
+    SetAllPhysicsEnabled(true);
+    Log("[POSER] Freeze: accessory physics restored (option ON)");
+  }
+  RestoreSkirtColliders();
   g_frozen = false;
   Log("[POSER] Unfrozen");
 }

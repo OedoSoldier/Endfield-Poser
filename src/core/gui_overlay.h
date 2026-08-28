@@ -181,27 +181,13 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
                                     LPARAM lParam) {
   bool imguiHandled =
       ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-  // 面板未捕获鼠标时，把鼠标消息转发给游戏窗口：
-  // 覆盖层是全屏置顶窗口，不转发会吞掉游戏 UI/退出按钮的点击（"游戏很难关闭"）。
-  switch (msg) {
-  case WM_MOUSEMOVE:
-  case WM_LBUTTONDOWN:
-  case WM_LBUTTONUP:
-  case WM_LBUTTONDBLCLK:
-  case WM_RBUTTONDOWN:
-  case WM_RBUTTONUP:
-  case WM_RBUTTONDBLCLK:
-  case WM_MBUTTONDOWN:
-  case WM_MBUTTONUP:
-  case WM_MBUTTONDBLCLK:
-  case WM_MOUSEWHEEL:
-  case WM_MOUSEHWHEEL:
-    if (g_gameHwnd && ImGui::GetCurrentContext() &&
-        !ImGui::GetIO().WantCaptureMouse) {
-      SendMessage(g_gameHwnd, msg, wParam, lParam);
-      return 0;
-    }
-    break;
+  if (msg == WM_LBUTTONDOWN) {
+    POINT p = {(short)LOWORD(lParam), (short)HIWORD(lParam)};
+    ImGuiIO &dio = ImGui::GetIO();
+    Log("[MOUSE] overlay LBUTTONDOWN (%d,%d) capture=%p fg=%p wantCap=%d "
+        "mousePos=(%.0f,%.0f)",
+        p.x, p.y, GetCapture(), (void *)GetForegroundWindow(),
+        (int)dio.WantCaptureMouse, dio.MousePos.x, dio.MousePos.y);
   }
   if (imguiHandled)
     return true;
@@ -265,6 +251,8 @@ static DWORD WINAPI GuiThread(LPVOID) {
 
   RECT gr;
   GetWindowRect(g_gameHwnd, &gr);
+  // WS_EX_NOACTIVATE：点击面板不抢游戏焦点（否则游戏失焦暂停、点击失效）。
+  // 文字输入由主循环临时取消该标志并激活覆盖层（见下），输入完恢复。
   g_guiHwnd = CreateWindowExW(
       WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
       wc.lpszClassName, L"EndfieldPoserOverlay", WS_POPUP,
@@ -358,9 +346,13 @@ static DWORD WINAPI GuiThread(LPVOID) {
     bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd);
     if (shouldShow) {
       if (!s_panelShown) {
+        // 面板模式：覆盖层激活并持有焦点（鼠标键盘都归面板，游戏不响应）
         SetWindowPos(g_guiHwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         ShowWindow(g_guiHwnd, SW_SHOWNOACTIVATE);
+        LONG_PTR ex = GetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE);
+        SetForegroundWindow(g_guiHwnd);
         s_panelShown = true;
       }
       // 跟随游戏窗口位置/尺寸（游戏全屏/切窗口后覆盖层仍贴合）
@@ -378,6 +370,11 @@ static DWORD WINAPI GuiThread(LPVOID) {
       SetWindowPos(g_guiHwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
       ShowWindow(g_guiHwnd, SW_HIDE);
+      // 恢复 NOACTIVATE 并把焦点还给游戏（游戏完全恢复控制）
+      LONG_PTR ex = GetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE);
+      SetWindowLongPtrW(g_guiHwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
+      if (GetForegroundWindow() == g_guiHwnd)
+        SetForegroundWindow(g_gameHwnd);
       s_panelShown = false;
     }
     if (!s_panelShown) {

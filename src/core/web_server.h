@@ -15,7 +15,8 @@
 #include "config.h"
 #include "game/skeleton.h"
 #include "game/freeze.h"
-#include "editor/panel_pose.h"
+#include "math/pose_file.h"
+#include "editor/selection.h"
 
 static int g_webPort = 18923;
 static volatile bool g_webRunning = false;
@@ -77,7 +78,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
     HttpJson(c, {{"ok", true}, {"frozen", g_frozen},
                  {"bones", s_humanBoneCount},
                  {"bones_rev", s_bonesRev},
-                 {"selected", g_selectedBone}});
+                 {"selected", g_selectedBone},
+                 {"freeze_accessories", g_freezeAccessories}});
     return;
   }
   if (path == "/api/bones") {
@@ -115,6 +117,19 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if (path == "/api/freeze") {
     auto j = nlohmann::json::parse(body, nullptr, false);
+    bool acc = j.value("accessories", g_freezeAccessories);
+    if (acc != g_freezeAccessories) {
+      g_freezeAccessories = acc;
+      if (g_frozen) {
+        if (acc) {
+          if (s_accessoryChains.empty())
+            RebuildAccessories();
+          SetAllPhysicsEnabled(false);
+        } else {
+          SetAllPhysicsEnabled(true);
+        }
+      }
+    }
     bool on = j.value("on", !g_frozen);
     if (on) {
       if (!g_frozen)
@@ -123,7 +138,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
       if (g_frozen)
         UnfreezeCharacter();
     }
-    HttpJson(c, {{"ok", true}, {"frozen", g_frozen}});
+    HttpJson(c, {{"ok", true}, {"frozen", g_frozen},
+                 {"freeze_accessories", g_freezeAccessories}});
     return;
   }
   if (path == "/api/tpose") {
@@ -278,6 +294,94 @@ static void HandleRequest(SOCKET c, const std::string &path,
     HttpJson(c, {{"ok", true}});
     return;
   }
+  // ---- 姿态预设库（WebUI 文字输入保存/载入，绕开游戏输入拦截）----
+  if (path == "/api/poses") {
+    nlohmann::json arr = nlohmann::json::array();
+    CreateDirectoryA(g_defaultPoseDir, nullptr);
+    std::string pat = std::string(g_defaultPoseDir) + "\\*.poser.json";
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat.c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+      do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+          std::string fn = fd.cFileName;
+          size_t dot = fn.rfind(".poser.json");
+          if (dot != std::string::npos)
+            fn = fn.substr(0, dot);
+          arr.push_back(fn);
+        }
+      } while (FindNextFileA(h, &fd));
+      FindClose(h);
+    }
+    HttpJson(c, {{"ok", true}, {"poses", arr}});
+    return;
+  }
+  if (path == "/api/poses/save") {
+    auto j = nlohmann::json::parse(body, nullptr, false);
+    std::string name = j.value("name", "");
+    bool bad = name.empty() || name.size() > 64;
+    for (char ch : name)
+      if (strchr("\\/:*?\"<>|", ch)) { bad = true; break; }
+    if (!bad && s_humanBoneCount > 0) {
+      CreateDirectoryA(g_defaultPoseDir, nullptr);
+      PoseDoc doc = CapturePoseDoc(name.c_str());
+      std::string json = PoseToJson(doc);
+      std::string path = std::string(g_defaultPoseDir) + "\\" + name + ".poser.json";
+      FILE *f = nullptr;
+      if (fopen_s(&f, path.c_str(), "wb") == 0 && f) {
+        fwrite(json.data(), 1, json.size(), f);
+        fclose(f);
+        HttpJson(c, {{"ok", true}});
+        return;
+      }
+    }
+    HttpJson(c, {{"ok", false}, {"err", "save failed"}});
+    return;
+  }
+  if (path == "/api/poses/load") {
+    auto j = nlohmann::json::parse(body, nullptr, false);
+    std::string name = j.value("name", "");
+    bool bad = name.empty();
+    for (char ch : name)
+      if (strchr("\\/:*?\"<>|", ch)) { bad = true; break; }
+    if (!bad) {
+      std::string path = std::string(g_defaultPoseDir) + "\\" + name + ".poser.json";
+      FILE *f = nullptr;
+      if (fopen_s(&f, path.c_str(), "rb") == 0 && f) {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        std::string text(sz > 0 ? sz : 0, '\0');
+        if (sz > 0)
+          fread(&text[0], 1, (size_t)sz, f);
+        fclose(f);
+        try {
+          PoseDoc doc = PoseFromJson(text);
+          ApplyPoseDoc(doc);
+          HttpJson(c, {{"ok", true}});
+          return;
+        } catch (...) {
+        }
+      }
+    }
+    HttpJson(c, {{"ok", false}, {"err", "load failed"}});
+    return;
+  }
+  if (path == "/api/poses/delete") {
+    auto j = nlohmann::json::parse(body, nullptr, false);
+    std::string name = j.value("name", "");
+    bool bad = name.empty();
+    for (char ch : name)
+      if (strchr("\\/:*?\"<>|", ch)) { bad = true; break; }
+    if (!bad) {
+      std::string path = std::string(g_defaultPoseDir) + "\\" + name + ".poser.json";
+      DeleteFileA(path.c_str());
+      HttpJson(c, {{"ok", true}});
+      return;
+    }
+    HttpJson(c, {{"ok", false}});
+    return;
+  }
   HttpJson(c, {{"ok", false}, {"err", "unknown api"}});
 }
 
@@ -388,6 +492,10 @@ label{display:block;margin-top:8px;font-size:12px;color:#aaa}
 <div id="side">
   <h1>Endfield Poser</h1>
   <div><button id="btnFreeze">冻结</button><button id="btnTpose">T-Pose</button><button id="btnReset">复位</button></div>
+  <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#aaa"><input type="checkbox" id="chkAcc"> 冻结飘带/裙子/头发（默认不冻结）</label>
+  <label style="margin-top:12px">姿态名</label>
+  <div style="display:flex;gap:4px"><input type="text" id="poseName" style="flex:1" placeholder="输入姿态名保存"><button id="btnSavePose">保存</button></div>
+  <div id="poseList" style="font-size:12px;margin-top:6px"></div>
   <div style="font-size:12px;margin-top:6px" id="status">连接中...</div>
   <div id="boneInfo" style="font-size:12px;color:#bbb;margin-top:6px">未选中骨骼</div>
   <label>旋转 X</label><div class="sl"><input type="range" id="rx" min="-180" max="180" step="0.5" value="0"><span id="rxv">0</span></div>
@@ -413,6 +521,7 @@ async function refresh(){
     bones=d.bones||[];
     const s=await (await fetch(API+'/api/status')).json();
     frozen=s.frozen;selected=s.selected;
+    document.getElementById('chkAcc').checked=!!s.freeze_accessories;
     document.getElementById('status').textContent=(frozen?'已冻结':'未冻结')+' | 骨骼 '+s.bones+' | 选中 '+(selected>=0?bones[selected]?.name:'无');
     draw();
   }catch(e){document.getElementById('status').textContent='未连接';}
@@ -480,6 +589,7 @@ function slider(id,axis){
   });
 }
 slider('rx',0);slider('ry',1);slider('rz',2);
+document.getElementById('chkAcc').addEventListener('change',e=>{post('/api/freeze',{on:frozen,accessories:e.target.checked});});
 function posSlider(id,key){
   const el=document.getElementById(id),lab=document.getElementById(id+'v');
   let base=0;
@@ -491,6 +601,32 @@ function posSlider(id,key){
   });
 }
 posSlider('px','x');posSlider('py','y');posSlider('pz','z');
+async function refreshPoses(){
+  try{
+    const r=await fetch(API+'/api/poses');const d=await r.json();
+    const box=document.getElementById('poseList');
+    box.innerHTML='';
+    (d.poses||[]).forEach(n=>{
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;gap:4px;align-items:center;margin-top:2px';
+      const span=document.createElement('span');
+      span.style.cssText='flex:1;color:#ccc';span.textContent=n;
+      const lb=document.createElement('button');
+      lb.textContent='载入';lb.style.cssText='padding:2px 6px';
+      lb.onclick=()=>post('/api/poses/load',{name:n}).then(()=>refresh());
+      const db=document.createElement('button');
+      db.textContent='删';db.style.cssText='padding:2px 6px';
+      db.onclick=()=>post('/api/poses/delete',{name:n}).then(()=>refreshPoses());
+      row.appendChild(span);row.appendChild(lb);row.appendChild(db);
+      box.appendChild(row);
+    });
+  }catch(e){}
+}
+document.getElementById('btnSavePose').addEventListener('click',()=>{
+  const n=document.getElementById('poseName').value.trim();
+  if(n)post('/api/poses/save',{name:n}).then(()=>refreshPoses());
+});
+refreshPoses();
 document.getElementById('btnFreeze').onclick=async()=>{
   const r=await post('/api/freeze',{on:!frozen});
   frozen=r.frozen;

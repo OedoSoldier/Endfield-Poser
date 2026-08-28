@@ -6,6 +6,7 @@
 
 #include "imgui.h"
 #include "core/game_hooks.h"
+#include "config.h"
 #include "game/skeleton.h"
 #include "math/pose_file.h"
 
@@ -13,7 +14,6 @@
 #include <string>
 #include <vector>
 
-static const char *kPoseDir = "plugin\\poses";
 static std::vector<std::string> g_poseFiles;
 static int g_selectedPose = -1;
 static char g_poseName[128] = "";
@@ -22,8 +22,8 @@ static char g_poseStatus[256] = "";
 static void RefreshPoseList() {
   g_poseFiles.clear();
   g_selectedPose = -1;
-  CreateDirectoryA(kPoseDir, nullptr);
-  std::string pat = std::string(kPoseDir) + "\\*.poser.json";
+  CreateDirectoryA(g_defaultPoseDir, nullptr);
+  std::string pat = std::string(g_defaultPoseDir) + "\\*.poser.json";
   WIN32_FIND_DATAA fd;
   HANDLE h = FindFirstFileA(pat.c_str(), &fd);
   if (h == INVALID_HANDLE_VALUE)
@@ -36,7 +36,7 @@ static void RefreshPoseList() {
 }
 
 static std::string PoseFilePath(int idx) {
-  return std::string(kPoseDir) + "\\" + g_poseFiles[idx];
+  return std::string(g_defaultPoseDir) + "\\" + g_poseFiles[idx];
 }
 
 static void SavePoseToFile(const char *name) {
@@ -47,7 +47,7 @@ static void SavePoseToFile(const char *name) {
   }
   PoseDoc doc = CapturePoseDoc(name);
   std::string json = PoseToJson(doc);
-  std::string path = std::string(kPoseDir) + "\\" + name + ".poser.json";
+  std::string path = std::string(g_defaultPoseDir) + "\\" + name + ".poser.json";
   FILE *f = nullptr;
   if (fopen_s(&f, path.c_str(), "wb") == 0 && f) {
     fwrite(json.data(), 1, json.size(), f);

@@ -9,7 +9,23 @@ void Log(const char *fmt, ...);
 
 static int g_guiToggleVK = VK_INSERT;   // 呼出/隐藏 GUI
 static int g_screenshotVK = VK_F8;      // 截图
-static char g_defaultPoseDir[MAX_PATH] = "plugin\\poses";
+static char g_defaultPoseDir[MAX_PATH] = "";
+
+// Default pose dir: prefer deriving from poser.dll location (...\plugin\poses)
+// so presets work regardless of the game's working directory.
+// poser_config.txt can override with default_pose_dir=<path>.
+static void ResolveDefaultPoseDir() {
+  HMODULE m = GetModuleHandleA("poser.dll");
+  char p[MAX_PATH] = {};
+  if (m && GetModuleFileNameA(m, p, MAX_PATH)) {
+    char *slash = strrchr(p, '\\');
+    if (slash)
+      *slash = 0;
+    snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "%s\\poses", p);
+    return;
+  }
+  snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "plugin\\poses");
+}
 
 static int ParseVK(const char *s, int fallback) {
   if (!s || !*s) return fallback;
@@ -50,6 +66,7 @@ static void StripBom(char *line) {
 }
 
 static bool LoadPoserConfig() {
+  ResolveDefaultPoseDir();
   FILE *f = fopen("plugin\\poser_config.txt", "r");
   if (!f) return false;
   char line[512];
@@ -68,8 +85,30 @@ static bool LoadPoserConfig() {
 
     if (strcmp(key, "gui_toggle_key") == 0)       g_guiToggleVK = ParseVK(val, VK_INSERT);
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
-    else if (strcmp(key, "default_pose_dir") == 0)
-      snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "%s", val);
+    else if (strcmp(key, "default_pose_dir") == 0) {
+      if (val[0] == '\0') {
+        ResolveDefaultPoseDir();
+      } else if (val[1] == ':' ||
+                 (val[0] == '\\' && val[1] == '\\')) {
+        snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "%s", val);
+      } else {
+        // 相对路径按游戏根目录（poser.dll 的上一级）解析，不依赖工作目录
+        HMODULE m = GetModuleHandleA("poser.dll");
+        char base[MAX_PATH] = {};
+        if (m && GetModuleFileNameA(m, base, MAX_PATH)) {
+          char *s = strrchr(base, '\\');
+          if (s)
+            *s = 0; // ...\plugin
+          s = strrchr(base, '\\');
+          if (s)
+            *s = 0; // game root
+          snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "%s\\%s", base,
+                   val);
+        } else {
+          snprintf(g_defaultPoseDir, sizeof(g_defaultPoseDir), "%s", val);
+        }
+      }
+    }
   }
   fclose(f);
   Log("[CFG] gui_toggle_key=%d (0x%X) screenshot_key=%d",

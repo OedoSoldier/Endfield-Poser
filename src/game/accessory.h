@@ -191,7 +191,7 @@ static void RebuildAccessories() {
 }
 
 // ---- 物理开关 ----
-static void SetPhysicsEnabled(int chainId, bool enabled) {
+static void SetPhysicsEnabled(int chainId, bool enabled, bool quiet = false) {
   if (chainId < 0 || chainId >= (int)s_accessoryChains.size())
     return;
   AccessoryChain &c = s_accessoryChains[chainId];
@@ -209,12 +209,36 @@ static void SetPhysicsEnabled(int chainId, bool enabled) {
       }
     }
   }
-  Log("[POSER] Chain '%s' physics=%s", c.name, enabled ? "ON" : "OFF");
+  if (!quiet)
+    Log("[POSER] Chain '%s' physics=%s", c.name, enabled ? "ON" : "OFF");
 }
 
-static void SetAllPhysicsEnabled(bool enabled) {
+static void SetAllPhysicsEnabled(bool enabled, bool quiet = false) {
   for (int i = 0; i < (int)s_accessoryChains.size(); i++)
-    SetPhysicsEnabled(i, enabled);
+    SetPhysicsEnabled(i, enabled, quiet);
+}
+
+// 每帧维持：勾选"冻结飘带/裙子/头发"时反复禁用从骨物理组件，
+// 防止游戏重新启用（同 MaintainFreeze 的思路，安静版不刷日志）。
+static void MaintainAccessoryPhysicsFreeze() {
+  if (!g_animator_set_enabled)
+    return;
+  for (int i = 0; i < (int)s_accessoryChains.size(); i++) {
+    AccessoryChain &c = s_accessoryChains[i];
+    for (int bidx : c.bones) {
+      AccessoryBone &b = s_accessoryBones[bidx];
+      for (void *comp : b.physicsComps) {
+        if (!comp)
+          continue;
+        __try {
+          int v = 0;
+          void *params[] = {&v};
+          Invoke(g_animator_set_enabled, comp, params);
+        } __except (1) {
+        }
+      }
+    }
+  }
 }
 
 // ---- 锁定（钉在当前姿势；恢复/FK/镜像跳过）----
