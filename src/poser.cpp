@@ -147,11 +147,20 @@ void GameFrameTick() {
     }
     // 角色捕获自愈：SetMainCharacter hook 漏触发/时机错过时，
     // 周期性从 PlayerController 补捞当前角色（约每 2 秒一次）。
+    // 骨骼数为 0 也要补捞：角色切换/场景变化后 g_charAnimator 可能残留
+    // 失效指针（非空），此时重建出来是 0 根骨，必须强制重新捕获。
     static int s_captureRetry = 0;
-    if (!g_charAnimator) {
+    if (!g_charAnimator || s_humanBoneCount == 0) {
       if (++s_captureRetry >= 60) {
         s_captureRetry = 0;
         TryCaptureFromPlayerController();
+        // 实体/动画器未变化但骨骼仍为 0：强制重建一次，等角色恢复后接上
+        if (s_humanBoneCount == 0) {
+          RebuildHumanBones();
+          RebuildAllBones();
+          Log("[POSER] Re-capture retry: animator=%p bones=%d",
+              g_charAnimator, s_humanBoneCount);
+        }
       }
     } else {
       s_captureRetry = 0;
@@ -185,7 +194,7 @@ void GameFrameTick() {
 
 // 手动刷新：重跑角色骨骼/从骨/形态键重建链（某些场景无法切换角色时用）
 static void RefreshCharacterBones() {
-  if (!g_charAnimator)
+  if (!g_charAnimator || s_humanBoneCount == 0)
     TryCaptureFromPlayerController();
   g_charChanged = false;
   RebuildHumanBones();
@@ -203,10 +212,18 @@ static bool g_pinPanels = true;
 
 void DrawPoserGui() {
   __try { GameFrameTick(); } __except (1) {
-    Log("[POSER] GameFrameTick SEH exception caught");
+    Log("[POSER] GameFrameTick exception code=0x%X", GetExceptionCode());
   }
-  DrawSkeletonOverlay();
-  HandleRigClick();
+  __try {
+    DrawSkeletonOverlay();
+  } __except (1) {
+    Log("[POSER] DrawSkeletonOverlay exception code=0x%X", GetExceptionCode());
+  }
+  __try {
+    HandleRigClick();
+  } __except (1) {
+    Log("[POSER] HandleRigClick exception code=0x%X", GetExceptionCode());
+  }
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
@@ -283,7 +300,12 @@ void DrawPoserGui() {
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoInputs)) {
-      DrawBoneRotationGizmo();
+      __try {
+        DrawBoneRotationGizmo();
+      } __except (1) {
+        Log("[POSER] DrawBoneRotationGizmo exception code=0x%X",
+            GetExceptionCode());
+      }
     }
     ImGui::End();
     ImGui::PopStyleVar();

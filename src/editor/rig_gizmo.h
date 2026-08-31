@@ -345,46 +345,35 @@ static void DrawSkeletonOverlay() {
                     : (s_humanBones[i].locked ? IM_COL32(255, 90, 90, 255)
                                               : IM_COL32(120, 200, 255, 255));
     dl->AddCircleFilled(ImVec2(sx, sy), sel ? 6.0f : 4.0f, col);
+    if (sel)
+      dl->AddCircle(ImVec2(sx, sy), 9.0f, IM_COL32(255, 220, 80, 255), 0,
+                    2.0f);
     if (g_jointCount < kMaxJointCache) {
       g_jointSx[g_jointCount] = sx;
       g_jointSy[g_jointCount] = sy;
       g_jointCount++;
     }
   }
-  // 悬停高亮：冻结态下光标附近的关节画白色外圈，提示可点击
-  if (g_frozen) {
-    ImGuiIO &io = ImGui::GetIO();
-    int hover = -1;
-    float hd = 18.0f;
-    for (int i = 0; i < g_jointCount; i++) {
-      float dx = g_jointSx[i] - io.MousePos.x, dy = g_jointSy[i] - io.MousePos.y;
-      float d = std::sqrt(dx * dx + dy * dy);
-      if (d < hd) {
-        hd = d;
-        hover = i;
-      }
-    }
-    if (hover >= 0)
-      dl->AddCircle(ImVec2(g_jointSx[hover], g_jointSy[hover]), 10.0f,
-                    IM_COL32(255, 255, 255, 230), 0, 1.5f);
-  }
-}
-
-// 命中测试：屏幕坐标（overlay 客户端）是否落在任一关节附近（供点击穿透判断）
-static bool RigGizmoHitTest(float sx, float sy) {
-  if (!g_frozen || !g_showBones)
-    return false;
+  // 悬停高亮：光标附近的关节画白色外圈，提示可点击
+  ImGuiIO &io = ImGui::GetIO();
+  int hover = -1;
+  float hd = 18.0f;
   for (int i = 0; i < g_jointCount; i++) {
-    float dx = g_jointSx[i] - sx, dy = g_jointSy[i] - sy;
-    if (dx * dx + dy * dy < 14.0f * 14.0f)
-      return true;
+    float dx = g_jointSx[i] - io.MousePos.x, dy = g_jointSy[i] - io.MousePos.y;
+    float d = std::sqrt(dx * dx + dy * dy);
+    if (d < hd) {
+      hd = d;
+      hover = i;
+    }
   }
-  return false;
+  if (hover >= 0 && hover != g_selectedBone)
+    dl->AddCircle(ImVec2(g_jointSx[hover], g_jointSy[hover]), 10.0f,
+                  IM_COL32(255, 255, 255, 230), 0, 1.5f);
 }
 
-// 点击拾取：冻结态 + 未悬停 ImGui 窗口时，最近的关节点
+// 点击拾取：只要骨骼叠加层显示，点最近的关节点即选中（冻结只限制旋转盘）
 static void HandleRigClick() {
-  if (!g_frozen || !g_showBones)
+  if (!g_showBones)
     return;
   if (!ImGui::IsMouseClicked(0))
     return;

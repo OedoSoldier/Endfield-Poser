@@ -388,7 +388,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
     ImGui::NewFrame();
 
     __try { DrawPoserGui(); } __except (1) {
-      Log("[GUI] DrawPoserGui exception caught");
+      Log("[GUI] DrawPoserGui exception code=0x%X", GetExceptionCode());
     }
 
     ImGui::Render();

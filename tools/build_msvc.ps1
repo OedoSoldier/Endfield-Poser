@@ -57,7 +57,7 @@ New-Item -ItemType Directory -Force -Path 'build\obj' | Out-Null
 $sdkIncFlags = ($sdkInc | ForEach-Object { "/I $_" }) -join ' '
 $sdkLibFlags = "/LIBPATH:$sdkLibDirUm /LIBPATH:$sdkLibDirUcrt"
 
-$common = "/nologo /std:c++17 /O2 /MD /EHsc /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS $sdkIncFlags"
+$common = "/nologo /std:c++17 /O2 /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS $sdkIncFlags"
 $inc    = '/I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src'
 
 function Invoke-Cl([string]$CompileArgs) {

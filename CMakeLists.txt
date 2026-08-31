@@ -34,6 +34,9 @@ if(WIN32)
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src)
   target_compile_definitions(poser PRIVATE
     APPLEPIE_PLUGIN_IMPL _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+  # /EHa：让 __except 也能捕获 C++ 异常（IL2CPP 调用可能抛 0xe06d7363，
+  # /EHsc 下这类异常会直接崩掉游戏进程）
+  target_compile_options(poser PRIVATE /EHa)
   target_link_libraries(poser PRIVATE
     d3d11 dxgi d3dcompiler dwmapi ole32
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
