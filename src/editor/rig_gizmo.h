@@ -93,6 +93,51 @@ static void Mat4Mul(const float a[16], const float b[16], float out[16]) {
           a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
 }
 
+// ---- row-major 矩阵（ImGuizmo 的 matrix_t 是 row-major，m[0..3]=row0=right 轴）----
+static void Mat4MulRowMajor(const float a[16], const float b[16], float r[16]) {
+  for (int row = 0; row < 4; row++)
+    for (int col = 0; col < 4; col++)
+      r[row * 4 + col] =
+          a[row * 4 + 0] * b[0 * 4 + col] + a[row * 4 + 1] * b[1 * 4 + col] +
+          a[row * 4 + 2] * b[2 * 4 + col] + a[row * 4 + 3] * b[3 * 4 + col];
+}
+
+// 从 row-major 4x4（第 3 行为 position）提取位置与旋转四元数
+static void Mat4DecomposeRowMajor(const float m[16], Vec3 &pos, Quat &q) {
+  pos = Vec3{m[12], m[13], m[14]};
+  float m00 = m[0], m01 = m[1], m02 = m[2];
+  float m10 = m[4], m11 = m[5], m12 = m[6];
+  float m20 = m[8], m21 = m[9], m22 = m[10];
+  float tr = m00 + m11 + m22;
+  float w, x, y, z;
+  if (tr > 0.0f) {
+    float s = std::sqrt(tr + 1.0f) * 2.0f;
+    w = 0.25f * s;
+    x = (m21 - m12) / s;
+    y = (m02 - m20) / s;
+    z = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+    w = (m21 - m12) / s;
+    x = 0.25f * s;
+    y = (m01 + m10) / s;
+    z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+    w = (m02 - m20) / s;
+    x = (m01 + m10) / s;
+    y = 0.25f * s;
+    z = (m12 + m21) / s;
+  } else {
+    float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+    w = (m10 - m01) / s;
+    x = (m02 + m20) / s;
+    y = (m12 + m21) / s;
+    z = 0.25f * s;
+  }
+  q = NormQ(Quat{x, y, z, w});
+}
+
 // 沿父链自根向下组合世界矩阵（local pos/rot 逐级相乘）
 static bool GetBoneWorldMatrix(void *transform, float out[16]) {
   if (!transform || !g_transform_get_parent)
@@ -473,16 +518,18 @@ static bool DrawBoneRotationGizmo() {
   bool used = ImGuizmo::Manipulate(g_viewM, g_projM, ImGuizmo::ROTATE,
                                    ImGuizmo::LOCAL, obj, delta);
   if (used) {
-    Vec3 dPos;
-    Quat dRot;
-    Mat4Decompose(delta, dPos, dRot);
-    (void)dPos; // 只做旋转，平移忽略
-    if (fabsf(dRot.x) + fabsf(dRot.y) + fabsf(dRot.z) +
-            fabsf(dRot.w - 1.0f) >
-        1e-5f) {
-      Quat cur = GetBoneLocalRot(t);
-      SetBoneLocalRot(t, NormQ(cur * dRot));
-    }
+    // ImGuizmo 是 row-major；把局部增量按 row-major 乘到骨骼世界矩阵，
+    // 得到新世界旋转写回，避免列/行主序错配导致"盘面对、转不对"。
+    float objNew[16];
+    Mat4MulRowMajor(obj, delta, objNew);
+    Vec3 np;
+    Quat nq;
+    Mat4DecomposeRowMajor(objNew, np, nq);
+    (void)np; // 只做旋转，平移忽略
+    if (fabsf(nq.x) + fabsf(nq.y) + fabsf(nq.z) +
+            fabsf(nq.w - 1.0f) >
+        1e-5f)
+      SetBoneWorldRot(t, NormQ(nq));
   }
   return used;
 }
