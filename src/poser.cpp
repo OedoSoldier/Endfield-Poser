@@ -178,12 +178,15 @@ void GameFrameTick() {
     // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
     if (g_charChanged) {
     g_charChanged = false;
+    s_restCaptured = false; // 新角色：A-pose 基线作废，下次重建时重捕
     RebuildHumanBones();
     RebuildAllBones();
     RebuildAccessories();
       RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
       ResetSMCState();      // Task 4.2：SMC 表情状态随角色重置
       ResetSkirtState();    // 裙子碰撞：清空旧角色布料采集
+      if (!s_restCaptured)
+        CaptureRestPose();  // 角色最初姿态 = A-pose 基线
     }
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
@@ -196,13 +199,18 @@ void GameFrameTick() {
 static void RefreshCharacterBones() {
   if (!g_charAnimator || s_humanBoneCount == 0)
     TryCaptureFromPlayerController();
+  bool newChar = g_charChanged;
   g_charChanged = false;
+  if (newChar)
+    s_restCaptured = false; // 新角色：重捕 A-pose 基线
   RebuildHumanBones();
   RebuildAllBones();
   RebuildAccessories();
   RebuildBlendShapes();
   ResetSMCState();
   ResetSkirtState();
+  if (!s_restCaptured)
+    CaptureRestPose();
   Log("[POSER] Manual bone refresh: human=%d", s_humanBoneCount);
 }
 
@@ -214,6 +222,7 @@ void DrawPoserGui() {
   __try { GameFrameTick(); } __except (1) {
     Log("[POSER] GameFrameTick exception code=0x%X", GetExceptionCode());
   }
+  ImGuizmo::BeginFrame(); // ImGuizmo 每帧初始化（draw list / 内部窗口），否则轮盘不绘制
   __try {
     DrawSkeletonOverlay();
   } __except (1) {
@@ -240,9 +249,7 @@ void DrawPoserGui() {
     ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
     ImGui::SameLine();
     ImGui::TextDisabled(
-        g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount
-            ? s_humanBones[g_selectedBone].name
-            : u8"\u672a\u9009\u4e2d");
+        g_selectedName[0] ? g_selectedName : u8"\u672a\u9009\u4e2d");
     ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
     ImGui::Separator();
     if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
@@ -272,19 +279,27 @@ void DrawPoserGui() {
         SetAllPhysicsEnabled(true);
       }
     }
-    // 位置微调：仅 spine(root)=Hips 选中时显示（整体位移；冻结态直接写回）
-    if (g_frozen && g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount &&
-        s_humanBones[g_selectedBone].humanBone == Hips &&
-        s_humanBones[g_selectedBone].transform) {
-      void *pt = s_humanBones[g_selectedBone].transform;
-      Vec3 lp = GetBoneLocalPos(pt);
+    // 根骨骼位置微调（整体位移；冻结态直接写回）
+    void *rootT = nullptr;
+    for (size_t i = 0; i < s_allBones.size(); i++)
+      if (s_allBones[i].parentIdx < 0) {
+        rootT = s_allBones[i].transform;
+        break;
+      }
+    if (!rootT && s_humanBoneCount > 0)
+      rootT = s_humanBones[0].transform; // 回退：Hips
+    if (g_frozen && rootT) {
+      Vec3 lp = GetBoneLocalPos(rootT);
       float vx = lp.x, vy = lp.y, vz = lp.z;
       bool changed = false;
-      changed |= ImGui::SliderFloat(u8"##px", &vx, -5.0f, 5.0f, "X %.2f");
-      changed |= ImGui::SliderFloat(u8"##py", &vy, -5.0f, 5.0f, "Y %.2f");
-      changed |= ImGui::SliderFloat(u8"##pz", &vz, -5.0f, 5.0f, "Z %.2f");
+      changed |= ImGui::SliderFloat(u8"##rootpx", &vx, -10.0f, 10.0f,
+                                    "Root X %.2f");
+      changed |= ImGui::SliderFloat(u8"##rootpy", &vy, -10.0f, 10.0f,
+                                    "Root Y %.2f");
+      changed |= ImGui::SliderFloat(u8"##rootpz", &vz, -10.0f, 10.0f,
+                                    "Root Z %.2f");
       if (changed)
-        SetBoneLocalPos(pt, Vec3{vx, vy, vz});
+        SetBoneLocalPos(rootT, Vec3{vx, vy, vz});
     }
   }
   ImGui::End();

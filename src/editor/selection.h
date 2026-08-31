@@ -7,9 +7,29 @@
 #include "game/skeleton.h"
 #include "math/quat_math.h"
 
+#include <cstdio>
 #include <cstring>
 
 static int g_selectedBone = -1;
+static void *g_selectedTransform = nullptr; // 任意骨骼选中（含非 humanoid）
+static char g_selectedName[128] = "";
+
+// 选中任意骨骼 transform；若是 humanoid 骨则同时映射 g_selectedBone
+static void SelectTransform(void *t, const char *name) {
+  g_selectedTransform = t;
+  g_selectedBone = -1;
+  if (name && name[0])
+    snprintf(g_selectedName, sizeof(g_selectedName), "%s", name);
+  else
+    g_selectedName[0] = 0;
+  if (t) {
+    for (int i = 0; i < s_humanBoneCount; i++)
+      if (s_humanBones[i].transform == t) {
+        g_selectedBone = i;
+        break;
+      }
+  }
+}
 
 // 在 s_humanBones 中查找 transform 对应的骨骼下标（WebUI 父-子连线用）
 static int FindTransformIndex(void *t) {

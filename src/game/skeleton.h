@@ -26,6 +26,21 @@ struct BoneHandle {
 static BoneHandle s_humanBones[kHumanBoneCount];
 static int s_humanBoneCount = 0;
 
+// A-pose 基线（游戏最初姿态）：姿态库按"相对此基线的增量"保存/加载
+static Quat s_restRot[kHumanBoneCount];
+static Vec3 s_restPos[kHumanBoneCount];
+static bool s_restCaptured = false;
+
+// 捕获当前姿态为 A-pose 基线（角色首次出现时调用）
+static void CaptureRestPose() {
+  for (int i = 0; i < s_humanBoneCount; i++) {
+    s_restRot[i] = GetBoneLocalRot(s_humanBones[i].transform);
+    s_restPos[i] = GetBoneLocalPos(s_humanBones[i].transform);
+  }
+  s_restCaptured = true;
+  Log("[POSER] A-pose baseline captured: %d bones", s_humanBoneCount);
+}
+
 // 重建骨骼列表（角色切换后调用）
 static void RebuildHumanBones() {
   s_humanBoneCount = 0;
@@ -200,11 +215,18 @@ static void MirrorPose(bool leftToRight) {
 static PoseDoc CapturePoseDoc(const char *name) {
   PoseDoc doc;
   doc.name = name ? name : "";
+  doc.restRel = s_restCaptured; // 有基线则存相对增量，否则存绝对
   for (int i = 0; i < s_humanBoneCount; i++) {
     PoseBone pb;
     pb.name = s_humanBones[i].name;
-    pb.pos = GetBoneLocalPos(s_humanBones[i].transform);
-    pb.rot = GetBoneLocalRot(s_humanBones[i].transform);
+    if (s_restCaptured) {
+      pb.pos = GetBoneLocalPos(s_humanBones[i].transform) - s_restPos[i];
+      pb.rot =
+          NormQ(GetBoneLocalRot(s_humanBones[i].transform) * Conj(s_restRot[i]));
+    } else {
+      pb.pos = GetBoneLocalPos(s_humanBones[i].transform);
+      pb.rot = GetBoneLocalRot(s_humanBones[i].transform);
+    }
     doc.bones.push_back(pb);
   }
   return doc;
@@ -223,8 +245,14 @@ static void ApplyPoseDoc(const PoseDoc &doc) {
       }
     if (idx < 0 || s_humanBones[idx].locked)
       continue;
-    SetBoneLocalPos(s_humanBones[idx].transform, pb.pos);
-    SetBoneLocalRot(s_humanBones[idx].transform, pb.rot);
+    if (doc.restRel && s_restCaptured) {
+      SetBoneLocalPos(s_humanBones[idx].transform, s_restPos[idx] + pb.pos);
+      SetBoneLocalRot(s_humanBones[idx].transform,
+                      NormQ(pb.rot * s_restRot[idx]));
+    } else {
+      SetBoneLocalPos(s_humanBones[idx].transform, pb.pos);
+      SetBoneLocalRot(s_humanBones[idx].transform, pb.rot);
+    }
     applied++;
   }
   Log("[POSER] Applied pose '%s': %d/%d bones", doc.name.c_str(), applied,

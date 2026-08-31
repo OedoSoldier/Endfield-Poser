@@ -9,6 +9,7 @@ struct PoseMorph { std::string name; float value; };
 
 struct PoseDoc {
     std::string name;
+    bool restRel = true;   // true=相对 A-pose 的增量；false=绝对参数（旧格式文件）
     std::vector<PoseBone> bones;
     std::vector<PoseMorph> morphs;
 };
@@ -16,6 +17,7 @@ struct PoseDoc {
 inline std::string PoseToJson(const PoseDoc& d){
     nlohmann::json j;
     j["name"] = d.name;
+    j["restRel"] = d.restRel;
     for (auto& b : d.bones)
         j["bones"].push_back({{"n",b.name},{"p",{b.pos.x,b.pos.y,b.pos.z}},
                               {"r",{b.rot.x,b.rot.y,b.rot.z,b.rot.w}}});
@@ -28,6 +30,7 @@ inline PoseDoc PoseFromJson(const std::string& s){
     PoseDoc d;
     auto j = nlohmann::json::parse(s);
     d.name = j.value("name", "");
+    d.restRel = j.value("restRel", false); // 旧文件无此字段 → 按绝对参数处理
     if (j.contains("bones"))
         for (auto& e : j["bones"]) {
             PoseBone b; b.name = e["n"].get<std::string>();

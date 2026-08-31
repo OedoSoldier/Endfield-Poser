@@ -27,6 +27,7 @@ static char g_overlayStatus[128] = "off";
 static const int kMaxJointCache = 128;
 static float g_jointSx[kMaxJointCache] = {};
 static float g_jointSy[kMaxJointCache] = {};
+static void *g_jointTrans[kMaxJointCache] = {};
 static int g_jointCount = 0;
 
 // ---- 列主序 4x4 基础 ----
@@ -227,15 +228,21 @@ static bool ComputeProjection() {
   static bool s_fbLogged = false;
   g_fbMinX = g_fbMinY = 1e9f;
   g_fbMaxX = g_fbMaxY = -1e9f;
-  for (int i = 0; i < s_humanBoneCount; i++) {
-    if (!s_humanBones[i].transform)
-      continue;
-    Vec3 w = GetBoneWorldPos(s_humanBones[i].transform);
+  auto GrowBounds = [&](void *t) {
+    if (!t)
+      return;
+    Vec3 w = GetBoneWorldPos(t);
     if (w.x < g_fbMinX) g_fbMinX = w.x;
     if (w.x > g_fbMaxX) g_fbMaxX = w.x;
     if (w.y < g_fbMinY) g_fbMinY = w.y;
     if (w.y > g_fbMaxY) g_fbMaxY = w.y;
-  }
+  };
+  if (!s_allBones.empty())
+    for (const auto &b : s_allBones)
+      GrowBounds(b.transform);
+  else
+    for (int i = 0; i < s_humanBoneCount; i++)
+      GrowBounds(s_humanBones[i].transform);
   if (g_fbMaxX - g_fbMinX < 1e-4f || g_fbMaxY - g_fbMinY < 1e-4f)
     return false;
   // 兜底投影矩阵（正交前视图，与 ProjectBone 的屏幕映射一致）：
@@ -245,11 +252,20 @@ static bool ComputeProjection() {
   {
     float zSum = 0.0f;
     int zN = 0;
-    for (int i = 0; i < s_humanBoneCount; i++) {
-      if (!s_humanBones[i].transform)
-        continue;
-      zSum += GetBoneWorldPos(s_humanBones[i].transform).z;
-      zN++;
+    if (!s_allBones.empty()) {
+      for (const auto &b : s_allBones) {
+        if (!b.transform)
+          continue;
+        zSum += GetBoneWorldPos(b.transform).z;
+        zN++;
+      }
+    } else {
+      for (int i = 0; i < s_humanBoneCount; i++) {
+        if (!s_humanBones[i].transform)
+          continue;
+        zSum += GetBoneWorldPos(s_humanBones[i].transform).z;
+        zN++;
+      }
     }
     if (zN > 0)
       g_viewM[14] = -(zSum / zN + 10.0f);
@@ -313,44 +329,49 @@ static void DrawSkeletonOverlay() {
            g_useCamera ? "camera ok (bones=%d)" : "ortho fallback (bones=%d)",
            s_humanBoneCount);
   ImDrawList *dl = ImGui::GetBackgroundDrawList();
-  // 父子连线（父关节 → 子关节）
-  for (int i = 0; i < s_humanBoneCount; i++) {
-    if (!s_humanBones[i].transform)
+  // 父子连线（全骨骼，父关节 → 子关节）
+  for (size_t i = 0; i < s_allBones.size(); i++) {
+    if (!s_allBones[i].transform)
       continue;
-    void *parent = g_transform_get_parent
-                       ? Invoke(g_transform_get_parent, s_humanBones[i].transform)
-                       : nullptr;
-    if (!parent)
-      continue;
-    int pi = FindTransformIndex(parent);
-    if (pi < 0)
+    int pi = s_allBones[i].parentIdx;
+    if (pi < 0 || pi >= (int)s_allBones.size())
       continue;
     float a[2], b[2];
-    if (!ProjectBone(GetBoneWorldPos(s_humanBones[pi].transform), a[0], a[1]))
+    if (!ProjectBone(GetBoneWorldPos(s_allBones[pi].transform), a[0], a[1]))
       continue;
-    if (!ProjectBone(GetBoneWorldPos(s_humanBones[i].transform), b[0], b[1]))
+    if (!ProjectBone(GetBoneWorldPos(s_allBones[i].transform), b[0], b[1]))
       continue;
     dl->AddLine(ImVec2(a[0], a[1]), ImVec2(b[0], b[1]),
-                IM_COL32(170, 190, 220, 200), 1.6f);
+                IM_COL32(150, 170, 200, 160), 1.2f);
   }
-  // 关节点（黄=选中，红=锁定，蓝=普通）
-  for (int i = 0; i < s_humanBoneCount; i++) {
-    if (!s_humanBones[i].transform)
+  // 关节点（黄=选中，蓝=humanoid，青=其它骨骼，红=锁定）
+  for (size_t i = 0; i < s_allBones.size(); i++) {
+    void *t = s_allBones[i].transform;
+    if (!t)
       continue;
     float sx, sy;
-    if (!ProjectBone(GetBoneWorldPos(s_humanBones[i].transform), sx, sy))
+    if (!ProjectBone(GetBoneWorldPos(t), sx, sy))
       continue;
-    bool sel = (i == g_selectedBone);
-    ImU32 col = sel ? IM_COL32(255, 200, 60, 255)
-                    : (s_humanBones[i].locked ? IM_COL32(255, 90, 90, 255)
-                                              : IM_COL32(120, 200, 255, 255));
-    dl->AddCircleFilled(ImVec2(sx, sy), sel ? 6.0f : 4.0f, col);
+    bool sel = (t == g_selectedTransform) ||
+               (g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount &&
+                t == s_humanBones[g_selectedBone].transform);
+    int hi = FindTransformIndex(t);
+    ImU32 col;
+    if (sel)
+      col = IM_COL32(255, 200, 60, 255);
+    else if (hi >= 0)
+      col = s_humanBones[hi].locked ? IM_COL32(255, 90, 90, 255)
+                                    : IM_COL32(120, 200, 255, 255);
+    else
+      col = IM_COL32(110, 220, 200, 255); // 非 humanoid（手指等）
+    dl->AddCircleFilled(ImVec2(sx, sy), sel ? 6.0f : 3.5f, col);
     if (sel)
       dl->AddCircle(ImVec2(sx, sy), 9.0f, IM_COL32(255, 220, 80, 255), 0,
                     2.0f);
     if (g_jointCount < kMaxJointCache) {
       g_jointSx[g_jointCount] = sx;
       g_jointSy[g_jointCount] = sy;
+      g_jointTrans[g_jointCount] = t;
       g_jointCount++;
     }
   }
@@ -366,12 +387,17 @@ static void DrawSkeletonOverlay() {
       hover = i;
     }
   }
-  if (hover >= 0 && hover != g_selectedBone)
+  bool hoverIsSelected = hover >= 0 && g_jointTrans[hover] &&
+                         (g_jointTrans[hover] == g_selectedTransform ||
+                          (g_selectedBone >= 0 &&
+                           g_jointTrans[hover] ==
+                               s_humanBones[g_selectedBone].transform));
+  if (hover >= 0 && !hoverIsSelected)
     dl->AddCircle(ImVec2(g_jointSx[hover], g_jointSy[hover]), 10.0f,
                   IM_COL32(255, 255, 255, 230), 0, 1.5f);
 }
 
-// 点击拾取：只要骨骼叠加层显示，点最近的关节点即选中（冻结只限制旋转盘）
+// 点击拾取：全骨骼（含手指等），点最近的关节点即选中（冻结只限制旋转盘）
 static void HandleRigClick() {
   if (!g_showBones)
     return;
@@ -382,29 +408,37 @@ static void HandleRigClick() {
   if (!ComputeProjection())
     return;
   ImGuiIO &io = ImGui::GetIO();
-  int best = -1;
+  void *bestT = nullptr;
+  const char *bestName = nullptr;
   float bd = 14.0f;
-  for (int i = 0; i < s_humanBoneCount; i++) {
-    if (!s_humanBones[i].transform)
-      continue;
+  auto Pick = [&](void *t, const char *nm) {
+    if (!t)
+      return;
     float sx, sy;
-    if (!ProjectBone(GetBoneWorldPos(s_humanBones[i].transform), sx, sy))
-      continue;
+    if (!ProjectBone(GetBoneWorldPos(t), sx, sy))
+      return;
     float dx = sx - io.MousePos.x, dy = sy - io.MousePos.y;
     float d = std::sqrt(dx * dx + dy * dy);
     if (d < bd) {
       bd = d;
-      best = i;
+      bestT = t;
+      bestName = nm;
     }
-  }
-  g_selectedBone = best; // 点空处取消
+  };
+  if (!s_allBones.empty())
+    for (const auto &b : s_allBones)
+      Pick(b.transform, b.name);
+  else
+    for (int i = 0; i < s_humanBoneCount; i++)
+      Pick(s_humanBones[i].transform, s_humanBones[i].name);
+  SelectTransform(bestT, bestName); // 点空处 bestT=null → 取消
 }
 
 // 选中骨上的旋转盘（ImGuizmo ROTATE / LOCAL）；拖拽 = FK 旋转写回
 static bool DrawBoneRotationGizmo() {
-  if (!g_frozen || g_selectedBone < 0 || g_selectedBone >= s_humanBoneCount)
-    return false;
-  void *t = s_humanBones[g_selectedBone].transform;
+  void *t = g_selectedTransform;
+  if (!t && g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount)
+    t = s_humanBones[g_selectedBone].transform;
   if (!t)
     return false;
   // 与骨架叠加层共用投影上下文：相机可用用相机，否则用正交前视图兜底，
@@ -412,8 +446,14 @@ static bool DrawBoneRotationGizmo() {
   if (!ComputeProjection())
     return false;
   float obj[16], delta[16];
-  if (!GetBoneWorldMatrix(t, obj))
-    return false;
+  // 用游戏实际的世界位姿构建旋转盘矩阵（transform.rotation/position），
+  // 保证三轴环与骨骼真实轴向对齐（不再自己拼父链）
+  Mat4Compose(GetBoneWorldPos(t), GetBoneWorldRot(t), obj);
+  static bool s_thicknessSet = false;
+  if (!s_thicknessSet) {
+    s_thicknessSet = true;
+    ImGuizmo::SetRotationLineThickness(4.0f); // 加粗旋转环
+  }
   Mat4Identity(delta);
   ImGuiIO &io = ImGui::GetIO();
   ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);

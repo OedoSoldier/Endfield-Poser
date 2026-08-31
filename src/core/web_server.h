@@ -17,6 +17,7 @@
 #include "game/freeze.h"
 #include "math/pose_file.h"
 #include "editor/selection.h"
+#include "editor/panel_library.h"
 
 static int g_webPort = 18923;
 static volatile bool g_webRunning = false;
@@ -111,7 +112,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
     auto j = nlohmann::json::parse(body, nullptr, false);
     int i = j.value("i", -1);
     if (i >= 0 && i < s_humanBoneCount)
-      g_selectedBone = i;
+      SelectTransform(s_humanBones[i].transform, s_humanBones[i].name);
     HttpJson(c, {{"ok", true}});
     return;
   }
@@ -324,7 +325,13 @@ static void HandleRequest(SOCKET c, const std::string &path,
   if (path == "/api/poses/save") {
     auto j = nlohmann::json::parse(body, nullptr, false);
     std::string name = j.value("name", "");
-    bool bad = name.empty() || name.size() > 64;
+    if (name.empty()) {
+      char buf[64];
+      RefreshPoseList();
+      MakeNextPoseName(buf, sizeof(buf));
+      name = buf;
+    }
+    bool bad = name.size() > 64;
     for (char ch : name)
       if (strchr("\\/:*?\"<>|", ch)) { bad = true; break; }
     if (!bad && s_humanBoneCount > 0) {
@@ -498,8 +505,7 @@ label{display:block;margin-top:8px;font-size:12px;color:#aaa}
   <h1>Endfield Poser</h1>
   <div><button id="btnFreeze">冻结</button><button id="btnTpose">T-Pose</button><button id="btnReset">复位</button></div>
   <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#aaa"><input type="checkbox" id="chkAcc"> 冻结飘带/裙子/头发（默认不冻结）</label>
-  <label style="margin-top:12px">姿态名</label>
-  <div style="display:flex;gap:4px"><input type="text" id="poseName" style="flex:1" placeholder="输入姿态名保存"><button id="btnSavePose">保存</button></div>
+  <div style="margin-top:12px"><button id="btnSavePose">保存预设（自动编号）</button></div>
   <div id="poseList" style="font-size:12px;margin-top:6px"></div>
   <div style="font-size:12px;margin-top:6px" id="status">连接中...</div>
   <div id="boneInfo" style="font-size:12px;color:#bbb;margin-top:6px">未选中骨骼</div>
@@ -628,8 +634,7 @@ async function refreshPoses(){
   }catch(e){}
 }
 document.getElementById('btnSavePose').addEventListener('click',()=>{
-  const n=document.getElementById('poseName').value.trim();
-  if(n)post('/api/poses/save',{name:n}).then(()=>refreshPoses());
+  post('/api/poses/save',{name:''}).then(()=>refreshPoses());
 });
 refreshPoses();
 document.getElementById('btnFreeze').onclick=async()=>{

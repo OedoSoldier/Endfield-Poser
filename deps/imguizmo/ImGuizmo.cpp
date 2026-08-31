@@ -734,6 +734,7 @@ namespace ImGuizmo
    };
 
    static Context gContext;
+   static float gRotationLineThickness = 2.0f;
 
    static const vec_t directionUnary[3] = { makeVect(1.f, 0.f, 0.f), makeVect(0.f, 1.f, 0.f), makeVect(0.f, 0.f, 1.f) };
    static const ImU32 directionColor[3] = { IM_COL32(0xAA, 0, 0, 0xFF), IM_COL32(0, 0xAA, 0, 0xFF), IM_COL32(0, 0, 0xAA, 0XFF) };
@@ -1223,11 +1224,11 @@ namespace ImGuizmo
             gContext.mRadiusSquareCenter = radiusAxis;
          }
 
-         drawList->AddPolyline(circlePos, circleMul * halfCircleSegmentCount + 1, colors[3 - axis], ImDrawFlags_None, 2.0f);
+         drawList->AddPolyline(circlePos, circleMul * halfCircleSegmentCount + 1, colors[3 - axis], ImDrawFlags_None, gRotationLineThickness);
       }
       if(hasRSC)
       {
-         drawList->AddCircle(worldToPos(gContext.mModel.v.position, gContext.mViewProjection), gContext.mRadiusSquareCenter, colors[0], 64, 3.f);
+         drawList->AddCircle(worldToPos(gContext.mModel.v.position, gContext.mViewProjection), gContext.mRadiusSquareCenter, colors[0], 64, gRotationLineThickness + 1.f);
       }
 
       if (gContext.mbUsing && (gContext.mActualID == -1 || gContext.mActualID == gContext.mEditingID) && IsRotateType(type))
@@ -2300,6 +2301,11 @@ namespace ImGuizmo
    void SetGizmoSizeClipSpace(float value)
    {
       gContext.mGizmoSizeClipSpace = value;
+   }
+
+   void SetRotationLineThickness(float value)
+   {
+      gRotationLineThickness = value;
    }
 
    ///////////////////////////////////////////////////////////////////////////////////////////////////

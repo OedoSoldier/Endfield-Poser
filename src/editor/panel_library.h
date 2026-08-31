@@ -39,11 +39,28 @@ static std::string PoseFilePath(int idx) {
   return std::string(g_defaultPoseDir) + "\\" + g_poseFiles[idx];
 }
 
+// 自动编号：Pose_001, Pose_002, ...（跳过已存在的最大号）
+static void MakeNextPoseName(char *out, size_t sz) {
+  int maxN = 0;
+  for (const auto &f : g_poseFiles) {
+    int n = 0;
+    if (sscanf(f.c_str(), "Pose_%d.poser.json", &n) == 1 && n > maxN)
+      maxN = n;
+  }
+  snprintf(out, sz, "Pose_%03d", maxN + 1);
+}
+
 static void SavePoseToFile(const char *name) {
-  if (!name || !name[0] || s_humanBoneCount <= 0) {
+  if (s_humanBoneCount <= 0) {
     snprintf(g_poseStatus, sizeof(g_poseStatus),
              "\u5148\u51bb\u7ed3\u5e76\u6446\u597d\u59ff\u52bf"); // 先冻结并摆好姿势
     return;
+  }
+  char autoName[64];
+  if (!name || !name[0]) {
+    RefreshPoseList(); // 确保编号基于最新文件列表
+    MakeNextPoseName(autoName, sizeof(autoName));
+    name = autoName;
   }
   PoseDoc doc = CapturePoseDoc(name);
   std::string json = PoseToJson(doc);
@@ -98,15 +115,8 @@ static void DrawLibraryPanel() {
   ImGui::TextDisabled(u8"\u59ff\u6001\u9884\u8bbe (plugin/poses/*.poser.json)");
   ImGui::Separator();
 
-  ImGui::Text(u8"\u59ff\u6001\u540d");
-  ImGui::SameLine();
-  ImGui::InputText(u8"##posename", g_poseName, sizeof(g_poseName));
-  if (ImGui::SmallButton(u8"\u4fdd\u5b58\u5f53\u524d\u4e3a\u2026")) {
-    if (g_poseName[0])
-      SavePoseToFile(g_poseName);
-    else
-      snprintf(g_poseStatus, sizeof(g_poseStatus), "\u8bf7\u5148\u8f93\u5165\u59ff\u6001\u540d");
-  }
+  if (ImGui::SmallButton(u8"\u4fdd\u5b58\u9884\u8bbe")) // 一键保存（自动编号）
+    SavePoseToFile(nullptr);
   ImGui::SameLine();
   if (ImGui::SmallButton(u8"\u5237\u65b0\u5217\u8868"))
     RefreshPoseList();
