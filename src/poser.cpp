@@ -251,6 +251,13 @@ void DrawPoserGui() {
     ImGui::TextDisabled(
         g_selectedName[0] ? g_selectedName : u8"\u672a\u9009\u4e2d");
     ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
+    ImGui::Checkbox(u8"\u5168\u91cf\u9aa8\u9abc(\u5fae\u8c03)", &g_fullBones);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u53ea\u663e\u793a\u4e3b\u8981\u9aa8\u9abc\uff1b\u52fe\u9009\u540e\u53e0\u52a0\u5c42\u5c55\u793a/\u53ef\u62fe\u53d6\u6240\u6709\u9aa8\u9abc\uff08\u542b\u624b\u6307\u7b49\uff09\uff0c\u7528\u4e8e\u7cbe\u7ec6\u5fae\u8c03\u3002\u5168\u91cf\u6536\u96c6\u59cb\u7ec8\u8fdb\u884c\uff08Blender \u6865\u4f9d\u8d56\uff09\u3002");
+    if (g_fullBones && s_allBones.empty())
+      RebuildAllBones();
+    if (!g_fullBones && FindTransformIndex(g_selectedTransform) < 0)
+      SelectTransform(nullptr, nullptr);
     ImGui::Separator();
     if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
       Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",

@@ -20,6 +20,10 @@
 // 显示开关（主窗口复选框）
 static bool g_showBones = true;
 
+// 全量骨骼开关：勾选后在叠加层展示/可拾取所有骨骼（含手指等），用于精细微调
+// 默认关 = 只显示主要(Humanoid)骨骼；全量收集始终进行（Blender 桥依赖），仅叠加层按此开关切换
+static bool g_fullBones = false;
+
 // 叠加层状态（面板直接显示，方便排查）
 static char g_overlayStatus[128] = "off";
 
@@ -237,7 +241,7 @@ static bool ComputeProjection() {
     if (w.y < g_fbMinY) g_fbMinY = w.y;
     if (w.y > g_fbMaxY) g_fbMaxY = w.y;
   };
-  if (!s_allBones.empty())
+  if (g_fullBones && !s_allBones.empty())
     for (const auto &b : s_allBones)
       GrowBounds(b.transform);
   else
@@ -252,7 +256,7 @@ static bool ComputeProjection() {
   {
     float zSum = 0.0f;
     int zN = 0;
-    if (!s_allBones.empty()) {
+    if (g_fullBones && !s_allBones.empty()) {
       for (const auto &b : s_allBones) {
         if (!b.transform)
           continue;
@@ -329,12 +333,17 @@ static void DrawSkeletonOverlay() {
            g_useCamera ? "camera ok (bones=%d)" : "ortho fallback (bones=%d)",
            s_humanBoneCount);
   ImDrawList *dl = ImGui::GetBackgroundDrawList();
+  bool useAll = g_fullBones && !s_allBones.empty();
   // 父子连线（全骨骼，父关节 → 子关节）
   for (size_t i = 0; i < s_allBones.size(); i++) {
     if (!s_allBones[i].transform)
       continue;
+    if (!useAll && FindTransformIndex(s_allBones[i].transform) < 0)
+      continue;
     int pi = s_allBones[i].parentIdx;
     if (pi < 0 || pi >= (int)s_allBones.size())
+      continue;
+    if (!useAll && FindTransformIndex(s_allBones[pi].transform) < 0)
       continue;
     float a[2], b[2];
     if (!ProjectBone(GetBoneWorldPos(s_allBones[pi].transform), a[0], a[1]))
@@ -348,6 +357,8 @@ static void DrawSkeletonOverlay() {
   for (size_t i = 0; i < s_allBones.size(); i++) {
     void *t = s_allBones[i].transform;
     if (!t)
+      continue;
+    if (!useAll && FindTransformIndex(t) < 0)
       continue;
     float sx, sy;
     if (!ProjectBone(GetBoneWorldPos(t), sx, sy))
@@ -364,7 +375,8 @@ static void DrawSkeletonOverlay() {
                                     : IM_COL32(120, 200, 255, 255);
     else
       col = IM_COL32(110, 220, 200, 255); // 非 humanoid（手指等）
-    dl->AddCircleFilled(ImVec2(sx, sy), sel ? 6.0f : 3.5f, col);
+    dl->AddCircleFilled(ImVec2(sx, sy), sel ? 6.0f : (useAll ? 3.5f : 4.0f),
+                        col);
     if (sel)
       dl->AddCircle(ImVec2(sx, sy), 9.0f, IM_COL32(255, 220, 80, 255), 0,
                     2.0f);
@@ -425,7 +437,7 @@ static void HandleRigClick() {
       bestName = nm;
     }
   };
-  if (!s_allBones.empty())
+  if (g_fullBones && !s_allBones.empty())
     for (const auto &b : s_allBones)
       Pick(b.transform, b.name);
   else
