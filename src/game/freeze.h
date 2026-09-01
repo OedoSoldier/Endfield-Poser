@@ -19,7 +19,8 @@
 static bool g_frozen = false;
 static bool g_animatorWasEnabled = true;
 // 冻结选项：勾选后连飘带/裙子/头发等从骨一起冻结；默认关 = 从骨保持实时演算。
-static bool g_freezeAccessories = false;
+// 默认冻结飘带/裙子/头发等从骨（钉在冻结瞬间姿态），取消勾选才让它们继续实时演算。
+static bool g_freezeAccessories = true;
 
 // ---- FinalIK / 游戏 IK 组件抑制（参照 {EIEM} trojan.h 采集逻辑，AGPL-3.0）----
 // 冻结时把角色根上会写骨骼的 IK/动画组件一并禁用，解冻恢复。
@@ -187,8 +188,10 @@ static void MaintainFreeze() {
       Disable(s_ikDamper[i]);
     Disable(s_animatorMono);
   }
-  if (g_freezeAccessories)
+  if (g_freezeAccessories) {
     MaintainAccessoryPhysicsFreeze();
+    ApplyAccessorySnapshot(); // 每帧再钉一次从骨，防止物理/动画把它拉回默认
+  }
 }
 
 static void FreezeCharacter() {
@@ -217,6 +220,8 @@ static void FreezeCharacter() {
   }
   // 2. 固化当前帧姿势为编辑基线（含从骨）
   PinCurrentPose();
+  if (g_freezeAccessories && s_accessoryChains.empty())
+    RebuildAccessories(); // 先保证从骨表存在，快照才反映冻结瞬间姿势
   CaptureAccessorySnapshot();
   Log("[POSER] Freeze: pose pinned");
   // 3. 抑制其余骨骼写者：FinalIK/Grounder/LookAt/Damper + 从骨物理。
@@ -226,9 +231,8 @@ static void FreezeCharacter() {
   SkirtBegin();
   Log("[POSER] Freeze: skirt begin");
   if (g_freezeAccessories) {
-    if (s_accessoryChains.empty())
-      RebuildAccessories();
     SetAllPhysicsEnabled(false);
+    ApplyAccessorySnapshot(); // 物理禁用后立刻把从骨钉到冻结瞬间姿势，避免回落默认
     Log("[POSER] Freeze: accessory physics disabled (option ON)");
   }
   g_frozen = true;
