@@ -502,8 +502,15 @@ static bool DrawBoneRotationGizmo() {
   // 保证旋转盘在相机不通时也能显示（位置与骨架一致）。
   if (!ComputeProjection())
     return false;
-  float obj[16], delta[16];
-  Mat4Compose(GetBoneWorldPos(t), GetBoneWorldRot(t), obj);
+  float delta[16];
+  // 拖拽期间持续累加模型矩阵（标准 ImGuizmo 用法），保证矩阵式写法在整个朝向都自洽，
+  // 避免"水平时对、转一下就偏"。仅骨选中变化时重新初始化一次。
+  static void *s_gizmoT = nullptr;
+  static float s_gizmoObj[16];
+  if (s_gizmoT != t) {
+    Mat4Compose(GetBoneWorldPos(t), GetBoneWorldRot(t), s_gizmoObj);
+    s_gizmoT = t;
+  }
   static bool s_thicknessSet = false;
   if (!s_thicknessSet) {
     s_thicknessSet = true;
@@ -514,37 +521,34 @@ static bool DrawBoneRotationGizmo() {
   ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
   ImGuizmo::SetGizmoSizeClipSpace(0.15f);
   bool used = ImGuizmo::Manipulate(g_viewM, g_projM, ImGuizmo::ROTATE,
-                                   ImGuizmo::LOCAL, obj, delta);
+                                   ImGuizmo::LOCAL, s_gizmoObj, delta);
   if (used) {
-    Vec3 dPos;
-    Quat dRot;
-    Mat4DecomposeRowMajor(delta, dPos, dRot);
-    (void)dPos; // 只做旋转，平移忽略
-    if (fabsf(dRot.x) + fabsf(dRot.y) + fabsf(dRot.z) +
-            fabsf(dRot.w - 1.0f) >
+    // 注意：Manipulate 在 LOCAL 模式下已就地更新 s_gizmoObj（matrix = deltaRot * matrix）。
+    // 这里绝不能再用返回的 delta 额外累乘，否则每帧应用两遍 → 转圈/闪动。
+    Vec3 np;
+    Quat newWorld;
+    Mat4DecomposeRowMajor(s_gizmoObj, np, newWorld);
+    (void)np; // 只做旋转，平移忽略
+    // Mat4Compose 与本函数的读法互为转置：compose 用列、decompose 按行，
+    // 直接读出的四元数是真实世界旋转的共轭（轴/方向相反），须取共轭还原。
+    newWorld = Conj(newWorld);
+    if (fabsf(newWorld.x) + fabsf(newWorld.y) + fabsf(newWorld.z) +
+            fabsf(newWorld.w - 1.0f) >
         1e-5f) {
-      // 诊断：拖拽时打印 delta 的局部轴 vs 模型三轴（right/up/dir 为骨的世界 XYZ），
-      // 用于定位"环色与轴错位一圈"。
-      static int s_logN = 0;
-      if (((s_logN++) % 30) == 0) {
-        char nm[128] = "";
-        GetBoneName(t, nm, sizeof(nm));
-        float al = std::sqrt(dRot.x * dRot.x + dRot.y * dRot.y +
-                             dRot.z * dRot.z);
-        if (al < 1e-6f)
-          al = 1.0f;
-        Log("[GIZMO] bone=%s dRax=%.2f,%.2f,%.2f | R=%.2f,%.2f,%.2f U=%.2f,%.2f,%.2f D=%.2f,%.2f,%.2f",
-            nm, dRot.x / al, dRot.y / al, dRot.z / al, obj[0], obj[1],
-            obj[2], obj[4], obj[5], obj[6], obj[8], obj[9], obj[10]);
+      Quat parentWorld{0, 0, 0, 1};
+      if (g_transform_get_parent) {
+        __try {
+          void *parent = Invoke(g_transform_get_parent, t);
+          if (parent)
+            parentWorld = GetBoneWorldRot(parent);
+        } __except (1) {
+        }
       }
-      Quat cur = GetBoneLocalRot(t);
-      // 修正 ImGuizmo 环色与轴错位一圈：把增量轴在局部系循环回退一位
-      //（红→绿→蓝→红 的偏移 → 用绕 (1,1,1) 的 -120° 共轭还原）。
-      static const Quat s_perm = Quat::AxisAngle(Norm(Vec3{1, 1, 1}),
-                                                 -2.0943951023931953f);
-      dRot = NormQ(s_perm * dRot * Conj(s_perm));
-      SetBoneLocalRot(t, NormQ(cur * dRot));
+      // world = parentWorld * local  =>  local = conj(parentWorld) * world
+      SetBoneLocalRot(t, NormQ(Conj(parentWorld) * newWorld));
     }
+  } else {
+    s_gizmoT = nullptr; // 结束拖拽：下次选中该骨时重新初始化
   }
   return used;
 }
