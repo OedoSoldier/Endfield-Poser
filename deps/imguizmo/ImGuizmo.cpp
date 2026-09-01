@@ -1801,7 +1801,7 @@ namespace ImGuizmo
          const ImVec2 distanceOnScreen = idealPosOnCircleScreen - io.MousePos;
 
          const float distance = makeVect(distanceOnScreen).Length();
-         if (distance < 8.f) // pixel size
+         if (distance < 14.f) // pixel size (widened from 8 for easier ring grabbing)
          {
             type = MT_ROTATE_X + i;
          }

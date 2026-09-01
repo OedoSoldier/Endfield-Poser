@@ -462,6 +462,10 @@ static void HandleRigClick() {
     return;
   if (ImGui::GetIO().WantCaptureMouse)
     return;
+  // 鼠标已悬在选中骨的旋转环上：交给 ImGuizmo 拖拽，别当作"点空白"取消选中，
+  // 否则想点环会先把骨骼取消、轮盘瞬间消失（造成"线不好点"）。
+  if (g_selectedTransform && ImGuizmo::IsOver(ImGuizmo::ROTATE))
+    return;
   if (!ComputeProjection())
     return;
   ImGuiIO &io = ImGui::GetIO();
