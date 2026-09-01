@@ -503,8 +503,6 @@ static bool DrawBoneRotationGizmo() {
   if (!ComputeProjection())
     return false;
   float obj[16], delta[16];
-  // 用游戏实际的世界位姿构建旋转盘矩阵（transform.rotation/position），
-  // 保证三轴环与骨骼真实轴向对齐（不再自己拼父链）
   Mat4Compose(GetBoneWorldPos(t), GetBoneWorldRot(t), obj);
   static bool s_thicknessSet = false;
   if (!s_thicknessSet) {
@@ -518,18 +516,35 @@ static bool DrawBoneRotationGizmo() {
   bool used = ImGuizmo::Manipulate(g_viewM, g_projM, ImGuizmo::ROTATE,
                                    ImGuizmo::LOCAL, obj, delta);
   if (used) {
-    // ImGuizmo 是 row-major；把局部增量按 row-major 乘到骨骼世界矩阵，
-    // 得到新世界旋转写回，避免列/行主序错配导致"盘面对、转不对"。
-    float objNew[16];
-    Mat4MulRowMajor(obj, delta, objNew);
-    Vec3 np;
-    Quat nq;
-    Mat4DecomposeRowMajor(objNew, np, nq);
-    (void)np; // 只做旋转，平移忽略
-    if (fabsf(nq.x) + fabsf(nq.y) + fabsf(nq.z) +
-            fabsf(nq.w - 1.0f) >
-        1e-5f)
-      SetBoneWorldRot(t, NormQ(nq));
+    Vec3 dPos;
+    Quat dRot;
+    Mat4DecomposeRowMajor(delta, dPos, dRot);
+    (void)dPos; // 只做旋转，平移忽略
+    if (fabsf(dRot.x) + fabsf(dRot.y) + fabsf(dRot.z) +
+            fabsf(dRot.w - 1.0f) >
+        1e-5f) {
+      // 诊断：拖拽时打印 delta 的局部轴 vs 模型三轴（right/up/dir 为骨的世界 XYZ），
+      // 用于定位"环色与轴错位一圈"。
+      static int s_logN = 0;
+      if (((s_logN++) % 30) == 0) {
+        char nm[128] = "";
+        GetBoneName(t, nm, sizeof(nm));
+        float al = std::sqrt(dRot.x * dRot.x + dRot.y * dRot.y +
+                             dRot.z * dRot.z);
+        if (al < 1e-6f)
+          al = 1.0f;
+        Log("[GIZMO] bone=%s dRax=%.2f,%.2f,%.2f | R=%.2f,%.2f,%.2f U=%.2f,%.2f,%.2f D=%.2f,%.2f,%.2f",
+            nm, dRot.x / al, dRot.y / al, dRot.z / al, obj[0], obj[1],
+            obj[2], obj[4], obj[5], obj[6], obj[8], obj[9], obj[10]);
+      }
+      Quat cur = GetBoneLocalRot(t);
+      // 修正 ImGuizmo 环色与轴错位一圈：把增量轴在局部系循环回退一位
+      //（红→绿→蓝→红 的偏移 → 用绕 (1,1,1) 的 -120° 共轭还原）。
+      static const Quat s_perm = Quat::AxisAngle(Norm(Vec3{1, 1, 1}),
+                                                 -2.0943951023931953f);
+      dRot = NormQ(s_perm * dRot * Conj(s_perm));
+      SetBoneLocalRot(t, NormQ(cur * dRot));
+    }
   }
   return used;
 }
