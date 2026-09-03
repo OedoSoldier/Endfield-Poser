@@ -9,7 +9,7 @@ struct PoseMorph { std::string name; float value; };
 
 struct PoseDoc {
     std::string name;
-    bool restRel = true;   // true=相对 A-pose 的增量；false=绝对参数（旧格式文件）
+    bool restRel = false;  // false=绝对 local 变换（新格式，默认）；true=相对 A-pose 的增量（旧格式，仅兼容）
     std::vector<PoseBone> bones;
     std::vector<PoseMorph> morphs;
 };

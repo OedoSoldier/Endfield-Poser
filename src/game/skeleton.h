@@ -26,7 +26,9 @@ struct BoneHandle {
 static BoneHandle s_humanBones[kHumanBoneCount];
 static int s_humanBoneCount = 0;
 
-// A-pose 基线（游戏最初姿态）：姿态库按"相对此基线的增量"保存/加载
+// A-pose 基线（游戏最初姿态）：姿态库现已改为按"绝对 local 变换"保存/加载，
+//   不再依赖此基线，避免角色重进/换场景后基线漂移导致姿态偏移；
+//   下方 s_restRot/s_restPos 仅用于旧格式(restRel=true)文件的兼容还原。
 static Quat s_restRot[kHumanBoneCount];
 static Vec3 s_restPos[kHumanBoneCount];
 static bool s_restCaptured = false;
@@ -211,28 +213,24 @@ static void MirrorPose(bool leftToRight) {
   Log("[POSER] Mirrored %s: %d bones", leftToRight ? "L->R" : "R->L", done);
 }
 
-// 采集当前全部 Humanoid 骨到位姿文档（存盘用）
+// 采集当前全部 Humanoid 骨到位姿文档（存盘用）。
+// 存绝对 local pos/rot：读回时无需 A-pose 基线，跨会话/换角色都稳定。
 static PoseDoc CapturePoseDoc(const char *name) {
   PoseDoc doc;
   doc.name = name ? name : "";
-  doc.restRel = s_restCaptured; // 有基线则存相对增量，否则存绝对
+  doc.restRel = false; // 新格式：绝对 local 变换
   for (int i = 0; i < s_humanBoneCount; i++) {
     PoseBone pb;
     pb.name = s_humanBones[i].name;
-    if (s_restCaptured) {
-      pb.pos = GetBoneLocalPos(s_humanBones[i].transform) - s_restPos[i];
-      pb.rot =
-          NormQ(GetBoneLocalRot(s_humanBones[i].transform) * Conj(s_restRot[i]));
-    } else {
-      pb.pos = GetBoneLocalPos(s_humanBones[i].transform);
-      pb.rot = GetBoneLocalRot(s_humanBones[i].transform);
-    }
+    pb.pos = GetBoneLocalPos(s_humanBones[i].transform);
+    pb.rot = GetBoneLocalRot(s_humanBones[i].transform);
     doc.bones.push_back(pb);
   }
   return doc;
 }
 
-// 应用位姿文档（按名称匹配；跳过锁定骨与未知骨）
+// 应用位姿文档（按名称匹配；跳过锁定骨与未知骨）。
+// 新格式(restRel=false)直接写绝对 local；旧格式(restRel=true)按基线增量还原（兼容）。
 static void ApplyPoseDoc(const PoseDoc &doc) {
   int applied = 0;
   for (size_t bi = 0; bi < doc.bones.size(); bi++) {
@@ -245,11 +243,11 @@ static void ApplyPoseDoc(const PoseDoc &doc) {
       }
     if (idx < 0 || s_humanBones[idx].locked)
       continue;
-    if (doc.restRel && s_restCaptured) {
+    if (doc.restRel && s_restCaptured) { // 旧格式兼容：相对 A-pose 基线还原
       SetBoneLocalPos(s_humanBones[idx].transform, s_restPos[idx] + pb.pos);
       SetBoneLocalRot(s_humanBones[idx].transform,
                       NormQ(pb.rot * s_restRot[idx]));
-    } else {
+    } else { // 新格式：绝对 local 直接写入
       SetBoneLocalPos(s_humanBones[idx].transform, pb.pos);
       SetBoneLocalRot(s_humanBones[idx].transform, pb.rot);
     }
