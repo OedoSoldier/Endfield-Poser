@@ -38,7 +38,7 @@
 ## 三、环境备忘
 
 - Blender 锁定 **5.2 LTS**（插件已实测；ARP manifest 无上限版本）。
-- 桥接插件源码在 `tools/blender/endfield_poser_bridge/`，安装位置 `C:\Users\33561\AppData\Roaming\Blender Foundation\Blender\5.2\scripts\addons\endfield_poser_bridge\`。
+- 桥接插件源码在 `tools/blender/endfield_poser_bridge/`，安装位置 `%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\endfield_poser_bridge\`。
 - 无头测试跑法：
   `& 'C:\Program Files\Blender Foundation\Blender 5.2\blender.exe' --background --factory-startup -P <script>`（需提权）。
 - git push 需走代理：`git -c http.proxy=http://127.0.0.1:7897 push`（Clash Verge 混合端口 7897）。

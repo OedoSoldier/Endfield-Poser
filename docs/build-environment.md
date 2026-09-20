@@ -26,9 +26,9 @@ powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1      # 编译 plug
 
 ## 参考项目：EIEM（已跑通的原型）
 
-本项目的注入链路脱胎于 [Sasye/EIEM](https://github.com/Sasye/EIEM)（AGPL-3.0），已克隆到
-`D:\PROJECTS\EIEM`；插件宿主 [Sasye/ApplepieManager](https://github.com/Sasye/ApplepieManager)（AGPL-3.0）
-已克隆到 `D:\PROJECTS\ApplepieManager`。
+本项目的注入链路脱胎于 [Sasye/EIEM](https://github.com/Sasye/EIEM)（AGPL-3.0），
+插件宿主是 [Sasye/ApplepieManager](https://github.com/Sasye/ApplepieManager)（AGPL-3.0）。
+需要对照源码时自行 clone 到任意位置，本项目本身不依赖它们的本地路径。
 
 复用情况：
 
@@ -86,12 +86,12 @@ powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1
 ## 部署（游戏侧）
 
 1. 备份游戏目录原有的 `d3dcompiler_47.dll`
-2. 把 `plugin\d3dcompiler_47.dll` 复制到 `D:\Endfield Game\`（覆盖游戏自带的）
-3. （可选）把 `plugin\vulkan-1.dll` 也复制到 `D:\Endfield Game\`——DX/Vulkan 代理放一个或都放均可
-4. 把 `plugin\poser.dll`、`plugin\poser_config.txt` 复制到 `D:\Endfield Game\plugin\`
-5. （可选）把 `plugin\applepie_manager.dll`、`plugin\applepie_manager_config.txt` 也放进 `plugin\`
+2. 把 `plugin\d3dcompiler_47.dll` 复制到游戏目录（覆盖游戏自带的）
+3. （可选）把 `plugin\vulkan-1.dll` 也复制到游戏目录——DX/Vulkan 代理放一个或都放均可
+4. 把 `plugin\poser.dll`、`plugin\poser_config.txt` 复制到 `<游戏目录>\plugin\`
+5. （可选）把 `plugin\applepie_manager.dll`、`plugin\applepie_manager_config.txt` 也放进 `<游戏目录>\plugin\`
 6. 启动游戏；代理 DLL 枚举加载 `plugin\*.dll`，poser 与 manager 都会被拉起；
-   日志写在 `D:\Endfield Game\plugin\poser_log.txt`（poser）与 manager 的日志
+   日志写在 `<游戏目录>\plugin\poser_log.txt`（poser）与 manager 的日志
 
 > **必须用启动器启动游戏（本机实测 2026-09-20）**：直接运行 `Endfield.exe` 会在 IL2CPP
 > 运行时初始化完成前 attach，触发 Unity GC 致命错误
