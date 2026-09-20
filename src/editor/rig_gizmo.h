@@ -350,6 +350,7 @@ static bool ProjectBone(const Vec3 &w, float &sx, float &sy) {
 
 // 渲染骨骼线 + 关节点（世界 → 屏幕，画在背景层）
 static void DrawSkeletonOverlay() {
+  g_inputHoverGizmo = false; // 输入路由：本帧是否指向可拾取关节（下面重算）
   if (!g_showBones) {
     snprintf(g_overlayStatus, sizeof(g_overlayStatus), "off (checkbox)");
     return;
@@ -434,6 +435,19 @@ static void DrawSkeletonOverlay() {
   }
   // 悬停高亮：光标附近的关节画白色外圈，提示可点击
   ImGuiIO &io = ImGui::GetIO();
+  // 输入路由：指针靠近任一关节 → 这片区域归覆盖层（否则点击会被路由给游戏，
+  // 3D 视图里就选不中骨头）。半径与 HandleRigClick 的拾取半径保持一致。
+  {
+    const float pickR = 14.0f;
+    for (int i = 0; i < g_jointCount; i++) {
+      float dx = g_jointSx[i] - io.MousePos.x;
+      float dy = g_jointSy[i] - io.MousePos.y;
+      if (dx * dx + dy * dy <= pickR * pickR) {
+        g_inputHoverGizmo = true;
+        break;
+      }
+    }
+  }
   int hover = -1;
   float hd = 18.0f;
   for (int i = 0; i < g_jointCount; i++) {
@@ -497,6 +511,8 @@ static void HandleRigClick() {
 
 // 选中骨上的旋转盘（ImGuizmo ROTATE / LOCAL）；拖拽 = FK 旋转写回
 static bool DrawBoneRotationGizmo() {
+  g_inputDragging = false;
+  // g_inputHoverGizmo 由 DrawSkeletonOverlay 先算好（关节命中），这里只做叠加
   void *t = g_selectedTransform;
   if (!t && g_selectedBone >= 0 && g_selectedBone < s_humanBoneCount)
     t = s_humanBones[g_selectedBone].transform;
@@ -526,6 +542,9 @@ static bool DrawBoneRotationGizmo() {
   ImGuizmo::SetGizmoSizeClipSpace(0.15f);
   bool used = ImGuizmo::Manipulate(g_viewM, g_projM, ImGuizmo::ROTATE,
                                    ImGuizmo::LOCAL, s_gizmoObj, delta);
+  // 输入路由用：悬停在旋转环上、或正在拖拽时，覆盖层必须吃掉鼠标
+  g_inputHoverGizmo = g_inputHoverGizmo || ImGuizmo::IsOver(ImGuizmo::ROTATE);
+  g_inputDragging = ImGuizmo::IsUsing();
   if (used) {
     // 注意：Manipulate 在 LOCAL 模式下已就地更新 s_gizmoObj（matrix = deltaRot * matrix）。
     // 这里绝不能再用返回的 delta 额外累乘，否则每帧应用两遍 → 转圈/闪动。

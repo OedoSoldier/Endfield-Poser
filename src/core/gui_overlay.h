@@ -39,6 +39,17 @@ static void SetExtPollFn(void (*fn)()) { g_extPollFn = fn; }
 
 static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
+
+// ---- 输入路由状态 ----
+// 鼠标只在「指针落在面板/旋转盘上 且 游戏光标已呼出」时由覆盖层吃掉，其余一律穿透给
+// 游戏（由 WM_NCHITTEST 决定）。游戏自带的 Alt 呼出光标通过 Cursor.lockState/visible
+// 读取（见 poser.cpp GameFrameTick），覆盖层不再强行改写游戏的光标状态。
+static bool g_inputTakeMouse = false;  // 指针落在 ImGui 窗口内容上
+static bool g_inputHoverGizmo = false; // 指针悬停在旋转盘环上
+static bool g_inputDragging = false;   // gizmo 拖拽中：必须持续吃，否则松开消息丢给游戏
+static bool g_gameCursorFree = false;  // 游戏光标已呼出（lockState == None）
+static bool g_inputWantsText = false;  // 输入框聚焦中（键盘临时归覆盖层）
+static int g_inputRouteLogged = -1;    // 路由日志去重
 static volatile bool g_guiVisible = false;
 static volatile bool g_guiRunning = false;
 
@@ -181,16 +192,22 @@ static void CleanupDeviceD3D() {
 
 static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
                                     LPARAM lParam) {
+  // 命中测试：指针在面板/旋转盘上、且游戏光标已呼出时才吃鼠标；其余一律
+  // HTTRANSPARENT，点击与移动直接落给游戏（面板开着也能转镜头、走位）。
+  // 拖拽中强制吃：否则松开左键的消息会丢给游戏，手柄会卡在拖拽态。
+  if (msg == WM_NCHITTEST) {
+    bool take = g_guiVisible &&
+                (g_inputDragging ||
+                 (g_gameCursorFree && (g_inputTakeMouse || g_inputHoverGizmo)));
+    int route = take ? 1 : 0;
+    if (route != g_inputRouteLogged) {
+      g_inputRouteLogged = route;
+      Log("[INPUT] mouse route -> %s", take ? "overlay" : "game");
+    }
+    return take ? HTCLIENT : HTTRANSPARENT;
+  }
   bool imguiHandled =
       ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-  if (msg == WM_LBUTTONDOWN) {
-    POINT p = {(short)LOWORD(lParam), (short)HIWORD(lParam)};
-    ImGuiIO &dio = ImGui::GetIO();
-    Log("[MOUSE] overlay LBUTTONDOWN (%d,%d) capture=%p fg=%p wantCap=%d "
-        "mousePos=(%.0f,%.0f)",
-        p.x, p.y, GetCapture(), (void *)GetForegroundWindow(),
-        (int)dio.WantCaptureMouse, dio.MousePos.x, dio.MousePos.y);
-  }
   if (imguiHandled)
     return true;
   switch (msg) {
@@ -252,10 +269,12 @@ static DWORD WINAPI GuiThread(LPVOID) {
 
   RECT gr;
   GetWindowRect(g_gameHwnd, &gr);
-  // WS_EX_NOACTIVATE：点击面板不抢游戏焦点（否则游戏失焦暂停、点击失效）。
-  // 文字输入由主循环临时取消该标志并激活覆盖层（见下），输入完恢复。
+  // WS_EX_NOACTIVATE：平时绝不抢游戏焦点（键盘永远归游戏）。
+  // 不加 WS_EX_TRANSPARENT：该标志对非分层窗口并不能让点击穿透，反而会把整个
+  // 游戏窗口的鼠标都吃掉；穿透改由 GuiWndProc 的 WM_NCHITTEST 按命中区域决定。
+  // 文字输入时由主循环临时去掉 NOACTIVATE 并抢焦点，输入完立刻还给游戏（见下）。
   g_guiHwnd = CreateWindowExW(
-      WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+      WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
       wc.lpszClassName, L"EndfieldPoserOverlay", WS_POPUP,
       gr.left, gr.top, gr.right - gr.left, gr.bottom - gr.top,
       nullptr, nullptr, wc.hInstance, nullptr);
@@ -346,7 +365,19 @@ static DWORD WINAPI GuiThread(LPVOID) {
       Log("[GUI] toggle -> visible=%d", (int)g_guiVisible);
     }
 
-    bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd);
+    // 只有「面板打开 且 按住 Alt」时才把覆盖层显示出来（此时它接管鼠标/键盘）。
+    // 其余时间窗口直接隐藏：既不渲染也不参与命中测试，游戏拿到全部输入。
+    // 原因：HTTRANSPARENT 只能把命中转给"同一线程"的下层窗口，覆盖层在本进程
+    // 自建线程上、游戏窗口在主线程，跨线程放行等于把点击吞掉（实测游戏点不动）。
+    bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    bool shouldShow =
+        g_guiVisible && !IsIconic(g_gameHwnd) && (altHeld || g_inputDragging);
+    static int s_showLogged = -1;
+    if ((int)shouldShow != s_showLogged) {
+      s_showLogged = (int)shouldShow;
+      Log("[GUI] overlay %s (panel=%d alt=%d)", shouldShow ? "shown" : "hidden",
+          (int)g_guiVisible, (int)altHeld);
+    }
     if (shouldShow) {
       if (!s_panelShown) {
         SetWindowPos(g_guiHwnd, HWND_TOPMOST, 0, 0, 0, 0,
@@ -373,6 +404,15 @@ static DWORD WINAPI GuiThread(LPVOID) {
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
       ShowWindow(g_guiHwnd, SW_HIDE);
       s_panelShown = false;
+      // 隐藏时若还停在"输入框抢焦点"状态：恢复 NOACTIVATE 并把焦点还给游戏
+      if (g_inputWantsText) {
+        g_inputWantsText = false;
+        LONG ex = GetWindowLongW(g_guiHwnd, GWL_EXSTYLE);
+        SetWindowLongW(g_guiHwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
+        if (IsWindow(g_gameHwnd))
+          SetForegroundWindow(g_gameHwnd);
+        Log("[INPUT] overlay hidden -> keyboard back to game");
+      }
     }
     if (!s_panelShown) {
       // 隐藏覆盖层时仍跑游戏逻辑（冻结维持/IK写回/控制文件）
@@ -383,12 +423,44 @@ static DWORD WINAPI GuiThread(LPVOID) {
       continue;
     }
 
+    // 覆盖层是 NOACTIVATE，ImGui 的 Win32 后端只在"窗口获得焦点"时才轮询
+    // GetCursorPos；而我们把非面板区域的鼠标消息让给了游戏，WM_MOUSEMOVE 不会
+    // 再进覆盖层。必须自己每帧喂指针位置，否则 io.MousePos 会停在最后一次收到
+    // 的消息上，hover/命中判定全错（表现为"点击丢失"）。
+    {
+      POINT mp;
+      if (::GetCursorPos(&mp) && ::ScreenToClient(g_guiHwnd, &mp))
+        ImGui::GetIO().AddMousePosEvent((float)mp.x, (float)mp.y);
+    }
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     __try { DrawPoserGui(); } __except (1) {
       Log("[GUI] DrawPoserGui exception code=0x%X", GetExceptionCode());
+    }
+
+    // ---- 输入路由 + 文字输入焦点 ----
+    {
+      ImGuiIO &io = ImGui::GetIO();
+      g_inputTakeMouse = io.WantCaptureMouse; // 指针落在 ImGui 窗口内容上
+      bool wantText = io.WantTextInput;
+      if (wantText != g_inputWantsText) {
+        g_inputWantsText = wantText;
+        LONG ex = GetWindowLongW(g_guiHwnd, GWL_EXSTYLE);
+        if (wantText) {
+          // 输入框聚焦：临时允许激活并抢焦点，让 WM_CHAR/WM_KEYDOWN 进 ImGui
+          SetWindowLongW(g_guiHwnd, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE);
+          SetForegroundWindow(g_guiHwnd);
+          SetFocus(g_guiHwnd);
+          Log("[INPUT] text field focused -> keyboard to overlay");
+        } else {
+          SetWindowLongW(g_guiHwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
+          if (IsWindow(g_gameHwnd))
+            SetForegroundWindow(g_gameHwnd);
+          Log("[INPUT] text field blurred -> keyboard back to game");
+        }
+      }
     }
 
     ImGui::Render();

@@ -70,10 +70,7 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
-// ---- 光标状态：首次打开面板时记录游戏原始值，关闭时原样恢复 ----
-static bool s_cursorStateSaved = false;
-static int s_origLockState = 0;
-static bool s_origVisible = true;
+// ---- 光标状态：只读游戏状态（游戏自带 Alt 呼出光标），不再强行改写 ----
 
 static int CursorLockState() {
   if (!g_cursor_get_lockState)
@@ -100,50 +97,56 @@ static bool CursorVisible() {
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 void GameFrameTick() {
   __try {
-    // 光标管理：面板显示时隐藏 Unity 光标、由 ImGui 画唯一光标（避免双光标）；
-    // 隐藏时恢复游戏原始光标状态（锁定/隐藏）。
-    static bool s_cursorManaged = false;
-    if (g_guiVisible) {
-      if (!s_cursorManaged) {
-        if (!s_cursorStateSaved) {
-          s_origLockState = CursorLockState();
+    // 光标接管：按住 Alt（游戏自带的"呼出鼠标"）或正在拖拽旋转盘时，由我们维持
+    // cursor 自由（游戏相机会每帧重锁，只设一次会被顶回去）；Alt 松开后恢复进入前
+    // 的状态，鼠标完全还给游戏。其余时间我们完全不碰游戏光标。
+    // 实测：游戏自己的 lock 状态是"闪一下"的（0→1 立刻回），不能作为判定依据。
+    {
+      static bool s_cursorTaken = false;
+      static int s_origLock = 0;
+      static bool s_origVisible = true;
+      bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+      bool wantFree = g_guiVisible && (altHeld || g_inputDragging);
+      if (wantFree) {
+        if (!s_cursorTaken) {
+          s_origLock = CursorLockState();
           s_origVisible = CursorVisible();
-          s_cursorStateSaved = true;
-          Log("[POSER] Cursor saved: lock=%d visible=%d", s_origLockState,
-              (int)s_origVisible);
+          s_cursorTaken = true;
+          Log("[INPUT] cursor takeover (alt=%d lock=%d vis=%d)", (int)altHeld,
+              s_origLock, (int)s_origVisible);
         }
+        // 每帧维持：游戏自己的相机控制器会重新 lock 回去
         if (g_cursor_set_lockState) {
-          int v0 = 0;
-          void *p0[] = {&v0};
-          Invoke(g_cursor_set_lockState, nullptr, p0);
+          int v = 0;
+          void *p[] = {&v};
+          Invoke(g_cursor_set_lockState, nullptr, p);
         }
         if (g_cursor_set_visible) {
-          int v1 = 0; // 隐藏 Unity 光标，避免和覆盖层光标形成"双光标"
-          void *p1[] = {&v1};
-          Invoke(g_cursor_set_visible, nullptr, p1);
+          int v = 1; // 用系统光标，不画 ImGui 光标，避免双光标
+          void *p[] = {&v};
+          Invoke(g_cursor_set_visible, nullptr, p);
         }
-        ImGui::GetIO().MouseDrawCursor = true; // 覆盖层绘制唯一光标
-        s_cursorManaged = true;
-        // 释放游戏窗口可能持有的鼠标捕获，否则点击会被游戏窗口截走，
-        // 覆盖层（ImGui 面板）收不到鼠标消息。
-        SetCapture(nullptr);
-        ReleaseCapture();
+        g_gameCursorFree = true;
+        ImGui::GetIO().MouseDrawCursor = false;
+      } else {
+        if (s_cursorTaken) {
+          if (g_cursor_set_lockState) {
+            int v = s_origLock;
+            void *p[] = {&v};
+            Invoke(g_cursor_set_lockState, nullptr, p);
+          }
+          if (g_cursor_set_visible) {
+            int v = s_origVisible ? 1 : 0;
+            void *p[] = {&v};
+            Invoke(g_cursor_set_visible, nullptr, p);
+          }
+          s_cursorTaken = false;
+          Log("[INPUT] cursor released (lock=%d vis=%d)", s_origLock,
+              (int)s_origVisible);
+        }
+        g_gameCursorFree = false;
+        ImGui::GetIO().MouseDrawCursor = false;
       }
-    } else if (s_cursorManaged) {
-      ImGui::GetIO().MouseDrawCursor = false;
-      if (g_cursor_set_lockState) {
-        int v = s_origLockState;
-        void *p[] = {&v};
-        Invoke(g_cursor_set_lockState, nullptr, p);
-      }
-      if (g_cursor_set_visible) {
-        int v = s_origVisible ? 1 : 0;
-        void *p[] = {&v};
-        Invoke(g_cursor_set_visible, nullptr, p);
-      }
-      s_cursorManaged = false;
-      Log("[POSER] Cursor restored: lock=%d visible=%d", s_origLockState,
-          (int)s_origVisible);
     }
     // 角色捕获自愈：SetMainCharacter hook 漏触发/时机错过时，
     // 周期性从 PlayerController 补捞当前角色（约每 2 秒一次）。
