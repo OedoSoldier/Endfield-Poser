@@ -1,15 +1,28 @@
 # 构建环境与 EIEM 复用说明（Endfield Poser）
 
-## 本机现状（2026-08-27 整理）
+## 本机现状（2026-09-20 更新）
 
 这台 Windows 机器上：
 
-- 已安装 **Visual Studio 2022 Community**（含 MSVC C++ 工具链，`vcvars64.bat` 可用）
+- 已安装 **Visual Studio 18 Insiders**（含 MSVC C++ 工具链，`vcvars64.bat` 位于
+  `C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\`）
 - **没有安装 cmake**（`build.bat` 原版无法直接跑）
-- **没有安装 Windows SDK**（缺少 `windows.h`、`crtdbg.h`、`d3d11.lib` 等）
+- **没有安装系统 Windows SDK**（缺少 `windows.h`、`crtdbg.h`、`d3d11.lib` 等）
 - 当前 shell 用户非管理员，无法通过 VS Installer 装 SDK
 
 解决方案：从 NuGet 拉取 Windows SDK 头文件/库到 `deps/`，用 `tools/build_msvc.ps1` 直接调用 MSVC 编译，绕开 cmake 与系统 SDK。
+
+`tools/build_msvc.ps1` 会自动探测 `vcvars64.bat`（遍历各 VS 版本目录，含 Insiders / BuildTools，
+再退回 vswhere），不再硬编码 2022 Community 路径。
+
+### 换机器后的初始化（两步）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\setup_winsdk.ps1   # 需联网，约 200MB，只写 deps/
+powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1      # 编译 plugin/ 并跑三个数学单测
+```
+
+`deps/winsdk`、`deps/winsdkcpp` 与 `plugin/` 都在 `.gitignore` 里，因此每次换机器/换 clone 都要先跑第一步。
 
 ## 参考项目：EIEM（已跑通的原型）
 
@@ -79,6 +92,12 @@ powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1
 5. （可选）把 `plugin\applepie_manager.dll`、`plugin\applepie_manager_config.txt` 也放进 `plugin\`
 6. 启动游戏；代理 DLL 枚举加载 `plugin\*.dll`，poser 与 manager 都会被拉起；
    日志写在 `D:\Endfield Game\plugin\poser_log.txt`（poser）与 manager 的日志
+
+> **必须用启动器启动游戏（本机实测 2026-09-20）**：直接运行 `Endfield.exe` 会在 IL2CPP
+> 运行时初始化完成前 attach，触发 Unity GC 致命错误
+> （`Threads explicit registering is not previously enabled` / `Collecting from unknown thread`）。
+> 本机游戏在 `E:\Hypergryph Launcher\games\Arknights Endfield\`，用
+> `E:\Hypergryph Launcher\Launcher.exe` 启动即正常。
 
 > 代理与插件可共存：EIEM / ApplepieManager / poser 的代理加载器机制相同，
 > 谁先部署谁生效，重复放置代理无害（README 说明"无需重复放置"指的是二选一/全放均可）。

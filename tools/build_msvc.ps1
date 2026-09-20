@@ -20,15 +20,31 @@ $root = Join-Path $PSScriptRoot '..'
 Set-Location $root
 
 # ---- 1) Locate MSVC toolchain (vcvars64.bat) ----
-$vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
-if (-not (Test-Path $vcvars)) {
+# Probe the usual install roots first (any edition / any VS version folder,
+# including Insiders + BuildTools), then fall back to vswhere.
+$vcvars = $null
+$vsRoots = @(
+  'C:\Program Files\Microsoft Visual Studio',
+  'C:\Program Files (x86)\Microsoft Visual Studio'
+)
+foreach ($vsRoot in $vsRoots) {
+  if (-not (Test-Path $vsRoot)) { continue }
+  $hit = Get-ChildItem -Path (Join-Path $vsRoot '*\*\VC\Auxiliary\Build\vcvars64.bat') -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending | Select-Object -First 1
+  if ($hit) { $vcvars = $hit.FullName; break }
+}
+if (-not $vcvars) {
   $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
   if (Test-Path $vswhere) {
     $vsDir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    if ($vsDir) { $vcvars = Join-Path $vsDir 'VC\Auxiliary\Build\vcvars64.bat' }
+    if ($vsDir) {
+      $candidate = Join-Path $vsDir 'VC\Auxiliary\Build\vcvars64.bat'
+      if (Test-Path $candidate) { $vcvars = $candidate }
+    }
   }
 }
-if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found (Visual Studio C++ tools missing?)" }
+if (-not $vcvars) { throw "vcvars64.bat not found (Visual Studio C++ tools missing?)" }
+Write-Host "Using $vcvars"
 
 # ---- 2) Locate Windows SDK headers/libs (NuGet, in deps) ----
 $winsdkHdr = Join-Path $root 'deps\winsdk\c\Include'

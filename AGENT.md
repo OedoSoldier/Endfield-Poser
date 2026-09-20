@@ -43,7 +43,15 @@ endfield-poser/
 build.bat
 ```
 等价于：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` + `cmake --build build --config Release`。
-产物自动部署到 `plugin/poser.dll` + `plugin/d3dcompiler_47.dll`。
+产物自动部署到 `plugin/poser.dll` + `plugin/d3dcompiler_47.dll` + `plugin/vulkan-1.dll`。
+
+**本机没有 cmake，也没有系统 Windows SDK**：若 `cmake` 不在 PATH，`build.bat` 会自动回退到
+`tools\build_msvc.ps1`（cl 直接编译 + 跑三个数学单测）；该脚本自动探测 `vcvars64.bat`
+（含 VS18 Insiders / BuildTools 等目录）。新机器首次使用先补齐 SDK 依赖：
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\setup_winsdk.ps1   # 需联网，约 200MB，落到 deps\（gitignore）
+powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1
+```
 
 ### Linux 数学单测（沙箱/CI 可用，验证 math/ 层正确性）
 ```bash
@@ -57,6 +65,20 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 2. 启动游戏：代理 `d3dcompiler_47.dll` 被游戏加载链拉起，进而加载 `poser.dll`。
 3. 由宿主 Applepie 插件系统启用 `Endfield Poser`（或自动加载），`DllMain` 启动初始化线程。
 4. 默认热键：`VK_INSERT` 呼出/隐藏 GUI，`VK_F8` 截图（可在 `plugin/poser_config.txt` 改）。
+
+> **必须经启动器启动，不要直接运行 `Endfield.exe`**（2026-09-20 本机实测）：
+> 直启会绕过 Hypergryph 启动器 / ACE 的初始化，插件会在 IL2CPP 运行时尚未初始化完成时
+> 调用 `il2cpp_thread_attach()`，触发 Unity GC 致命错误并卡死，弹窗内容为
+> `Threads explicit registering is not previously enabled` 与 `Collecting from unknown thread`
+> （同样两行会写进游戏根目录的 `Endfield.gc.log`）。同一份 `poser.dll` 走启动器启动正常。
+> 直启崩了的判据：`plugin\poser_log.txt` 停在 `[POSER] Resolving IL2CPP...`、没有
+> `[POSER] IL2CPP resolved.`。用启动器重开即可，不必重装插件。
+
+本机部署路径（2026-09-20）：
+
+- 游戏根目录 `E:\Hypergryph Launcher\games\Arknights Endfield\`（启动器 `E:\Hypergryph Launcher\Launcher.exe`）
+- `d3dcompiler_47.dll`、`vulkan-1.dll` 放游戏根目录（覆盖游戏自带的需要先备份）
+- `poser.dll`、`poser_config.txt` 放 `<游戏根目录>\plugin\`
 
 ## 4. 运行时产物（排查的第一现场）
 
