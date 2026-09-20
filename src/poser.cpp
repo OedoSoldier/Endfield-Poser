@@ -156,8 +156,8 @@ void GameFrameTick() {
         TryCaptureFromPlayerController();
         // 实体/动画器未变化但骨骼仍为 0：强制重建一次，等角色恢复后接上
         if (s_humanBoneCount == 0) {
+          RebuildAllBones();   // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
           RebuildHumanBones();
-          RebuildAllBones();
           Log("[POSER] Re-capture retry: animator=%p bones=%d",
               g_charAnimator, s_humanBoneCount);
         }
@@ -179,8 +179,8 @@ void GameFrameTick() {
     if (g_charChanged) {
     g_charChanged = false;
     s_restCaptured = false; // 新角色：A-pose 基线作废，下次重建时重捕
+    RebuildAllBones();   // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
     RebuildHumanBones();
-    RebuildAllBones();
     RebuildAccessories();
       RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
       ResetSMCState();      // Task 4.2：SMC 表情状态随角色重置
@@ -203,8 +203,8 @@ static void RefreshCharacterBones() {
   g_charChanged = false;
   if (newChar)
     s_restCaptured = false; // 新角色：重捕 A-pose 基线
+  RebuildAllBones(); // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
   RebuildHumanBones();
-  RebuildAllBones();
   RebuildAccessories();
   RebuildBlendShapes();
   ResetSMCState();

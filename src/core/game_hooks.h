@@ -312,7 +312,26 @@ static void SetCharacterEntity(void *entity) {
       g_mainCharEntity = entity;
       g_charAnimator = animator;
       g_charChanged = true;
-      Log("[POSER] CharAnimator=%p", g_charAnimator);
+      // 诊断：Animator 是否为 Humanoid + 所在 GameObject 名。Avatar 没映射到的骨
+      // GetBoneTransform 会直接返回 null（本项目实测只拿到 22/55 或 0），这两项能
+      // 直接区分"抓错 Animator / 不是 Humanoid rig / Avatar 映射不全"。
+      int isHuman = -1;
+      char goName[128] = "";
+      __try {
+        if (g_animator_get_isHuman) {
+          void *b = Invoke(g_animator_get_isHuman, animator);
+          isHuman = b ? (*(bool *)((char *)b + 16) ? 1 : 0) : -1;
+        }
+        if (g_component_get_gameObject && g_object_get_name) {
+          void *go = Invoke(g_component_get_gameObject, animator);
+          void *nb = go ? Invoke(g_object_get_name, go) : nullptr;
+          if (nb)
+            ReadStr(nb, goName, sizeof(goName));
+        }
+      } __except (1) {
+      }
+      Log("[POSER] CharAnimator=%p isHuman=%d go='%s'", g_charAnimator,
+          isHuman, goName);
     }
   } __except (1) {
   }
@@ -506,6 +525,11 @@ static Quat GetBoneLocalRot(void *t) {
   return q;
 }
 
+// 骨骼写入钩子：任何"手动写骨"（旋转盘 / WebUI / 滑条）写完局部旋转/位置后会回调
+// 一次（参数为被写的骨）。上层用它把新姿势同步进自己的缓存，例如 accessory.h 的
+// 冻结快照——否则冻结维持逻辑下一帧就把这次编辑打回去。未注册时为 nullptr，无开销。
+static void (*g_boneWriteHook)(void *transform) = nullptr;
+
 static void SetBoneLocalRot(void *t, Quat q) {
   if (!t || !g_transform_set_localRotation)
     return;
@@ -514,6 +538,8 @@ static void SetBoneLocalRot(void *t, Quat q) {
     Invoke(g_transform_set_localRotation, t, params);
   } __except (1) {
   }
+  if (g_boneWriteHook)
+    g_boneWriteHook(t);
 }
 
 static Vec3 GetBoneLocalPos(void *t) {
@@ -537,6 +563,8 @@ static void SetBoneLocalPos(void *t, Vec3 p) {
     Invoke(g_transform_set_localPosition, t, params);
   } __except (1) {
   }
+  if (g_boneWriteHook)
+    g_boneWriteHook(t);
 }
 
 // 取骨骼名称（用于日志/面板显示）

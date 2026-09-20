@@ -44,12 +44,102 @@ static void CaptureRestPose() {
 }
 
 // 重建骨骼列表（角色切换后调用）
+// ---- Humanoid 骨名回退 ----
+// 本作 Avatar 只映射 22 根主干骨（Unity 55 根里的手指/眼/下巴共 33 根
+// GetBoneTransform 一律返回 null，见 plugin/poser_bones.txt 的 humanoid 列）。
+// 这批骨按骨架真实命名回退解析，命名取自角色实测骨架（Bip001 + face joints）。
+static const char *const kHumanBoneFallback[55][3] = {
+    /*  0 Hips          */ {"Bip001", "Bip001_Pelvis", nullptr},
+    /*  1 LeftUpperLeg  */ {"Bip001_L_Thigh", nullptr, nullptr},
+    /*  2 RightUpperLeg */ {"Bip001_R_Thigh", nullptr, nullptr},
+    /*  3 LeftLowerLeg  */ {"Bip001_L_Calf", nullptr, nullptr},
+    /*  4 RightLowerLeg */ {"Bip001_R_Calf", nullptr, nullptr},
+    /*  5 LeftFoot      */ {"Bip001_L_Foot", nullptr, nullptr},
+    /*  6 RightFoot     */ {"Bip001_R_Foot", nullptr, nullptr},
+    /*  7 Spine         */ {"Bip001_Spine", nullptr, nullptr},
+    /*  8 Chest         */ {"Bip001_Spine1", nullptr, nullptr},
+    /*  9 Neck          */ {"Bip001_Neck", nullptr, nullptr},
+    /* 10 Head          */ {"Bip001_Head", nullptr, nullptr},
+    /* 11 LeftShoulder  */ {"Bip001_L_Clavicle", nullptr, nullptr},
+    /* 12 RightShoulder */ {"Bip001_R_Clavicle", nullptr, nullptr},
+    /* 13 LeftUpperArm  */ {"Bip001_L_UpperArm", nullptr, nullptr},
+    /* 14 RightUpperArm */ {"Bip001_R_UpperArm", nullptr, nullptr},
+    /* 15 LeftLowerArm  */ {"Bip001_L_Forearm", nullptr, nullptr},
+    /* 16 RightLowerArm */ {"Bip001_R_Forearm", nullptr, nullptr},
+    /* 17 LeftHand      */ {"Bip001_L_Hand", nullptr, nullptr},
+    /* 18 RightHand     */ {"Bip001_R_Hand", nullptr, nullptr},
+    /* 19 LeftToes      */ {"Bip001_L_Toe0", nullptr, nullptr},
+    /* 20 RightToes     */ {"Bip001_R_Toe0", nullptr, nullptr},
+    /* 21 LeftEye       */ {"eyeLfJoint", "Bip001_L_Eye", nullptr},
+    /* 22 RightEye      */ {"eyeRtJoint", "Bip001_R_Eye", nullptr},
+    /* 23 Jaw           */ {"jawJoint", "Bip001_Jaw", nullptr},
+    /* 24 L ThumbProximal     */ {"Bip001_L_Finger0", nullptr, nullptr},
+    /* 25 L ThumbIntermediate */ {"Bip001_L_Finger01", nullptr, nullptr},
+    /* 26 L ThumbDistal       */ {"Bip001_L_Finger02", nullptr, nullptr},
+    /* 27 L IndexProximal     */ {"Bip001_L_Finger1", nullptr, nullptr},
+    /* 28 L IndexIntermediate */ {"Bip001_L_Finger11", nullptr, nullptr},
+    /* 29 L IndexDistal       */ {"Bip001_L_Finger12", nullptr, nullptr},
+    /* 30 L MiddleProximal    */ {"Bip001_L_Finger2", nullptr, nullptr},
+    /* 31 L MiddleIntermediate*/ {"Bip001_L_Finger21", nullptr, nullptr},
+    /* 32 L MiddleDistal      */ {"Bip001_L_Finger22", nullptr, nullptr},
+    /* 33 L RingProximal      */ {"Bip001_L_Finger3", nullptr, nullptr},
+    /* 34 L RingIntermediate  */ {"Bip001_L_Finger31", nullptr, nullptr},
+    /* 35 L RingDistal        */ {"Bip001_L_Finger32", nullptr, nullptr},
+    /* 36 L LittleProximal    */ {"Bip001_L_Finger4", nullptr, nullptr},
+    /* 37 L LittleIntermediate*/ {"Bip001_L_Finger41", nullptr, nullptr},
+    /* 38 L LittleDistal      */ {"Bip001_L_Finger42", nullptr, nullptr},
+    /* 39 R ThumbProximal     */ {"Bip001_R_Finger0", nullptr, nullptr},
+    /* 40 R ThumbIntermediate */ {"Bip001_R_Finger01", nullptr, nullptr},
+    /* 41 R ThumbDistal       */ {"Bip001_R_Finger02", nullptr, nullptr},
+    /* 42 R IndexProximal     */ {"Bip001_R_Finger1", nullptr, nullptr},
+    /* 43 R IndexIntermediate */ {"Bip001_R_Finger11", nullptr, nullptr},
+    /* 44 R IndexDistal       */ {"Bip001_R_Finger12", nullptr, nullptr},
+    /* 45 R MiddleProximal    */ {"Bip001_R_Finger2", nullptr, nullptr},
+    /* 46 R MiddleIntermediate*/ {"Bip001_R_Finger21", nullptr, nullptr},
+    /* 47 R MiddleDistal      */ {"Bip001_R_Finger22", nullptr, nullptr},
+    /* 48 R RingProximal      */ {"Bip001_R_Finger3", nullptr, nullptr},
+    /* 49 R RingIntermediate  */ {"Bip001_R_Finger31", nullptr, nullptr},
+    /* 50 R RingDistal        */ {"Bip001_R_Finger32", nullptr, nullptr},
+    /* 51 R LittleProximal    */ {"Bip001_R_Finger4", nullptr, nullptr},
+    /* 52 R LittleIntermediate*/ {"Bip001_R_Finger41", nullptr, nullptr},
+    /* 53 R LittleDistal      */ {"Bip001_R_Finger42", nullptr, nullptr},
+    /* 54 UpperChest    */ {"Bip001_Spine2", nullptr, nullptr},
+};
+
+static void *FindBoneByNameInAll(const char *name); // 定义在 s_allBones 之后
+static void DumpBoneInventoryOnce();                // 定义在 s_allBones 之后
+
 static void RebuildHumanBones() {
   s_humanBoneCount = 0;
+  int fallbackHits = 0;
+  char missing[1024] = "";
+  size_t mlen = 0;
   for (int b = 0; b < kHumanBoneCount; b++) {
     void *t = GetHumanoidBone((HumanBodyBones)b);
-    if (!t)
+    // Avatar 没映射到的骨（手指/眼/下巴等）按骨架命名回退
+    if (!t && kHumanBoneFallback[b][0]) {
+      for (int c = 0; c < 3 && kHumanBoneFallback[b][c]; c++) {
+        t = FindBoneByNameInAll(kHumanBoneFallback[b][c]);
+        if (t) {
+          fallbackHits++;
+          break;
+        }
+      }
+    }
+    if (!t) {
+      const char *mn = HumanBoneName((HumanBodyBones)b);
+      if (mn) {
+        size_t n = strlen(mn);
+        if (mlen + n + 2 < sizeof(missing)) {
+          if (mlen)
+            missing[mlen++] = ',';
+          memcpy(missing + mlen, mn, n);
+          mlen += n;
+          missing[mlen] = 0;
+        }
+      }
       continue;
+    }
     BoneHandle &bh = s_humanBones[s_humanBoneCount];
     bh.humanBone = (HumanBodyBones)b;
     bh.transform = t;
@@ -61,7 +151,18 @@ static void RebuildHumanBones() {
       snprintf(bh.name, sizeof(bh.name), "%s", HumanBoneName(b));
     s_humanBoneCount++;
   }
-  Log("[POSER] Skeleton rebuilt: %d humanoid bones", s_humanBoneCount);
+  Log("[POSER] Skeleton rebuilt: %d humanoid bones (%d via name fallback)",
+      s_humanBoneCount, fallbackHits);
+  // 只在数量变化（或最前面 3 次）时打详细映射，避免重试循环刷屏
+  static int s_lastLoggedCount = -1;
+  static int s_detailDumps = 0;
+  if (s_humanBoneCount != s_lastLoggedCount || s_detailDumps < 3) {
+    s_lastLoggedCount = s_humanBoneCount;
+    s_detailDumps++;
+    Log("[POSER] Humanoid map: found=%d missing=[%s]", s_humanBoneCount,
+        missing);
+  }
+  DumpBoneInventoryOnce(); // 全骨列表按 humanoid 标记一次性导出（诊断用）
 }
 
 // 捕获当前帧全部骨骼 local pos/rot 到快照
@@ -265,6 +366,14 @@ struct AllBone {
   int parentIdx = -1; // -1 = 根
 };
 static std::vector<AllBone> s_allBones;
+static void *FindBoneByNameInAll(const char *name) {
+  if (!name)
+    return nullptr;
+  for (const AllBone &b : s_allBones)
+    if (b.name[0] && _stricmp(b.name, name) == 0)
+      return b.transform;
+  return nullptr;
+}
 static int s_bonesRev = 0; // 骨骼列表版本号（角色切换重建时 +1，Blender 桥接据此自动刷新）
 
 static void CollectAllBonesRecursive(void *t, void *parent, int depth) {
@@ -299,6 +408,41 @@ static void CollectAllBonesRecursive(void *t, void *parent, int depth) {
     }
   } __except (1) {
   }
+}
+
+// 判断某 transform 是否在 humanoid 列表里（skeleton.h 内自带，避免依赖后置头文件）
+static bool IsHumanBoneInList(void *t) {
+  for (int i = 0; i < s_humanBoneCount; i++)
+    if (s_humanBones[i].transform == t)
+      return true;
+  return false;
+}
+
+// 一次性把角色全部 Transform 导出到 plugin\poser_bones.txt（层级 + 是否 humanoid），
+// 用于核对 Avatar 映射不到的骨（GetBoneTransform 返回 null 的那批，例如手指/脸骨），
+// 也是后续"按骨名回退解析"的命名依据。
+static void DumpBoneInventoryOnce() {
+  static bool dumped = false;
+  if (dumped || s_allBones.empty())
+    return;
+  dumped = true;
+  FILE *f = fopen("plugin\\poser_bones.txt", "wb");
+  if (!f) {
+    Log("[POSER] WARN: cannot write plugin/poser_bones.txt");
+    return;
+  }
+  fprintf(f, "# idx\tparentIdx\tdepth\thumanoid\tname\n");
+  for (size_t i = 0; i < s_allBones.size(); i++) {
+    int depth = 0;
+    for (int p = s_allBones[i].parentIdx; p >= 0 && depth < 64; depth++)
+      p = s_allBones[p].parentIdx;
+    fprintf(f, "%d\t%d\t%d\t%d\t%s\n", (int)i, s_allBones[i].parentIdx, depth,
+            IsHumanBoneInList(s_allBones[i].transform) ? 1 : 0,
+            s_allBones[i].name);
+  }
+  fclose(f);
+  Log("[POSER] Bone inventory dumped: %d entries -> plugin/poser_bones.txt",
+      (int)s_allBones.size());
 }
 
 static void RebuildAllBones() {

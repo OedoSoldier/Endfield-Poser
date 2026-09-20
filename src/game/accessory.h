@@ -53,6 +53,25 @@ static std::vector<AccessoryBone> s_accessoryBones;
 static std::vector<AccessoryChain> s_accessoryChains;
 static std::vector<RawAccessoryBone> s_rawBones;
 
+// 手动编辑从骨（旋转盘 / WebUI）后，把新姿势写回冻结快照 = 新的冻结基线。
+// 不这么做的话 MaintainFreeze 每帧的 ApplyAccessorySnapshot 会把编辑立刻打回去，
+// 表现为「能选中、能拖旋转盘，但骨一动不动」。
+static void SyncAccessorySnapshotFromTransform(void *t) {
+  if (!t || s_accessoryBones.empty())
+    return;
+  for (AccessoryBone &b : s_accessoryBones) {
+    if (b.transform != t)
+      continue;
+    b.localPos = GetBoneLocalPos(t);
+    b.localRot = GetBoneLocalRot(t);
+    return;
+  }
+}
+
+static void InstallAccessoryWriteHook() {
+  g_boneWriteHook = SyncAccessorySnapshotFromTransform;
+}
+
 static bool IsHumanoidBoneTransform(void *t) {
   for (int i = 0; i < s_humanBoneCount; i++)
     if (s_humanBones[i].transform == t)
@@ -188,6 +207,7 @@ static void RebuildAccessories() {
   }
   Log("[POSER] Accessories rebuilt: %zu chains, %zu bones",
       s_accessoryChains.size(), s_accessoryBones.size());
+  InstallAccessoryWriteHook(); // 从骨列表就绪后接管手动写骨 → 同步冻结快照
 }
 
 // ---- 物理开关 ----
@@ -270,12 +290,16 @@ static void CaptureAccessorySnapshot() {
 }
 
 static void ApplyAccessorySnapshot() {
+  // 回写期间挂起钩子：避免自己写自己（多一次 O(n) 扫描），也避免把回写当成手动编辑
+  void (*prevHook)(void *) = g_boneWriteHook;
+  g_boneWriteHook = nullptr;
   for (AccessoryBone &b : s_accessoryBones) {
     if (b.locked)
       continue; // 锁定骨保持钉住姿势
     SetBoneLocalPos(b.transform, b.localPos);
     SetBoneLocalRot(b.transform, b.localRot);
   }
+  g_boneWriteHook = prevHook;
 }
 
 // 每帧维护：角色切换时重建从骨列表（供主循环调用）
