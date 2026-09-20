@@ -16,7 +16,11 @@
 - 结论：FK/IK 双链 + `ik_fk_switch` 驱动蒙皮骨两组约束影响度；切换必须 Snap。
 - 关键配方：`rotFK.influence = var`、`rotIK.influence = 1-var`（var 指向 `c_hand_ik.l["ik_fk_switch"]`）；`add_driver_to_prop` 见 ARP `src/lib/drivers.py`。
 
-## 二、下一步：Blender 侧控制 Rig（未开始）
+## 二、已雪藏：Blender 侧控制 Rig（暂时搁置）
+
+> **状态：已雪藏（2026-09-20）**。桥接插件源码（`tools/blender/endfield_poser_bridge/`）
+> 与方案文档（`docs/blender-bridge.md`）都保留，但暂不继续开发、也不作为当前对外功能；
+> 游戏侧不依赖 Blender 也能完成摆姿（旋转盘 + WebUI）。恢复时从本节步骤接着做。
 
 目标：桥接插件（`tools/blender/endfield_poser_bridge/__init__.py`）在游戏骨架上生成 ARP 风格双链。
 
