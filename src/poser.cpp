@@ -369,11 +369,11 @@ void DrawPoserGui() {
 
   // 形态键面板（面部 BlendShape，Task 4.1）
   ImGui::SetNextWindowPos(ImVec2(680, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 120.0f),
-                                      ImVec2(FLT_MAX, FLT_MAX));
+  // 形态键面板内部用 BeginChild(size=(0,0)) 填满可用空间，和 AlwaysAutoResize 冲突
+  // （子区域会塌成 0 → 内容看不见），所以这里保持固定初始尺寸、允许手动调整。
+  ImGui::SetNextWindowSize(ImVec2(360, 320), ImGuiCond_FirstUseEver);
   if (ImGui::Begin(u8"\u5f62\u6001\u952e", nullptr,
                    ImGuiWindowFlags_NoCollapse |
-                       ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     DrawMorphPanel();
   }

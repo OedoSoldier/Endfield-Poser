@@ -10,8 +10,6 @@ void Log(const char *fmt, ...);
 static int g_guiToggleVK = VK_INSERT;   // 呼出/隐藏 GUI
 static int g_screenshotVK = VK_F8;      // 截图
 static char g_defaultPoseDir[MAX_PATH] = "";
-// 外置姿态目录（"写在游戏外"）：默认 %USERPROFILE%\Documents\EndfieldPoser\poses
-static char g_exportPoseDir[MAX_PATH] = "";
 // click_through=1：覆盖层常驻显示，用 WS_EX_LAYERED|TRANSPARENT 做真穿透；
 // 按住 Alt 时才取消穿透、由面板吃鼠标。默认 0 = 按住 Alt 才显示覆盖层。
 static bool g_clickThrough = true; // 默认常驻 + 真穿透（实测手感更好）
@@ -120,26 +118,6 @@ static bool LoadPoserConfig() {
     if (strcmp(key, "gui_toggle_key") == 0)       g_guiToggleVK = ParseVK(val, VK_INSERT);
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
-    else if (strcmp(key, "export_pose_dir") == 0) {
-      if (val[0] == '\0') {
-        g_exportPoseDir[0] = 0;
-      } else if (val[1] == ':' || (val[0] == '\\' && val[1] == '\\')) {
-        snprintf(g_exportPoseDir, sizeof(g_exportPoseDir), "%s", val);
-      } else {
-        // 相对路径按游戏根目录解析（与 default_pose_dir 同规则）
-        HMODULE m = GetModuleHandleA("poser.dll");
-        char base[MAX_PATH] = {};
-        if (m && GetModuleFileNameA(m, base, MAX_PATH)) {
-          char *s = strrchr(base, '\\');
-          if (s) *s = 0;
-          s = strrchr(base, '\\');
-          if (s) *s = 0;
-          snprintf(g_exportPoseDir, sizeof(g_exportPoseDir), "%s\\%s", base, val);
-        } else {
-          snprintf(g_exportPoseDir, sizeof(g_exportPoseDir), "%s", val);
-        }
-      }
-    }
     else if (strcmp(key, "default_pose_dir") == 0) {
       if (val[0] == '\0') {
         ResolveDefaultPoseDir();
@@ -168,15 +146,5 @@ static bool LoadPoserConfig() {
   fclose(f);
   Log("[CFG] gui_toggle_key=%d (0x%X) screenshot_key=%d",
       g_guiToggleVK, g_guiToggleVK, g_screenshotVK);
-  // 没配 export_pose_dir 就给个游戏外的默认位置：我的文档\EndfieldPoser\poses
-  if (g_exportPoseDir[0] == 0) {
-    const char *up = getenv("USERPROFILE");
-    if (up && up[0])
-      snprintf(g_exportPoseDir, sizeof(g_exportPoseDir),
-               "%s\\Documents\\EndfieldPoser\\poses", up);
-    else
-      snprintf(g_exportPoseDir, sizeof(g_exportPoseDir), "plugin\\poses_export");
-  }
-  Log("[CFG] export_pose_dir=%s", g_exportPoseDir);
   return true;
 }

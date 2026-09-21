@@ -73,7 +73,6 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 gui_toggle_key=VK_F12        # 呼出/隐藏面板（支持 VK_F12 / F12 / 0x7B）
 click_through=1              # 1=覆盖层常驻并真穿透（推荐）；0=按住 Alt 才显示面板
 default_pose_dir=plugin\poses
-export_pose_dir=C:\Users\<你>\Documents\EndfieldPoser\poses   # 姿态"另存到外部"的目录（缺省即此）
 ```
 
 > 截图不在插件内实现（按 F8 无效）：用 `tools/screenshot.ps1` 截游戏窗口到 `debug/snap.png`。
