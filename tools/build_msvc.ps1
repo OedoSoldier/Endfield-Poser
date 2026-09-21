@@ -87,6 +87,9 @@ Write-Host '=== Compiling version resource ==='
 # cl 不处理 .rc；必须先用 rc.exe 编成 .res，再交给链接器
 # （Applepie Manager 用 GetFileVersionInfoA 读它显示插件版本）
 $rcCmdLine = 'call "' + $vcvars + '" >nul 2>&1 && rc /nologo /I src /fo build\obj\poser.res src\poser.rc'
+# rc.exe 会按"输出 vs .rc 文件"的时间戳做增量判断，而版本号在 version.h 里——
+# 只改 version.h 时它不会重编，导致 DLL 版本号停在旧值。先删掉旧 .res 强制重编。
+Remove-Item -LiteralPath 'build\obj\poser.res' -Force -ErrorAction SilentlyContinue
 cmd /d /c $rcCmdLine
 if ($LASTEXITCODE -ne 0) { throw "rc failed: src\poser.rc" }
 
