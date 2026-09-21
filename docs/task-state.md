@@ -6,7 +6,7 @@
 
 **本轮新增（游戏内体验为主）**
 
-- 骨骼层级面板（Blender 风格：树 + 搜索 + 与 3D 选中联动）；选中骨可调 **旋转/位置**（滑条 + 数值输入 + 复位；humanoid 复位到 A-pose，从骨复位到冻结瞬间）
+- 骨骼参数面板：3D 点选骨骼后可调 **旋转/位置**（滑条 + 数值输入 + 复位；humanoid 复位到 A-pose，从骨复位到冻结瞬间）
 - **撤销/重做**（Ctrl+Z / Ctrl+Y，整骨架快照，连续拖拽按 400ms 合并成一步）
 - **输入路由重做**：按命中区域 + 光标状态决定鼠标归属。`plugin/poser_config.txt` 里 `click_through=1` 时覆盖层常驻显示并真穿透（`WS_EX_LAYERED|TRANSPARENT`），按住 Alt 或游戏自己放开光标时才接管；文本输入临时抢焦点
 - 从骨链：默认不显示；勾「从骨链」显示可摆放链根；命名过滤 `Nub/Twist/corrective/Collider/表情骨/inner/outer/wep`
@@ -21,6 +21,9 @@
 - 撤销不覆盖形态键权重，也不回滚从骨的"冻结基线"（`frozenPos/frozenRot`）
 
 **雪藏**：Blender 桥（`tools/blender/`、`docs/blender-bridge.md`，见下文 §二）
+
+**已移除（做过但没做好的）**：骨骼层级树面板（Blender 风格树 + 搜索）。实测不理想，发布前已删，
+代码保留在 git 历史里（提交 `05a1b51`）。
 
 ## 一、当前已完成的
 
