@@ -98,6 +98,9 @@ static bool CursorVisible() {
 }
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
+// 冻结/解冻热键（面板按钮的备用通道；UI 的快捷键列表会跟着它显示）
+static const int kFreezeVK = VK_F11;
+
 void GameFrameTick() {
   __try {
     // 光标完全交给游戏自己管：按 Alt 显示光标是游戏自带行为，插件不改它的
@@ -140,9 +143,9 @@ void GameFrameTick() {
     } else {
       s_captureRetry = 0;
     }
-    // 冻结热键 F9：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）
-    if (GetAsyncKeyState(VK_F9) & 1) {
-      Log("[CTRL] F9 hotkey -> toggle freeze");
+    // 冻结热键（默认 F11）：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）
+    if (GetAsyncKeyState(kFreezeVK) & 1) {
+      Log("[CTRL] freeze hotkey -> toggle freeze");
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();
@@ -283,7 +286,9 @@ void DrawPoserGui() {
       char vkbuf[16];
       ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
                   VkName(g_guiToggleVK, vkbuf, sizeof(vkbuf)));
-      ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1aF9");
+      char fbuf[16];
+      ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1a%s",
+                  VkName(kFreezeVK, fbuf, sizeof(fbuf)));
       ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
     }
     // 根骨骼位置微调（整体位移；冻结态直接写回）
