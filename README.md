@@ -19,6 +19,10 @@
 | `plugin\poser.dll` | 游戏根目录的 `plugin\` |
 | `plugin\poser_config.txt` | 游戏根目录的 `plugin\` |
 
+> 📁 **注意是 `plugin\`（单数，插件目录），不是游戏自带的 `plugins\`（复数）**。
+> 后者是游戏的 Qt 插件目录（里面是 `imageformats/`、`platforms/` 这些），放进去不会生效。
+> 如果游戏目录下没有 `plugin\` 文件夹，自己新建一个。
+
 > ⚠️ **必须用游戏启动器启动**（Hypergryph Launcher）。直接运行 `Endfield.exe` 会在 IL2CPP
 > 运行时初始化完成前 attach，触发 Unity GC 致命错误并卡死；判据是 `plugin\poser_log.txt`
 > 停在 `[POSER] Resolving IL2CPP...`，同时游戏根目录的 `Endfield.gc.log` 里会出现

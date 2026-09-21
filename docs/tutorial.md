@@ -31,6 +31,10 @@
 | `plugin\poser.dll` | 游戏根目录的 `plugin\` |
 | `plugin\poser_config.txt` | 游戏根目录的 `plugin\` |
 
+> 📁 **看清楚是 `plugin\`（单数），不是 `plugins\`（复数）**。
+> 游戏目录里两个都有：`plugin\` 是插件目录（我们的东西放这里，没有就自己建一个），
+> `plugins\` 是游戏自带的 Qt 插件目录（`imageformats/`、`platforms/` 等），放错不会生效。
+
 > ⚠️ **必须用 Hypergryph 启动器启动游戏**。直接双击 `Endfield.exe` 会在 IL2CPP 运行时初始化
 > 完成前注入，触发 Unity GC 致命错误（弹 `Threads explicit registering is not previously enabled`），
 > 游戏卡死。这是唯一一条硬性要求。
