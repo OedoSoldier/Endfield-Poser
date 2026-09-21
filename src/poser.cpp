@@ -307,9 +307,8 @@ void DrawPoserGui() {
       static float s_rootStep = 0.05f;
       ImGui::TextDisabled(u8"\u6b65\u957f");
       ImGui::SameLine();
-      ImGui::SetNextItemWidth(60);
-      ImGui::InputFloat(u8"##rootstep", &s_rootStep, 0.01f, 0.1f, "%.3f");
-      ImGui::SameLine();
+      ImGui::SetNextItemWidth(90);
+      ImGui::InputFloat(u8"##rootstep", &s_rootStep, 0.0f, 0.0f, "%.3f");
       ImGui::TextDisabled("X");
       ImGui::SameLine();
       changed |= AxisStepper("rootx", &vx, s_rootStep);

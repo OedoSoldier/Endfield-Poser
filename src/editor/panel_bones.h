@@ -86,18 +86,18 @@ static void DrawBoneParams() {
     SetBoneLocalRot(t, Quat::FromEulerDeg(e));
   }
   static float s_rotStep = 1.0f;
+  ImGui::PushID("rotstep");
   ImGui::TextDisabled(u8"步长");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
-  ImGui::InputFloat(u8"##rotstep", &s_rotStep, 0.5f, 5.0f, "%.1f");
-  ImGui::SameLine();
+  ImGui::SetNextItemWidth(90);
+  ImGui::InputFloat(u8"##v", &s_rotStep, 0.0f, 0.0f, "%.2f");
+  ImGui::PopID();
   ImGui::TextDisabled("X");
   ImGui::SameLine();
   {
     Vec3 ee = e;
-    if (AxisStepper("rx", &ee.x, s_rotStep)) {
+    if (AxisStepper("rx", &ee.x, s_rotStep))
       SetBoneLocalRot(t, Quat::FromEulerDeg(ee));
-    }
     ImGui::SameLine();
     ImGui::TextDisabled("Y");
     ImGui::SameLine();
@@ -122,11 +122,12 @@ static void DrawBoneParams() {
     SetBoneLocalPos(t, p);
   }
   static float s_posStep = 0.01f;
+  ImGui::PushID("posstep");
   ImGui::TextDisabled(u8"步长");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
-  ImGui::InputFloat(u8"##posstep", &s_posStep, 0.005f, 0.05f, "%.3f");
-  ImGui::SameLine();
+  ImGui::SetNextItemWidth(90);
+  ImGui::InputFloat(u8"##v", &s_posStep, 0.0f, 0.0f, "%.3f");
+  ImGui::PopID();
   ImGui::TextDisabled("X");
   ImGui::SameLine();
   {
