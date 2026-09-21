@@ -297,13 +297,15 @@ void DrawPoserGui() {
       rootT = s_humanBones[0].transform; // 回退：Hips
     if (g_frozen && rootT) {
       Vec3 lp = GetBoneLocalPos(rootT);
-      float vx = lp.x, vy = lp.y, vz = lp.z;
+      // 必须用连续数组：SliderFloat3/InputFloat3 是按 &v[0] 连续写 3 个 float，
+      // 之前用三个独立局部变量（&vx/&vy/&vz）不保证在栈上相邻 → 显示与写回错位。
+      float rp[3] = {lp.x, lp.y, lp.z};
       bool changed = false;
       ImGui::TextDisabled(u8"\u4eba\u7269\u4f4d\u7f6e (Root XYZ)");
       ImGui::SetNextItemWidth(-1);
-      changed |= ImGui::SliderFloat3(u8"##rootpos", &vx, -10.0f, 10.0f, "%.2f");
+      changed |= ImGui::SliderFloat3(u8"##rootpos", rp, -10.0f, 10.0f, "%.2f");
       ImGui::SetNextItemWidth(-1);
-      changed |= ImGui::InputFloat3(u8"##rootposin", &vx, "%.4f");
+      changed |= ImGui::InputFloat3(u8"##rootposin", rp, "%.4f");
       static float s_rootStep = 0.05f;
       ImGui::TextDisabled(u8"\u6b65\u957f");
       ImGui::SameLine();
@@ -311,17 +313,17 @@ void DrawPoserGui() {
       ImGui::InputFloat(u8"##rootstep", &s_rootStep, 0.0f, 0.0f, "%.3f");
       ImGui::TextDisabled("X");
       ImGui::SameLine();
-      changed |= AxisStepper("rootx", &vx, s_rootStep);
+      changed |= AxisStepper("rootx", &rp[0], s_rootStep);
       ImGui::SameLine();
       ImGui::TextDisabled("Y");
       ImGui::SameLine();
-      changed |= AxisStepper("rooty", &vy, s_rootStep);
+      changed |= AxisStepper("rooty", &rp[1], s_rootStep);
       ImGui::SameLine();
       ImGui::TextDisabled("Z");
       ImGui::SameLine();
-      changed |= AxisStepper("rootz", &vz, s_rootStep);
+      changed |= AxisStepper("rootz", &rp[2], s_rootStep);
       if (changed) {
-        SetBoneLocalPos(rootT, Vec3{vx, vy, vz});
+        SetBoneLocalPos(rootT, Vec3{rp[0], rp[1], rp[2]});
       }
     }
   }
