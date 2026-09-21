@@ -24,6 +24,12 @@
 > 停在 `[POSER] Resolving IL2CPP...`，同时游戏根目录的 `Endfield.gc.log` 里会出现
 > `Threads explicit registering is not previously enabled` / `Collecting from unknown thread`。
 
+渲染 API 说明：插件与游戏用的 API 无关（面板是自建的 D3D11 + DirectComposition 透明窗口）。
+**DX11 与 Vulkan 两种模式都已实测可用**；用 Vulkan 时请确保 `vulkan-1.dll`（本包的代理）也在
+游戏根目录，并使用「窗口化 / 无边框全屏」——独占全屏会绕过 DWM 合成，面板会看不见。
+日志里会标明插件由哪个代理拉起：`[PROXY] plugins loaded via d3dcompiler_47.dll (DX path)`
+或 `[PROXY] plugins loaded via vulkan-1.dll (Vulkan path)`。
+
 ## 使用
 
 > 完整图文流程见 **[docs/tutorial.md](docs/tutorial.md)**（安装 → 冻结 → 摆姿 → 表情 → 姿态库 → 排查）。

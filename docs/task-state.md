@@ -30,6 +30,10 @@
 
 **雪藏**：Blender 桥（`tools/blender/`、`docs/blender-bridge.md`，见下文 §二）
 
+**渲染 API 验证（2026-09-21）**：DX11 与 **Vulkan** 两种模式均实测可用。Vulkan 下插件由
+`vulkan-1.dll` 代理拉起（日志 `[PROXY] plugins loaded via vulkan-1.dll (Vulkan path)`）；
+注意必须用窗口化/无边框全屏，独占全屏会绕过 DWM 合成导致覆盖层面板不可见。
+
 **已移除（做过但没做好的）**：
 
 - 骨骼层级树面板（Blender 风格树 + 搜索）——实测不理想（提交 `05a1b51`）
