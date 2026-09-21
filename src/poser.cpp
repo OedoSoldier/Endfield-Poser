@@ -17,7 +17,6 @@
 #include "editor/selection.h"
 #include "editor/rig_gizmo.h"
 #include "editor/panel_bones.h"
-#include "editor/undo.h"
 #include "editor/ik_control.h"
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
@@ -192,26 +191,6 @@ static void RefreshCharacterBones() {
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
 void DrawPoserGui() {
-  // 撤销/重做：安装写骨钩子（一次性）+ 每帧合并连续编辑 + 快捷键
-  {
-    static bool s_undoHooked = false;
-    if (!s_undoHooked) {
-      s_undoHooked = true;
-      InstallUndoHook();
-      Log("[UNDO] hook installed");
-    }
-    UndoTick();
-    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
-      if (GetAsyncKeyState('Z') & 1) {
-        if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
-          RedoPerform();
-        else
-          UndoPerform();
-      }
-      if (GetAsyncKeyState('Y') & 1)
-        RedoPerform();
-    }
-  }
   __try { GameFrameTick(); } __except (1) {
     Log("[POSER] GameFrameTick exception code=0x%X", GetExceptionCode());
   }
@@ -233,9 +212,9 @@ void DrawPoserGui() {
     Log("[POSER] IK controllers exception code=0x%X", GetExceptionCode());
   }
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Endfield Poser", nullptr,
                    ImGuiWindowFlags_NoCollapse |
+                       ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     ImGui::Text("v%s", POSER_VERSION);
     ImGui::SameLine();
@@ -283,16 +262,6 @@ void DrawPoserGui() {
       PoseOpResetToFreeze();
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u6240\u6709\u9aa8\uff08\u542b\u4ece\u9aa8\uff09\u56de\u5230\u51bb\u7ed3\u77ac\u95f4\u59ff\u6001\uff0c\u76f8\u5f53\u4e8e\u64a4\u9500\u5168\u90e8\u624b\u52a8\u6446\u59ff");
-    ImGui::SameLine();
-    if (ImGui::Button(u8"\u6e05\u7a7a\u59ff\u6001")) // 旋转清零
-      PoseOpClearRotations();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u6240\u6709\u9aa8\u65cb\u8f6c\u6e05\u96f6\uff08\u4f4d\u7f6e\u4fdd\u7559\u51bb\u7ed3\u503c\uff09");
-    ImGui::SameLine();
-    if (ImGui::Button(u8"\u56de A-pose"))
-      PoseOpResetToAPose();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"humanoid \u9aa8\u56de\u5230\u89d2\u8272\u521d\u59cb A-pose\uff1b\u4ece\u9aa8\u56de\u5230\u51bb\u7ed3\u77ac\u95f4");
     bool accPrev = g_freezeAccessories;
     ImGui::Checkbox(u8"\u51bb\u7ed3\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1",
                     &g_freezeAccessories);
@@ -315,7 +284,6 @@ void DrawPoserGui() {
       ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
                   VkName(g_guiToggleVK, vkbuf, sizeof(vkbuf)));
       ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1aF9");
-      ImGui::Text(u8"\u64a4\u9500 / \u91cd\u505a\uff1aCtrl+Z / Ctrl+Y");
       ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
     }
     // 根骨骼位置微调（整体位移；冻结态直接写回）
@@ -353,7 +321,6 @@ void DrawPoserGui() {
       ImGui::SameLine();
       changed |= AxisStepper("rootz", &vz, s_rootStep);
       if (changed) {
-        UndoStageLabel(u8"\u4eba\u7269\u4f4d\u7f6e");
         SetBoneLocalPos(rootT, Vec3{vx, vy, vz});
       }
     }
