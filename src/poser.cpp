@@ -212,6 +212,10 @@ void DrawPoserGui() {
     Log("[POSER] IK controllers exception code=0x%X", GetExceptionCode());
   }
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+  // 见 panel_bones.h：AlwaysAutoResize 与 SetNextItemWidth(-1) 并用时需要最小宽度，
+  // 否则窗口宽度塌陷、右侧标签（步长等）被挤出可视区。
+  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),
+                                      ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::Begin("Endfield Poser", nullptr,
                    ImGuiWindowFlags_NoCollapse |
                        ImGuiWindowFlags_AlwaysAutoResize |
@@ -301,9 +305,10 @@ void DrawPoserGui() {
       ImGui::SetNextItemWidth(-1);
       changed |= ImGui::InputFloat3(u8"##rootposin", &vx, "%.4f");
       static float s_rootStep = 0.05f;
-      ImGui::SetNextItemWidth(70);
-      ImGui::InputFloat(u8"\u6b65\u957f##rootstep", &s_rootStep, 0.01f, 0.1f,
-                        "%.3f");
+      ImGui::TextDisabled(u8"\u6b65\u957f");
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(60);
+      ImGui::InputFloat(u8"##rootstep", &s_rootStep, 0.01f, 0.1f, "%.3f");
       ImGui::SameLine();
       ImGui::TextDisabled("X");
       ImGui::SameLine();

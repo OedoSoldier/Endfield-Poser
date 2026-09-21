@@ -86,8 +86,10 @@ static void DrawBoneParams() {
     SetBoneLocalRot(t, Quat::FromEulerDeg(e));
   }
   static float s_rotStep = 1.0f;
-  ImGui::SetNextItemWidth(70);
-  ImGui::InputFloat(u8"步长##rotstep", &s_rotStep, 0.5f, 5.0f, "%.1f");
+  ImGui::TextDisabled(u8"步长");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputFloat(u8"##rotstep", &s_rotStep, 0.5f, 5.0f, "%.1f");
   ImGui::SameLine();
   ImGui::TextDisabled("X");
   ImGui::SameLine();
@@ -120,8 +122,10 @@ static void DrawBoneParams() {
     SetBoneLocalPos(t, p);
   }
   static float s_posStep = 0.01f;
-  ImGui::SetNextItemWidth(70);
-  ImGui::InputFloat(u8"步长##posstep", &s_posStep, 0.005f, 0.05f, "%.3f");
+  ImGui::TextDisabled(u8"步长");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputFloat(u8"##posstep", &s_posStep, 0.005f, 0.05f, "%.3f");
   ImGui::SameLine();
   ImGui::TextDisabled("X");
   ImGui::SameLine();
@@ -170,6 +174,10 @@ static void DrawBoneTreePanel() {
     return;
   // 默认放主面板右侧：主面板高度随状态变化（冻结后会多出 root 滑条），放左下会重叠
   ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
+  // AlwaysAutoResize 配 SetNextItemWidth(-1) 会让窗口宽度塌得很窄（标签被挤出可视区），
+  // 所以给个最小宽度约束：高度自适应、宽度不低于 340。
+  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),
+                                      ImVec2(FLT_MAX, FLT_MAX));
   if (!ImGui::Begin(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams,
                     ImGuiWindowFlags_NoCollapse |
                         ImGuiWindowFlags_AlwaysAutoResize |
@@ -177,7 +185,7 @@ static void DrawBoneTreePanel() {
     ImGui::End();
     return;
   }
-  ImGui::TextDisabled(u8"\u5728 3D \u89c6\u56fe\u91cc\u70b9\u9009\u9aa8\u9abc\uff08\u9700\u52fe\u9009\u5168\u91cf/\u4ece\u9aa8\u94fe\uff09");
+  ImGui::TextDisabled(u8"\u5728 3D \u89c6\u56fe\u91cc\u70b9\u9009\u9aa8\u9abc\uff08\u9700\u52fe\u9009\u5168\u91cf\u9aa8\u9abc\uff09");
   ImGui::Separator();
   DrawBoneParams();
   DrawIkPanel();
