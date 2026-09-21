@@ -307,6 +307,15 @@ static bool IsPluginDisabled(const char* dllName) {
 }
 
 void LoadPlugin() {
+    // 在日志里标一下"是谁把插件拉起来的"：DX 路径走 d3dcompiler_47 代理，
+    // Vulkan 路径走本代理——排查"换了渲染 API 后插件没起来"时一眼可见。
+    {
+        FILE *lf = fopen("plugin\\poser_log.txt", "ab");
+        if (lf) {
+            fputs("[PROXY] plugins loaded via vulkan-1.dll (Vulkan path)\n", lf);
+            fclose(lf);
+        }
+    }
     WIN32_FIND_DATAA fd;
     HANDLE hFind = FindFirstFileA("plugin\\*.dll", &fd);
     if (hFind != INVALID_HANDLE_VALUE) {

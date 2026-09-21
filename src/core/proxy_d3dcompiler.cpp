@@ -121,6 +121,14 @@ static bool IsPluginDisabled(const char* dllName) {
 }
 
 void LoadPlugin() {
+  // 见 proxy_vulkan_full.cpp：标记插件是由哪个代理拉起的
+  {
+    FILE *lf = fopen("plugin\\poser_log.txt", "ab");
+    if (lf) {
+      fputs("[PROXY] plugins loaded via d3dcompiler_47.dll (DX path)\n", lf);
+      fclose(lf);
+    }
+  }
   WIN32_FIND_DATAA fd;
   HANDLE hFind = FindFirstFileA("plugin\\*.dll", &fd);
   if (hFind != INVALID_HANDLE_VALUE) {
