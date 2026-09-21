@@ -112,6 +112,17 @@ endfield-poser/
 - 相机参数不随姿态文件保存。
 - 撤销 / 重做、骨骼层级树、IK 控制器、外置姿态导出均未包含在本版（做过但实测有问题，代码保留在 git 历史）。
 
+## 参考与致谢
+
+- **[Sasye/EIEM](https://github.com/Sasye/EIEM)**（AGPL-3.0）：本项目的注入链路脱胎于此——
+  Applepie 插件协议（`AP_*` 导出）、IL2CPP 运行时解析、MinHook 挂点、D3D11 + DirectComposition
+  透明覆盖层。`src/core/` 下的 `base.h`、`il2cpp_api.h`、`proxy_d3dcompiler.cpp`、
+  `gui_overlay.h`、`game_hooks.h` 都标注了"精简自 EIEM"，改这些文件时请保留来源声明。
+- **[Sasye/ApplepieManager](https://github.com/Sasye/ApplepieManager)**（AGPL-3.0）：插件宿主/管理器，
+  负责枚举拉起 `plugin\*.dll` 并提供控制面板。
+- **第三方依赖**（全部自包含在 `deps/`，不联网）：imgui（MIT）、ImGuizmo 1.83（MIT）、
+  MinHook（BSD-2-Clause）、nlohmann/json（MIT）；其中 imgui 与 MinHook 的源码/静态库取自 EIEM 仓库。
+
 ## 许可
 
 本仓库整体构成 **AGPL-3.0** 衍生作品（`src/core/` 的注入层参考 AGPL-3.0 的 EIEM），
