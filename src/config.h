@@ -12,7 +12,7 @@ static int g_screenshotVK = VK_F8;      // 截图
 static char g_defaultPoseDir[MAX_PATH] = "";
 // click_through=1：覆盖层常驻显示，用 WS_EX_LAYERED|TRANSPARENT 做真穿透；
 // 按住 Alt 时才取消穿透、由面板吃鼠标。默认 0 = 按住 Alt 才显示覆盖层。
-static bool g_clickThrough = false;
+static bool g_clickThrough = true; // 默认常驻 + 真穿透（实测手感更好）
 
 // Default pose dir: prefer deriving from poser.dll location (...\plugin\poses)
 // so presets work regardless of the game's working directory.

@@ -432,6 +432,46 @@ static void ExtControl(int code) {
   }
 }
 
+// GUI 线程退出前收尾（在已 attach IL2CPP 的线程上执行）：
+// 冻结状态下禁用插件/卸载时，把 Animator、IK、布料物理、形态键都还原回去，
+// 否则头发布料会一直僵在冻结姿态。
+static void OnGuiShutdownRestore() {
+  if (!g_frozen)
+    return;
+  Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
+  UnfreezeCharacter();
+  RestoreBlendShapes();
+}
+
+// 姿态文件扩展：从骨 + 形态键（skeleton.h 通过钩子调用，避免底层反向包含）
+static void PoseCaptureExtras(PoseDoc &doc) {
+  CollectAccessoryPoseEntries(doc.accBones);
+  for (const BlendShapeSlot &s : s_blendShapes) {
+    PoseMorph pm;
+    pm.name = s.name;
+    pm.value = s.value;
+    doc.morphs.push_back(pm);
+  }
+}
+
+static void PoseApplyExtras(const PoseDoc &doc) {
+  int accApplied = ApplyAccessoryPoseEntries(doc.accBones);
+  int morphApplied = 0;
+  for (const PoseMorph &pm : doc.morphs) {
+    for (BlendShapeSlot &s : s_blendShapes) {
+      if (strcmp(s.name, pm.name.c_str()) != 0)
+        continue;
+      SetBlendShapeWeight(s, pm.value);
+      morphApplied++;
+      break;
+    }
+  }
+  if (!doc.accBones.empty() || !doc.morphs.empty())
+    Log("[POSER] Applied pose extras: %d/%d accessory bones, %d/%d morphs",
+        accApplied, (int)doc.accBones.size(), morphApplied,
+        (int)doc.morphs.size());
+}
+
 // 控制文件通道：外部（Codex）往 plugin\poser_control.txt 写命令，每帧执行后清空。
 // 命令：toggle / freeze / tpose / reset
 static void ProcessControlFile() {
@@ -483,6 +523,9 @@ static DWORD WINAPI InitThread(LPVOID) {
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
   SetExtControl(ExtControl);
   SetExtPollFn(ProcessControlFile);
+  SetGuiShutdownFn(OnGuiShutdownRestore);
+  g_poseCaptureExtras = PoseCaptureExtras;
+  g_poseApplyExtras = PoseApplyExtras;
   // 等待 GameAssembly.dll 加载并让 IL2CPP 域初始化（参照 {EIEM}/src/init.h）
   while (!GetModuleHandleW(L"GameAssembly.dll"))
     Sleep(500);

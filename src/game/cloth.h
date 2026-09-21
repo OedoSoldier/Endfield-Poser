@@ -90,10 +90,21 @@ static void CollectSkirtOnTransform(void *t, int depth) {
                 char buf[128] = {};
                 if (ns)
                   ReadStr(ns, buf, sizeof(buf));
-                if (strstr(buf, "MC_Skirt")) {
+                // 游戏里裙子的命名是带角色前缀的（如 "MC_Chen_Skirt"），
+                // 早期只匹配 "MC_Skirt" 导致永远找不到 → 改成不区分大小写找 "skirt"。
+                char low[128];
+                int k = 0;
+                for (; buf[k] && k < (int)sizeof(low) - 1; k++) {
+                  char c = buf[k];
+                  low[k] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+                }
+                low[k] = 0;
+                bool isSkirt = strstr(low, "skirt") != nullptr;
+                Log("[SKIRT] BBC[%d] GO '%s'%s", idx, buf,
+                    isSkirt ? "  <- skirt" : "");
+                if (isSkirt) {
                   g_skirtBBCIndex = idx;
-                  Log("[SKIRT] MC_Skirt identified at index %d (GO '%s')", idx,
-                      buf);
+                  Log("[SKIRT] skirt identified at index %d", idx);
                 }
               }
             }

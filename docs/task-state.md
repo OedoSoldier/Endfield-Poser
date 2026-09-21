@@ -12,13 +12,19 @@
 - 从骨链：默认不显示；勾「从骨链」显示可摆放链根；命名过滤 `Nub/Twist/corrective/Collider/表情骨/inner/outer/wep`
 - 关节缓存 128 → 1024（之前溢出导致"有些关节点不动"）
 
-**已知问题（发布时未修）**
+**本轮修复（第二轮收口）**
+
+- 姿态保存补全：文件新增 `acc`（从骨绝对 local 变换）与 `morphs`（形态键权重），旧文件依旧可读；**相机参数仍不进文件**
+- 裙摆识别修复：原来只匹配 `MC_Skirt`，实际命名是 `MC_Chen_Skirt` 这类 → 改成不区分大小写匹配 "skirt"，并会打印每个 BeyondBoneCloth 的 GO 名便于核对
+- 禁用插件 / GUI 线程退出时自动收尾：解冻 + 恢复物理与形态键（避免头发布料停留在冻结姿态）
+- `click_through` 默认改为 1（覆盖层常驻 + 真穿透）
+
+**已知问题（仍未修）**
 
 - **IK 控制器未生效**：`src/editor/ik_control.h` 已实现（目标点 + 平移手柄 + 解析式 2-bone 解算），实测拖拽后骨骼不跟随，用 `g_ikFeatureEnabled = false` 整体关闭（面板/解算/绘制都跳过）
-- **姿态保存不完整**：只存 humanoid 骨（含手指，共 55 根）的绝对 local 变换；从骨、形态键、相机都不进文件
-- **裙摆碰撞调节失效**：`MC_Skirt` 识别失败（日志 `[SKIRT] skirtIdx=-1`），`ApplySkirtColliderScale` 从未执行
 - **直启必崩**：必须经启动器启动（原因与判据见 `AGENT.md` §3）
-- 撤销不覆盖形态键权重，也不回滚从骨的"冻结基线"（`frozenPos/frozenRot`）
+- 撤销不覆盖形态键权重（形态键改动不进撤销栈）
+- 相机参数不随姿态文件保存
 
 **雪藏**：Blender 桥（`tools/blender/`、`docs/blender-bridge.md`，见下文 §二）
 

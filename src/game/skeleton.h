@@ -316,6 +316,10 @@ static void MirrorPose(bool leftToRight) {
 
 // 采集当前全部 Humanoid 骨到位姿文档（存盘用）。
 // 存绝对 local pos/rot：读回时无需 A-pose 基线，跨会话/换角色都稳定。
+// 姿态文件的扩展钩子：从骨（accessory.h）与形态键（morph.h）由上层注册补进来
+static void (*g_poseCaptureExtras)(PoseDoc &doc) = nullptr;
+static void (*g_poseApplyExtras)(const PoseDoc &doc) = nullptr;
+
 static PoseDoc CapturePoseDoc(const char *name) {
   PoseDoc doc;
   doc.name = name ? name : "";
@@ -327,6 +331,10 @@ static PoseDoc CapturePoseDoc(const char *name) {
     pb.rot = GetBoneLocalRot(s_humanBones[i].transform);
     doc.bones.push_back(pb);
   }
+  // 从骨 / 形态键由上层注册的钩子补进来（skeleton.h 是底层，反向包含
+  // accessory.h / morph.h 会循环包含）
+  if (g_poseCaptureExtras)
+    g_poseCaptureExtras(doc);
   return doc;
 }
 
@@ -356,6 +364,8 @@ static void ApplyPoseDoc(const PoseDoc &doc) {
   }
   Log("[POSER] Applied pose '%s': %d/%d bones", doc.name.c_str(), applied,
       (int)doc.bones.size());
+  if (g_poseApplyExtras)
+    g_poseApplyExtras(doc);
 }
 
 // ---- 全骨骼采集（供 Blender 桥接/完整摆姿；不止 Humanoid 22 根）----

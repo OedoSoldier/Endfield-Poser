@@ -37,6 +37,10 @@ static void SetExtControl(ExtControlFn fn) { g_extControl = fn; }
 static void (*g_extPollFn)() = nullptr;
 static void SetExtPollFn(void (*fn)()) { g_extPollFn = fn; }
 
+// 退出钩子：GUI 线程结束前调用（此时仍在已 attach 到 IL2CPP 的线程上，可安全碰游戏对象）
+static void (*g_guiShutdownFn)() = nullptr;
+static void SetGuiShutdownFn(void (*fn)()) { g_guiShutdownFn = fn; }
+
 static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
 
@@ -515,6 +519,13 @@ static DWORD WINAPI GuiThread(LPVOID) {
   }
 
   Log("[GUI] Shutting down...");
+  if (g_guiShutdownFn) {
+    __try {
+      g_guiShutdownFn(); // 解冻 + 恢复物理/表情，避免禁用插件后布料一直僵着
+    } __except (1) {
+      Log("[GUI] shutdown hook exception");
+    }
+  }
   ImGui_ImplDX11_Shutdown();
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();

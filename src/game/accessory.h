@@ -132,6 +132,36 @@ static void ClearAccessoryPose() {
   }
 }
 
+// 姿态文件：采集所有从骨当前 local 姿态
+static void CollectAccessoryPoseEntries(std::vector<PoseBone> &out) {
+  for (const AccessoryBone &b : s_accessoryBones) {
+    PoseBone pb;
+    pb.name = b.name;
+    pb.pos = GetBoneLocalPos(b.transform);
+    pb.rot = GetBoneLocalRot(b.transform);
+    out.push_back(pb);
+  }
+}
+
+// 姿态文件：按名字应用从骨姿态；同时把新姿态写进冻结快照，
+// 否则冻结维持的每帧回写会立刻把读进来的姿势覆盖掉。
+static int ApplyAccessoryPoseEntries(const std::vector<PoseBone> &in) {
+  int applied = 0;
+  for (const PoseBone &pb : in) {
+    for (AccessoryBone &b : s_accessoryBones) {
+      if (strcmp(b.name, pb.name.c_str()) != 0)
+        continue;
+      SetBoneLocalPos(b.transform, pb.pos);
+      SetBoneLocalRot(b.transform, pb.rot);
+      b.localPos = pb.pos;
+      b.localRot = pb.rot;
+      applied++;
+      break;
+    }
+  }
+  return applied;
+}
+
 // 手动编辑从骨（旋转盘 / WebUI）后，把新姿势写回冻结快照 = 新的冻结基线。
 // 不这么做的话 MaintainFreeze 每帧的 ApplyAccessorySnapshot 会把编辑立刻打回去，
 // 表现为「能选中、能拖旋转盘，但骨一动不动」。
