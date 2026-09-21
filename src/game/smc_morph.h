@@ -106,6 +106,7 @@ static SMCFaceBone s_faceRestPose[SMC_MAX_FACE_BONES];
 static int s_faceBoneCount = 0;
 static bool s_faceBonesCaptured = false;
 static bool s_faceBoneTouched[SMC_MAX_FACE_BONES] = {};
+static bool s_faceBoneEvalOk = false; // 本帧是否成功按权重重算过 s_faceBones
 static void **s_faceBoneRefs = nullptr;
 
 static int s_boneIDToIdx[SMC_BONE_MAP_SIZE];
@@ -520,11 +521,16 @@ static void __fastcall HookedSMCSpecialMorphJob(void *__this, void *param1,
     s_origSpecialMorphJob(__this, param1, param2, methodInfo);
 }
 
-// 写回被触碰的面部骨骼（局部位姿）
+// 写回面部骨骼（局部位姿）。
+// 注意：写的是"全部"面部骨，而不是只写被 morph 命中的那些——因为 s_faceBones 每帧
+// 都以静息位姿为底再叠加增量，没被命中的骨就是静息位姿。只写"命中"的骨会导致：
+// 权重调回 0 时没有任何骨被标记 → 上一帧的表情被留在骨上（"重置无效"的根因）。
 static void SMCWriteTouchedBones() {
+  if (!s_faceBoneEvalOk)
+    return; // 本帧没成功重算，别写回陈旧值
   __try {
     for (int i = 0; i < s_faceBoneCount; i++) {
-      if (!s_faceBoneTouched[i] || !s_faceBones[i].transform)
+      if (!s_faceBones[i].transform)
         continue;
       SetBoneLocalPos(s_faceBones[i].transform,
                       Vec3(s_faceBones[i].px, s_faceBones[i].py,
@@ -657,6 +663,7 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
   // 按面板权重累加 morph 增量到静息位姿
   if (s_driving && s_boneMapReady && s_boneIDMapCount > 0 &&
       s_capturedLen > 0 && s_mouthResolved) {
+    s_faceBoneEvalOk = false;
     __try {
       float totalMouth = 0;
       for (int s = 0; s < SMC_NUM_MOUTH; s++)
@@ -770,6 +777,19 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
       }
       if (applied > 0 && s_frame % 600 == 0)
         Log("[SMC] Applied %d bone deltas (frame %d)", applied, s_frame);
+      // 权重变化时打一行摘要（拖动滑条/重置都会看到），便于确认解算真的在跑
+      static float s_lastWeightSum = -1.0f;
+      float wsum = 0.0f;
+      for (int s = 0; s < SMC_NUM_MOUTH; s++)
+        wsum += s_mouthWeights[s];
+      for (int em = 0; em < s_extraMorphCount; em++)
+        wsum += s_extraMorphs[em].weight;
+      if (fabsf(wsum - s_lastWeightSum) > 0.001f) {
+        s_lastWeightSum = wsum;
+        Log("[SMC] weights sum=%.3f -> applied=%d bones (face=%d)", wsum,
+            applied, s_faceBoneCount);
+      }
+      s_faceBoneEvalOk = true;
     } __except (1) {
       Log("[SMC] delta accumulation exception");
     }
@@ -779,7 +799,7 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     s_origSMCUpdate(__this, deltaTime, methodInfo);
 
   // 覆盖写回（原始 Update 之后）
-  if (s_driving && s_faceBonesCaptured && s_frame > 5)
+  if (s_driving && g_frozen && s_faceBonesCaptured && s_frame > 5)
     SMCWriteTouchedBones();
 }
 
@@ -915,6 +935,8 @@ static void SMCSliderSet(int i, float v) {
     s_extraMorphs[i - SMC_NUM_MOUTH].prevWeight = v;
   }
   s_driving = true;
+  Log("[SMC] slider %d '%s' = %.2f (driving=1, frozen=%d, bones=%d)", i,
+      SMCSliderLabel(i), v, (int)g_frozen, s_faceBoneCount);
 }
 
 static void SMCRestoreWeights() {
