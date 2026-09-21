@@ -279,6 +279,20 @@ void DrawPoserGui() {
     ImGui::SameLine();
     if (ImGui::Button(u8"\u5237\u65b0\u9aa8\u9abc")) // 刷新骨骼
       RefreshCharacterBones();
+    if (ImGui::Button(u8"\u5168\u90e8\u91cd\u7f6e")) // 所有骨回到冻结瞬间
+      PoseOpResetToFreeze();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u6240\u6709\u9aa8\uff08\u542b\u4ece\u9aa8\uff09\u56de\u5230\u51bb\u7ed3\u77ac\u95f4\u59ff\u6001\uff0c\u76f8\u5f53\u4e8e\u64a4\u9500\u5168\u90e8\u624b\u52a8\u6446\u59ff");
+    ImGui::SameLine();
+    if (ImGui::Button(u8"\u6e05\u7a7a\u59ff\u6001")) // 旋转清零
+      PoseOpClearRotations();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u6240\u6709\u9aa8\u65cb\u8f6c\u6e05\u96f6\uff08\u4f4d\u7f6e\u4fdd\u7559\u51bb\u7ed3\u503c\uff09");
+    ImGui::SameLine();
+    if (ImGui::Button(u8"\u56de A-pose"))
+      PoseOpResetToAPose();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"humanoid \u9aa8\u56de\u5230\u89d2\u8272\u521d\u59cb A-pose\uff1b\u4ece\u9aa8\u56de\u5230\u51bb\u7ed3\u77ac\u95f4");
     bool accPrev = g_freezeAccessories;
     ImGui::Checkbox(u8"\u51bb\u7ed3\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1",
                     &g_freezeAccessories);
@@ -317,14 +331,31 @@ void DrawPoserGui() {
       Vec3 lp = GetBoneLocalPos(rootT);
       float vx = lp.x, vy = lp.y, vz = lp.z;
       bool changed = false;
-      changed |= ImGui::SliderFloat(u8"##rootpx", &vx, -10.0f, 10.0f,
-                                    "Root X %.2f");
-      changed |= ImGui::SliderFloat(u8"##rootpy", &vy, -10.0f, 10.0f,
-                                    "Root Y %.2f");
-      changed |= ImGui::SliderFloat(u8"##rootpz", &vz, -10.0f, 10.0f,
-                                    "Root Z %.2f");
-      if (changed)
+      ImGui::TextDisabled(u8"\u4eba\u7269\u4f4d\u7f6e (Root XYZ)");
+      ImGui::SetNextItemWidth(-1);
+      changed |= ImGui::SliderFloat3(u8"##rootpos", &vx, -10.0f, 10.0f, "%.2f");
+      ImGui::SetNextItemWidth(-1);
+      changed |= ImGui::InputFloat3(u8"##rootposin", &vx, "%.4f");
+      static float s_rootStep = 0.05f;
+      ImGui::SetNextItemWidth(70);
+      ImGui::InputFloat(u8"\u6b65\u957f##rootstep", &s_rootStep, 0.01f, 0.1f,
+                        "%.3f");
+      ImGui::SameLine();
+      ImGui::TextDisabled("X");
+      ImGui::SameLine();
+      changed |= AxisStepper("rootx", &vx, s_rootStep);
+      ImGui::SameLine();
+      ImGui::TextDisabled("Y");
+      ImGui::SameLine();
+      changed |= AxisStepper("rooty", &vy, s_rootStep);
+      ImGui::SameLine();
+      ImGui::TextDisabled("Z");
+      ImGui::SameLine();
+      changed |= AxisStepper("rootz", &vz, s_rootStep);
+      if (changed) {
+        UndoStageLabel(u8"\u4eba\u7269\u4f4d\u7f6e");
         SetBoneLocalPos(rootT, Vec3{vx, vy, vz});
+      }
     }
   }
   ImGui::End();

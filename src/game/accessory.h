@@ -112,6 +112,26 @@ static bool GetAccessoryFrozenPose(void *t, Vec3 *pos, Quat *rot) {
   return false;
 }
 
+// 所有从骨写回"冻结瞬间"姿态（跳过锁定骨）——"全部重置"用
+static void ApplyAccessoryFrozenPose() {
+  for (AccessoryBone &b : s_accessoryBones) {
+    if (b.locked)
+      continue;
+    SetBoneLocalPos(b.transform, b.frozenPos);
+    SetBoneLocalRot(b.transform, b.frozenRot);
+  }
+}
+
+// 所有从骨旋转清零（位置回冻结值）——"清空姿态"用
+static void ClearAccessoryPose() {
+  for (AccessoryBone &b : s_accessoryBones) {
+    if (b.locked)
+      continue;
+    SetBoneLocalPos(b.transform, b.frozenPos);
+    SetBoneLocalRot(b.transform, Quat{0, 0, 0, 1});
+  }
+}
+
 // 手动编辑从骨（旋转盘 / WebUI）后，把新姿势写回冻结快照 = 新的冻结基线。
 // 不这么做的话 MaintainFreeze 每帧的 ApplyAccessorySnapshot 会把编辑立刻打回去，
 // 表现为「能选中、能拖旋转盘，但骨一动不动」。

@@ -11,11 +11,13 @@
 #include "math/quat_math.h"
 
 #include <vector>
+#include <string>
 
 struct UndoSnap {
   int bonesRev = -1;
   std::vector<Vec3> pos;
   std::vector<Quat> rot;
+  std::string label; // 操作名，用于面板里显示操作序列
 };
 
 static std::vector<UndoSnap> g_undoStack;
@@ -26,8 +28,15 @@ static bool g_undoDirty = false;
 static bool g_undoApplying = false;
 static DWORD g_undoLastEdit = 0;
 static int g_undoRev = -1;
+static char g_undoStagedLabel[48] = "";
 static const size_t kUndoDepth = 64;
 static const DWORD kUndoMergeMs = 400;
+
+// 在会修改骨骼的动作前调用，给这次编辑起个名字（显示在操作序列里）。
+// 手柄拖拽/滑条这类没有显式名字的编辑会记作"编辑"。
+static void UndoStageLabel(const char *s) {
+  snprintf(g_undoStagedLabel, sizeof(g_undoStagedLabel), "%s", s ? s : "");
+}
 
 static UndoSnap UndoMakeSnap() {
   UndoSnap s;
@@ -60,6 +69,9 @@ static void UndoNoteEdit(void * /*transform*/) {
   if (!g_undoDirty) {
     g_undoPending =
         (g_undoIdle.bonesRev == s_bonesRev) ? g_undoIdle : UndoMakeSnap();
+    g_undoPending.label =
+        g_undoStagedLabel[0] ? g_undoStagedLabel : "\u7f16\u8f91";
+    g_undoStagedLabel[0] = 0;
     g_undoDirty = true;
   }
   g_undoLastEdit = GetTickCount();
@@ -69,6 +81,14 @@ static bool UndoAvailable() { return !g_undoStack.empty(); }
 static bool RedoAvailable() { return !g_redoStack.empty(); }
 static int UndoDepth() { return (int)g_undoStack.size(); }
 static int RedoDepth() { return (int)g_redoStack.size(); }
+static const char *UndoLabelAt(int i) {
+  return (i >= 0 && i < (int)g_undoStack.size()) ? g_undoStack[i].label.c_str()
+                                                 : "";
+}
+static const char *RedoLabelAt(int i) {
+  return (i >= 0 && i < (int)g_redoStack.size()) ? g_redoStack[i].label.c_str()
+                                                 : "";
+}
 
 // 每帧调用：合并连续编辑 + 骨架重建后清栈
 static void UndoTick() {
@@ -96,8 +116,9 @@ static void UndoTick() {
 static void UndoPerform() {
   if (g_undoStack.empty() || s_allBones.empty())
     return;
-  UndoSnap before = UndoMakeSnap();
   UndoSnap target = g_undoStack.back();
+  UndoSnap before = UndoMakeSnap();
+  before.label = target.label; // 重做时沿用同一个操作名
   g_undoStack.pop_back();
   if (!UndoApplySnap(target)) {
     g_undoStack.clear();
@@ -115,8 +136,9 @@ static void UndoPerform() {
 static void RedoPerform() {
   if (g_redoStack.empty() || s_allBones.empty())
     return;
-  UndoSnap before = UndoMakeSnap();
   UndoSnap target = g_redoStack.back();
+  UndoSnap before = UndoMakeSnap();
+  before.label = target.label;
   g_redoStack.pop_back();
   if (!UndoApplySnap(target)) {
     g_undoStack.clear();
