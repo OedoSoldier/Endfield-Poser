@@ -65,11 +65,15 @@ APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
 }
 APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() { return LoadPoserConfig(); }
 APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
-  // 截图热键先不对外声明（插件内没有实现，截图走 tools/screenshot.ps1），
-  // 避免管理器里显示一个按了没反应的键；实现好了再加回来。
-  if (max < 1) return 1;
+  // 向管理器声明的热键：管理器面板会列出它们，并按其 configKey 写回 poser_config.txt
+  // （改完由管理器调用 AP_ReloadConfig 生效）。
+  // 截图热键不声明：插件内没有实现（截图走 tools/screenshot.ps1），
+  // 免得管理器里出现一个按了没反应的键；实现好了再加回来。
+  const int n = 2;
+  if (max < n) return n;
   out[0] = {"Toggle Poser GUI", "gui_toggle_key", g_guiToggleVK};
-  return 1;
+  out[1] = {"Freeze / Unfreeze", "freeze_key", g_freezeVK};
+  return n;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
