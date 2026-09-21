@@ -356,9 +356,12 @@ void DrawPoserGui() {
 
   // 姿态预设库（独立窗口）
   ImGui::SetNextWindowPos(ImVec2(340, 500), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
+  // 与主面板一致：宽度有下限、高度自适应，避免内容被截断
+  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 120.0f),
+                                      ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::Begin(u8"\u59ff\u6001\u5e93", nullptr,
                    ImGuiWindowFlags_NoCollapse |
+                       ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     DrawLibraryPanel();
   }
@@ -366,9 +369,11 @@ void DrawPoserGui() {
 
   // 形态键面板（面部 BlendShape，Task 4.1）
   ImGui::SetNextWindowPos(ImVec2(680, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 300), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 120.0f),
+                                      ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::Begin(u8"\u5f62\u6001\u952e", nullptr,
                    ImGuiWindowFlags_NoCollapse |
+                       ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     DrawMorphPanel();
   }

@@ -111,12 +111,76 @@ static void DeletePoseFile(int idx) {
   RefreshPoseList();
 }
 
+// ---- 外置导出/导入：写到游戏目录之外（默认 我的文档\EndfieldPoser\poses）----
+static bool PoseNameValid(const char *name) {
+  if (!name || !name[0] || strlen(name) > 64)
+    return false;
+  for (const char *p = name; *p; p++)
+    if (strchr("\\/:*?\"<>|", *p))
+      return false;
+  return true;
+}
+
+static void ExportPoseToDir(const char *dir, const char *name) {
+  if (s_humanBoneCount <= 0) {
+    snprintf(g_poseStatus, sizeof(g_poseStatus), u8"先冻结并摆好姿势");
+    return;
+  }
+  if (!PoseNameValid(name)) {
+    snprintf(g_poseStatus, sizeof(g_poseStatus),
+             u8"名称不合法（不能为空/含 \\/:*?<>|）");
+    return;
+  }
+  CreateDirectoryA(dir, nullptr);
+  PoseDoc doc = CapturePoseDoc(name);
+  std::string json = PoseToJson(doc);
+  std::string path = std::string(dir) + "\\" + name + ".poser.json";
+  FILE *f = nullptr;
+  if (fopen_s(&f, path.c_str(), "wb") == 0 && f) {
+    fwrite(json.data(), 1, json.size(), f);
+    fclose(f);
+    snprintf(g_poseStatus, sizeof(g_poseStatus), u8"已导出 %s", path.c_str());
+    Log("[POSE] exported to %s", path.c_str());
+  } else {
+    snprintf(g_poseStatus, sizeof(g_poseStatus),
+             u8"导出失败 %s（目录存在吗？）", path.c_str());
+  }
+}
+
+static void ImportPoseFromDir(const char *dir, const char *name) {
+  if (!PoseNameValid(name)) {
+    snprintf(g_poseStatus, sizeof(g_poseStatus), u8"名称不合法");
+    return;
+  }
+  std::string path = std::string(dir) + "\\" + name + ".poser.json";
+  FILE *f = nullptr;
+  if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) {
+    snprintf(g_poseStatus, sizeof(g_poseStatus), u8"读不到 %s", path.c_str());
+    return;
+  }
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  std::string text(sz > 0 ? sz : 0, '\0');
+  if (sz > 0)
+    fread(&text[0], 1, (size_t)sz, f);
+  fclose(f);
+  try {
+    PoseDoc doc = PoseFromJson(text);
+    ApplyPoseDoc(doc);
+    snprintf(g_poseStatus, sizeof(g_poseStatus), u8"已从外部载入 %s", name);
+    Log("[POSE] imported from %s", path.c_str());
+  } catch (...) {
+    snprintf(g_poseStatus, sizeof(g_poseStatus), u8"解析失败 %s", path.c_str());
+  }
+}
+
 static void DrawLibraryPanel() {
   ImGui::TextDisabled(u8"\u59ff\u6001\u9884\u8bbe (plugin/poses/*.poser.json)");
   ImGui::Separator();
 
   if (ImGui::SmallButton(u8"\u4fdd\u5b58\u9884\u8bbe")) // 一键保存（自动编号）
-    SavePoseToFile(nullptr);
+    SavePoseToFile(g_poseName[0] ? g_poseName : nullptr);
   ImGui::SameLine();
   if (ImGui::SmallButton(u8"\u5237\u65b0\u5217\u8868"))
     RefreshPoseList();
@@ -154,4 +218,21 @@ static void DrawLibraryPanel() {
     ImGui::Spacing();
     ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f), "%s", g_poseStatus);
   }
+
+  // ---- 命名 + 外置保存（写在游戏目录之外）----
+  ImGui::Separator();
+  ImGui::TextDisabled(u8"命名 / 导出到游戏外");
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##posename", u8"名称（留空则自动编号 Pose_001）",
+                           g_poseName, sizeof(g_poseName));
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputText("##posedir", g_exportPoseDir, sizeof(g_exportPoseDir));
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip(
+        u8"外置姿态目录（可在 poser_config.txt 用 export_pose_dir= 改）");
+  if (ImGui::SmallButton(u8"另存到外部"))
+    ExportPoseToDir(g_exportPoseDir, g_poseName);
+  ImGui::SameLine();
+  if (ImGui::SmallButton(u8"从外部载入"))
+    ImportPoseFromDir(g_exportPoseDir, g_poseName);
 }
