@@ -66,10 +66,11 @@ APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
 }
 APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() { return LoadPoserConfig(); }
 APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
-  if (max < 2) return 2;
+  // 截图热键先不对外声明（插件内没有实现，截图走 tools/screenshot.ps1），
+  // 避免管理器里显示一个按了没反应的键；实现好了再加回来。
+  if (max < 1) return 1;
   out[0] = {"Toggle Poser GUI", "gui_toggle_key", g_guiToggleVK};
-  out[1] = {"Screenshot", "screenshot_key", g_screenshotVK};
-  return 2;
+  return 1;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 
@@ -282,7 +283,7 @@ void DrawPoserGui() {
     ImGui::Checkbox(u8"\u51bb\u7ed3\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1",
                     &g_freezeAccessories);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u5173\uff1a\u51bb\u7ed3\u540e\u4ece\u9aa8\u4fdd\u6301\u5b9e\u65f6\u6f14\u7b97\uff1b\u52fe\u9009\u540e\u8fde\u540c\u4e00\u8d77\u51bb\u7ed3");
+      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u5f00\uff1a\u51bb\u7ed3\u65f6\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1\u8ddf\u7740\u4e00\u8d77\u51bb\u4f4f\uff1b\u53d6\u6d88\u52fe\u9009\u5219\u4ece\u9aa8\u4fdd\u6301\u5b9e\u65f6\u6f14\u7b97");
     if (g_frozen && accPrev != g_freezeAccessories) {
       if (g_freezeAccessories) {
         if (s_accessoryChains.empty())
@@ -291,6 +292,17 @@ void DrawPoserGui() {
       } else {
         SetAllPhysicsEnabled(true);
       }
+    }
+    // 快捷键一览（默认展开，可折叠）
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+      char vkbuf[16];
+      ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
+                  VkName(g_guiToggleVK, vkbuf, sizeof(vkbuf)));
+      ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1aF9");
+      ImGui::Text(u8"\u64a4\u9500 / \u91cd\u505a\uff1aCtrl+Z / Ctrl+Y");
+      ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
     }
     // 根骨骼位置微调（整体位移；冻结态直接写回）
     void *rootT = nullptr;

@@ -29,7 +29,7 @@
 
 ### 游戏侧（已推送 a28d143）
 
-- **冻结**：关 Animator + 抑制 FinalIK/布料写者 + 每帧维持；新增"冻结飘带/裙子/头发"开关（`g_freezeAccessories`，默认关 = 从骨保持实时演算），游戏内 UI / WebUI / API 三处可切。
+- **冻结**：关 Animator + 抑制 FinalIK/布料写者 + 每帧维持；"冻结飘带/裙子/头发"开关（`g_freezeAccessories`，**默认开** = 连从骨一起冻住；取消勾选则从骨保持实时演算），游戏内 UI / WebUI / API 三处可切。
 - **姿态库 HTTP 化**：`/api/poses`、`/api/poses/save|load|delete`，WebUI 侧栏可输入名称保存/载入/删除（绕开游戏输入拦截）。
 - **删除自研 IK 与游戏内摆姿 UI**：`ik_driver.h`（回弹根源）、`panel_pose.h`（FK 面板+火柴人覆盖层）、`gizmo.h`、`panel_camera.h`、`panel_mode.h`；选中状态迁到 `editor/selection.h`。
 - 保留：骨骼采集/姿态回写 API、形态键、SMC 表情、布料/配件抑制、WebUI、外部控制通道。

@@ -57,6 +57,35 @@ static int ParseVK(const char *s, int fallback) {
   return (int)strtoul(p, nullptr, 0);
 }
 
+// VK 码 → 可读名字（面板里显示快捷键用）。buf 由调用方提供。
+static const char *VkName(int vk, char *buf, size_t sz) {
+  if (vk >= VK_F1 && vk <= VK_F12) {
+    snprintf(buf, sz, "F%d", vk - VK_F1 + 1);
+    return buf;
+  }
+  const char *name = nullptr;
+  switch (vk) {
+  case VK_INSERT: name = "Insert"; break;
+  case VK_DELETE: name = "Delete"; break;
+  case VK_HOME:   name = "Home";   break;
+  case VK_END:    name = "End";    break;
+  case VK_PRIOR:  name = "PgUp";   break;
+  case VK_NEXT:   name = "PgDn";   break;
+  case VK_TAB:    name = "Tab";    break;
+  case VK_ESCAPE: name = "Esc";    break;
+  case VK_SPACE:  name = "Space";  break;
+  default: break;
+  }
+  if (name)
+    return name;
+  if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+    snprintf(buf, sz, "%c", (char)vk);
+    return buf;
+  }
+  snprintf(buf, sz, "0x%02X", vk);
+  return buf;
+}
+
 static void StripBom(char *line) {
   // 去掉 UTF-8 BOM（EF BB BF），兼容 PowerShell/记事本写出的配置文件
   unsigned char *p = (unsigned char *)line;
