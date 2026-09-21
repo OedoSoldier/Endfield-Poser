@@ -48,6 +48,10 @@ build.bat
 **本机没有 cmake，也没有系统 Windows SDK**：若 `cmake` 不在 PATH，`build.bat` 会自动回退到
 `tools\build_msvc.ps1`（cl 直接编译 + 跑三个数学单测）；该脚本自动探测 `vcvars64.bat`
 （含 VS18 Insiders / BuildTools 等目录）。新机器首次使用先补齐 SDK 依赖：
+**版本号只改 `src/core/version.h`**（`src/poser.rc` 的 VERSIONINFO 也读它；构建脚本会先用
+`rc.exe` 编出 `build\obj\poser.res` 再链接——Applepie Manager 用文件版本资源显示插件版本，
+缺了它管理器里会显示成 `Endfield Poser v`）。`.rc` 与 `version.h` 必须保持 **ASCII 注释**：
+rc.exe 的预处理器不认 UTF-8 中文注释，也不支持 `#pragma once`。
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\setup_winsdk.ps1   # 需联网，约 200MB，落到 deps\（gitignore）
 powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1

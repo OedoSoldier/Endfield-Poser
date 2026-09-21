@@ -83,9 +83,17 @@ function Invoke-Cl([string]$CompileArgs) {
   if ($LASTEXITCODE -ne 0) { throw "cl failed: $CompileArgs" }
 }
 
+Write-Host '=== Compiling version resource ==='
+# cl 不处理 .rc；必须先用 rc.exe 编成 .res，再交给链接器
+# （Applepie Manager 用 GetFileVersionInfoA 读它显示插件版本）
+$rcCmdLine = 'call "' + $vcvars + '" >nul 2>&1 && rc /nologo /I src /fo build\obj\poser.res src\poser.rc'
+cmd /d /c $rcCmdLine
+if ($LASTEXITCODE -ne 0) { throw "rc failed: src\poser.rc" }
+
 Write-Host '=== Building poser.dll ==='
 $poserArgs = "$common /DAPPLEPIE_PLUGIN_IMPL $inc /LD " +
   'src\poser.cpp ' +
+  'build\obj\poser.res ' +
   'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp ' +
   'deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp ' +
   '/Fe:plugin\poser.dll ' +

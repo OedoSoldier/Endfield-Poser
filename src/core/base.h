@@ -5,9 +5,7 @@
 #include <cstdarg>
 #include <cstring>
 
-#define POSER_VERSION_MAJOR 0
-#define POSER_VERSION_MINOR 2
-#define POSER_VERSION_PATCH 0
+#include "core/version.h" // 版本号唯一来源（资源文件 src/poser.rc 也读它）
 
 #define POSER_STRINGIFY2(x) #x
 #define POSER_STRINGIFY(x) POSER_STRINGIFY2(x)

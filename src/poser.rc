@@ -1,0 +1,41 @@
+// Version resource. Applepie Manager reads it via GetFileVersionInfoA to show the
+// plugin version (without it the manager displays "Endfield Poser v" with an empty
+// version). Keep this file ASCII-only: rc.exe cannot parse UTF-8 comments.
+#include <windows.h>
+#include "core/version.h"
+
+#define POSER_RC_STR2(x) #x
+#define POSER_RC_STR(x) POSER_RC_STR2(x)
+#define POSER_RC_VERSION POSER_RC_STR(POSER_VERSION_MAJOR) "." POSER_RC_STR(POSER_VERSION_MINOR) "." POSER_RC_STR(POSER_VERSION_PATCH)
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION POSER_VERSION_MAJOR,POSER_VERSION_MINOR,POSER_VERSION_PATCH,0
+ PRODUCTVERSION POSER_VERSION_MAJOR,POSER_VERSION_MINOR,POSER_VERSION_PATCH,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x2L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Endfield Poser"
+            VALUE "FileDescription", "Endfield Poser - in-game posing plugin"
+            VALUE "FileVersion", POSER_RC_VERSION
+            VALUE "InternalName", "poser"
+            VALUE "OriginalFilename", "poser.dll"
+            VALUE "ProductName", "Endfield Poser"
+            VALUE "ProductVersion", POSER_RC_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

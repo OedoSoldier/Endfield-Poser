@@ -17,6 +17,7 @@ if(WIN32)
   # 主插件 DLL
   add_library(poser SHARED
     src/poser.cpp
+    src/poser.rc
     src/config.h
     src/core/game_hooks.h
     src/core/gui_overlay.h
