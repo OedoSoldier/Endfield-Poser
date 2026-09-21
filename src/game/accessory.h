@@ -79,22 +79,6 @@ static bool IsNoisyBoneName(const char *n) {
   return false;
 }
 
-// 是否是"可摆放"的从骨链根：3D 叠加层/点选默认只暴露链根（头发/裙子/飘带整条跟着
-// 转），逐根微调交给"全量骨骼"开关；内部辅助骨按命名过滤掉。
-static bool IsAccessoryChainRoot(void *t) {
-  if (!t)
-    return false;
-  for (const AccessoryChain &c : s_accessoryChains) {
-    if (c.rootBoneIdx < 0 || c.rootBoneIdx >= (int)s_accessoryBones.size())
-      continue;
-    const AccessoryBone &b = s_accessoryBones[c.rootBoneIdx];
-    if (b.transform != t)
-      continue;
-    return !IsNoisyBoneName(b.name);
-  }
-  return false;
-}
-
 // 取某根从骨"冻结瞬间"的姿态（复位用）。手动编辑只改 localPos/localRot，
 // 不会动 frozenPos/frozenRot，所以随时能回到冻结那一刻。
 static bool GetAccessoryFrozenPose(void *t, Vec3 *pos, Quat *rot) {

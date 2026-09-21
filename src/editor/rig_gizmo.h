@@ -23,22 +23,16 @@ static bool g_showBones = true;
 // 全量骨骼开关：勾选后在叠加层展示/可拾取所有骨骼（含手指等），用于精细微调
 // 默认关 = 只显示主要(Humanoid)骨骼；全量收集始终进行（Blender 桥依赖），仅叠加层按此开关切换
 static bool g_fullBones = false;
-// 非全量模式默认只显示 humanoid 骨（干净）；勾上这个才额外显示"可摆放"的从骨链根
-// （头发/裙子/飘带整条跟着转）。逐根微调仍然用"全量骨骼"。
-static bool g_showAccessoryRoots = false;
-
 // 叠加层绘制/点选是否处理这根骨：humanoid 骨始终显示；非 humanoid 先按命名过滤掉
-// 内部辅助骨（Nub/Twist/corrective/碰撞体/表情骨/inner/outer/wep…），其余在全量
-// 模式下全部显示，非全量模式只在"从骨链"开关打开时显示可摆放的链根。
+// 内部辅助骨（Nub/Twist/corrective/碰撞体/表情骨/inner/outer/wep…），其余只在
+// "全量骨骼"模式下显示（非全量模式 = 只有 humanoid，画面干净）。
 static bool RigShowBone(void *t, const char *name, bool useAll) {
   if (!t)
     return false;
   bool isHuman = FindTransformIndex(t) >= 0;
   if (!isHuman && IsNoisyBoneName(name))
     return false;
-  if (useAll || isHuman)
-    return true;
-  return g_showAccessoryRoots && IsAccessoryChainRoot(t);
+  return useAll || isHuman;
 }
 
 // 叠加层状态（面板直接显示，方便排查）
