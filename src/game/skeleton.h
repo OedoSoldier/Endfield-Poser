@@ -320,11 +320,21 @@ static void MirrorPose(bool leftToRight) {
 static void (*g_poseCaptureExtras)(PoseDoc &doc) = nullptr;
 static void (*g_poseApplyExtras)(const PoseDoc &doc) = nullptr;
 
+// 是否把"表情骨"（眼/下巴）写进姿态文件并在套用时应用。默认 = 跳过：
+// 本作眼/下巴由 SMC 骨骼变形驱动，跨角色套用会把 A 的脸部变换写到 B 上（脸会错乱）；
+// 跳过之后姿态只管身体与从骨，表情各自在新角色上调。
+static bool g_poseSkipFaceBones = true;
+static bool IsFaceExpressionBone(HumanBodyBones b) {
+  return b == LeftEye || b == RightEye || b == Jaw;
+}
+
 static PoseDoc CapturePoseDoc(const char *name) {
   PoseDoc doc;
   doc.name = name ? name : "";
   doc.restRel = false; // 新格式：绝对 local 变换
   for (int i = 0; i < s_humanBoneCount; i++) {
+    if (g_poseSkipFaceBones && IsFaceExpressionBone(s_humanBones[i].humanBone))
+      continue;
     PoseBone pb;
     pb.name = s_humanBones[i].name;
     pb.pos = GetBoneLocalPos(s_humanBones[i].transform);
@@ -342,6 +352,7 @@ static PoseDoc CapturePoseDoc(const char *name) {
 // 新格式(restRel=false)直接写绝对 local；旧格式(restRel=true)按基线增量还原（兼容）。
 static void ApplyPoseDoc(const PoseDoc &doc) {
   int applied = 0;
+  int skippedFace = 0;
   for (size_t bi = 0; bi < doc.bones.size(); bi++) {
     const PoseBone &pb = doc.bones[bi];
     int idx = -1;
@@ -352,6 +363,10 @@ static void ApplyPoseDoc(const PoseDoc &doc) {
       }
     if (idx < 0 || s_humanBones[idx].locked)
       continue;
+    if (g_poseSkipFaceBones && IsFaceExpressionBone(s_humanBones[idx].humanBone)) {
+      skippedFace++;
+      continue;
+    }
     if (doc.restRel && s_restCaptured) { // 旧格式兼容：相对 A-pose 基线还原
       SetBoneLocalPos(s_humanBones[idx].transform, s_restPos[idx] + pb.pos);
       SetBoneLocalRot(s_humanBones[idx].transform,
@@ -364,6 +379,9 @@ static void ApplyPoseDoc(const PoseDoc &doc) {
   }
   Log("[POSER] Applied pose '%s': %d/%d bones", doc.name.c_str(), applied,
       (int)doc.bones.size());
+  if (skippedFace > 0)
+    Log("[POSER] pose: skipped %d face bone(s) (eye/jaw)",
+        skippedFace);
   if (g_poseApplyExtras)
     g_poseApplyExtras(doc);
 }

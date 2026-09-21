@@ -161,6 +161,11 @@ static void DrawLibraryPanel() {
   ImGui::SetNextItemWidth(-1);
   ImGui::InputTextWithHint("##posename", u8"名称（留空则自动编号 Pose_001）",
                            g_poseName, sizeof(g_poseName));
+  ImGui::Checkbox(u8"不保存/不套用表情", &g_poseSkipFaceBones);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip(
+        u8"默认勾选：姿态只含身体与从骨。眼/下巴由 SMC 表情驱动，跨角色套用会错乱\n"
+        u8"取消勾选：姿态会带上眼睛/下巴（仅同角色使用）");
   ImGui::TextDisabled(u8"保存位置：%s", g_defaultPoseDir);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip(u8"改路径：poser_config.txt 里的 default_pose_dir");

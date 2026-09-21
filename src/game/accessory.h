@@ -139,6 +139,10 @@ static int ApplyAccessoryPoseEntries(const std::vector<PoseBone> &in) {
     for (AccessoryBone &b : s_accessoryBones) {
       if (strcmp(b.name, pb.name.c_str()) != 0)
         continue;
+      // 旧姿态文件可能带着表情骨（brow/eye/face/lip…）：一律不套用，
+      // 否则换个角色加载旧文件同样会把脸弄乱
+      if (IsNoisyBoneName(b.name))
+        break;
       SetBoneLocalPos(b.transform, pb.pos);
       SetBoneLocalRot(b.transform, pb.rot);
       b.localPos = pb.pos;
