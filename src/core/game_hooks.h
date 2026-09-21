@@ -73,6 +73,9 @@ static void *g_charAnimator = nullptr;
 static void *g_charAnimComp = nullptr; // Entity 上的 ComplexAnimationComponent（冻结时一并禁用）
 static void *g_animatorClass = nullptr; // UnityEngine.Animator 类（角色捕获字段扫描用）
 static volatile bool g_charChanged = false; // hook 捕获新角色后置真，GUI 消费后复位
+// 冻结状态：由 freeze.h 维护；低层模块（如 smc_morph.h 的每帧写回）只读它做闸门，
+// 避免解冻后仍然覆盖游戏的动画/表情写入。
+static bool g_frozen = false;
 
 // 已解析的运行时方法指针（对应 {EIEM} globals.h 的 g_animator_*/g_transform_*）
 static void *g_animator_GetBoneTransform = nullptr;

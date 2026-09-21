@@ -16,7 +16,6 @@
 
 #include <cstring>
 
-static bool g_frozen = false;
 static bool g_animatorWasEnabled = true;
 // 冻结选项：勾选后连飘带/裙子/头发等从骨一起冻结；默认关 = 从骨保持实时演算。
 // 默认冻结飘带/裙子/头发等从骨（钉在冻结瞬间姿态），取消勾选才让它们继续实时演算。

@@ -119,6 +119,10 @@ static void ClearAccessoryPose() {
 // 姿态文件：采集所有从骨当前 local 姿态
 static void CollectAccessoryPoseEntries(std::vector<PoseBone> &out) {
   for (const AccessoryBone &b : s_accessoryBones) {
+    // 跳过表情/形态驱动的内部骨（brow / eye / face / lip …）：它们由 SMC 驱动，
+    // 存进姿态文件再套到别的角色上会得到错位或夸张的脸。布料/头发/飘带照常保存。
+    if (IsNoisyBoneName(b.name))
+      continue;
     PoseBone pb;
     pb.name = b.name;
     pb.pos = GetBoneLocalPos(b.transform);

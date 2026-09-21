@@ -567,8 +567,9 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     SMCCaptureBigList(__this); // job hook 可能已抓过，这里兜底
   }
 
-  // 驱动中：先写上一帧结果，抵消游戏本帧改写
-  if (s_driving && s_faceBonesCaptured && s_frame > 5)
+  // 驱动中：先写上一帧结果，抵消游戏本帧改写。
+  // 必须限定在冻结态：hook 是启动时就装上的，解冻后若继续写，会永久盖住游戏的面部动画。
+  if (s_driving && g_frozen && s_faceBonesCaptured && s_frame > 5)
     SMCWriteTouchedBones();
 
   // 面部骨骼引用（m_allBonesTransforms，一次性）

@@ -54,6 +54,9 @@ static void DrawSMCSection() {
 static void DrawMorphPanel() {
   DrawSMCSection();
   if (s_blendShapes.empty()) {
+    ImGui::TextDisabled(
+        u8"\u672c\u4f5c\u9762\u90e8\u7531 SMC \u9aa8\u9abc\u9a71\u52a8\uff0c\u7f51\u683c\u4e0a"
+        u8"\u6ca1\u6709 BlendShape \u76ee\u6807\uff08\u8be5\u533a\u4e3a\u7a7a\u662f\u6b63\u5e38\u7684\uff09");
     return;
   }
 
