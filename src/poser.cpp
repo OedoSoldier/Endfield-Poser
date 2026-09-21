@@ -190,9 +190,6 @@ static void RefreshCharacterBones() {
 }
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
-// 图钉：锁定全部面板窗口位置，防止拖火柴人/滑块时窗口跟着动
-static bool g_pinPanels = true;
-
 void DrawPoserGui() {
   // 撤销/重做：安装写骨钩子（一次性）+ 每帧合并连续编辑 + 快捷键
   {
@@ -249,18 +246,20 @@ void DrawPoserGui() {
     ImGui::Separator();
     ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
     ImGui::SameLine();
+    ImGui::Checkbox(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u6253\u5f00\u9aa8\u9abc\u53c2\u6570\u7a97\u53e3\uff08\u65cb\u8f6c/\u4f4d\u7f6e\u6ed1\u6761\u3001\u6570\u503c\u8f93\u5165\u3001\u590d\u4f4d\u3001\u64a4\u9500\uff09");
+    ImGui::SameLine();
     ImGui::TextDisabled(
         g_selectedName[0] ? g_selectedName : u8"\u672a\u9009\u4e2d");
     ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
     ImGui::Checkbox(u8"\u5168\u91cf\u9aa8\u9abc(\u5fae\u8c03)", &g_fullBones);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u53ea\u663e\u793a\u4e3b\u8981\u9aa8\u9abc\uff1b\u52fe\u9009\u540e\u53e0\u52a0\u5c42\u5c55\u793a/\u53ef\u62fe\u53d6\u6240\u6709\u9aa8\u9abc\uff08\u542b\u624b\u6307\u7b49\uff09\uff0c\u7528\u4e8e\u7cbe\u7ec6\u5fae\u8c03\u3002");
     ImGui::SameLine();
     ImGui::Checkbox(u8"\u4ece\u9aa8\u94fe", &g_showAccessoryRoots);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u52fe\u9009\u540e\u975e\u5168\u91cf\u6a21\u5f0f\u4e5f\u663e\u793a\u53ef\u6446\u653e\u7684\u4ece\u9aa8\u94fe\u6839\uff08\u5934\u53d1/\u88d9\u5b50/\u98d8\u5e26\uff09\uff1b\u9010\u6839\u5fae\u8c03\u8bf7\u7528\u5168\u91cf\u9aa8\u9abc\u3002");
-    ImGui::SameLine();
-    ImGui::Checkbox(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneTree);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u53ea\u663e\u793a\u4e3b\u8981\u9aa8\u9abc\uff1b\u52fe\u9009\u540e\u53e0\u52a0\u5c42\u5c55\u793a/\u53ef\u62fe\u53d6\u6240\u6709\u9aa8\u9abc\uff08\u542b\u624b\u6307\u7b49\uff09\uff0c\u7528\u4e8e\u7cbe\u7ec6\u5fae\u8c03\u3002\u5168\u91cf\u6536\u96c6\u59cb\u7ec8\u8fdb\u884c\u3002");
     if (g_fullBones && s_allBones.empty())
       RebuildAllBones();
     if (!g_fullBones && FindTransformIndex(g_selectedTransform) < 0)

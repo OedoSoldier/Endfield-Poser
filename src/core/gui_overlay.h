@@ -40,6 +40,10 @@ static void SetExtPollFn(void (*fn)()) { g_extPollFn = fn; }
 static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
 
+// 图钉：锁定所有面板窗口位置（拖火柴人/滑块时窗口不会跟着动）。
+// 放在这里是因为 poser.cpp 与 editor/panel_*.h 都要用它。
+static bool g_pinPanels = true;
+
 // ---- 输入路由状态 ----
 // 鼠标只在「指针落在面板/旋转盘上 且 游戏光标已呼出」时由覆盖层吃掉，其余一律穿透给
 // 游戏（由 WM_NCHITTEST 决定）。游戏自带的 Alt 呼出光标通过 Cursor.lockState/visible

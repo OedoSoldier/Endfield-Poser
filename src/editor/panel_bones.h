@@ -16,8 +16,7 @@
 #include <cstring>
 #include <vector>
 
-static bool g_showBoneTree = true;
-static char g_boneTreeSearch[64] = "";
+static bool g_showBoneParams = true;
 
 // 复位：humanoid 骨回到 A-pose 基线（s_rest*），从骨回到冻结瞬间姿态
 static void ResetBoneRot(void *t) {
@@ -97,12 +96,14 @@ static void DrawBoneParams() {
 }
 
 static void DrawBoneTreePanel() {
-  if (!g_showBoneTree)
+  if (!g_showBoneParams)
     return;
-  ImGui::SetNextWindowPos(ImVec2(10, 205), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 210), ImGuiCond_FirstUseEver);
-  if (!ImGui::Begin(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneTree,
-                    ImGuiWindowFlags_NoCollapse)) {
+  // 默认放主面板右侧：主面板高度随状态变化（冻结后会多出 root 滑条），放左下会重叠
+  ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(320, 280), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams,
+                    ImGuiWindowFlags_NoCollapse |
+                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     ImGui::End();
     return;
   }
