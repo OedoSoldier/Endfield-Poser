@@ -1412,7 +1412,9 @@ namespace ImGuizmo
                vec_t cornerWorldPos = (dirPlaneX * quadUV[j * 2] + dirPlaneY * quadUV[j * 2 + 1]) * gContext.mScreenFactor;
                screenQuadPts[j] = worldToPos(cornerWorldPos, gContext.mMVP);
             }
-            drawList->AddPolyline(screenQuadPts, 4, directionColor[i], true, 1.0f);
+            // 旧签名 AddPolyline(..., bool closed, thickness) → 新版要 ImDrawFlags，
+            // 否则 ImGui 断言 "(flags & ImDrawFlags_InvalidMask) == 0"（平移手柄会踩到）
+            drawList->AddPolyline(screenQuadPts, 4, directionColor[i], ImDrawFlags_Closed, 1.0f);
             drawList->AddConvexPolyFilled(screenQuadPts, 4, colors[i + 4]);
          }
       }

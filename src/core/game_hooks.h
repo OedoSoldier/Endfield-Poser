@@ -529,6 +529,9 @@ static Quat GetBoneLocalRot(void *t) {
 // 一次（参数为被写的骨）。上层用它把新姿势同步进自己的缓存，例如 accessory.h 的
 // 冻结快照——否则冻结维持逻辑下一帧就把这次编辑打回去。未注册时为 nullptr，无开销。
 static void (*g_boneWriteHook)(void *transform) = nullptr;
+// 第二个写骨观察者（撤销栈用）。分开是因为 accessory 需要临时挂起自己的快照同步，
+// 而撤销栈必须继续记录编辑；两者互不影响。
+static void (*g_boneWriteHook2)(void *transform) = nullptr;
 
 static void SetBoneLocalRot(void *t, Quat q) {
   if (!t || !g_transform_set_localRotation)
@@ -540,6 +543,8 @@ static void SetBoneLocalRot(void *t, Quat q) {
   }
   if (g_boneWriteHook)
     g_boneWriteHook(t);
+  if (g_boneWriteHook2)
+    g_boneWriteHook2(t);
 }
 
 static Vec3 GetBoneLocalPos(void *t) {
@@ -565,6 +570,8 @@ static void SetBoneLocalPos(void *t, Vec3 p) {
   }
   if (g_boneWriteHook)
     g_boneWriteHook(t);
+  if (g_boneWriteHook2)
+    g_boneWriteHook2(t);
 }
 
 // 取骨骼名称（用于日志/面板显示）

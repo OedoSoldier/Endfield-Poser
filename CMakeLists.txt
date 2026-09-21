@@ -22,6 +22,9 @@ if(WIN32)
     src/core/gui_overlay.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
+    src/editor/panel_bones.h
+    src/editor/undo.h
+    src/editor/ik_control.h
     deps/imgui/imgui.cpp
     deps/imgui/imgui_draw.cpp
     deps/imgui/imgui_tables.cpp

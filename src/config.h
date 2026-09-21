@@ -10,6 +10,9 @@ void Log(const char *fmt, ...);
 static int g_guiToggleVK = VK_INSERT;   // 呼出/隐藏 GUI
 static int g_screenshotVK = VK_F8;      // 截图
 static char g_defaultPoseDir[MAX_PATH] = "";
+// click_through=1：覆盖层常驻显示，用 WS_EX_LAYERED|TRANSPARENT 做真穿透；
+// 按住 Alt 时才取消穿透、由面板吃鼠标。默认 0 = 按住 Alt 才显示覆盖层。
+static bool g_clickThrough = false;
 
 // Default pose dir: prefer deriving from poser.dll location (...\plugin\poses)
 // so presets work regardless of the game's working directory.
@@ -85,6 +88,7 @@ static bool LoadPoserConfig() {
 
     if (strcmp(key, "gui_toggle_key") == 0)       g_guiToggleVK = ParseVK(val, VK_INSERT);
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
+    else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "default_pose_dir") == 0) {
       if (val[0] == '\0') {
         ResolveDefaultPoseDir();

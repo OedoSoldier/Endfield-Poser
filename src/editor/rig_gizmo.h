@@ -23,12 +23,32 @@ static bool g_showBones = true;
 // 全量骨骼开关：勾选后在叠加层展示/可拾取所有骨骼（含手指等），用于精细微调
 // 默认关 = 只显示主要(Humanoid)骨骼；全量收集始终进行（Blender 桥依赖），仅叠加层按此开关切换
 static bool g_fullBones = false;
+// 非全量模式默认只显示 humanoid 骨（干净）；勾上这个才额外显示"可摆放"的从骨链根
+// （头发/裙子/飘带整条跟着转）。逐根微调仍然用"全量骨骼"。
+static bool g_showAccessoryRoots = false;
+
+// 叠加层绘制/点选是否处理这根骨：humanoid 骨始终显示；非 humanoid 先按命名过滤掉
+// 内部辅助骨（Nub/Twist/corrective/碰撞体/表情骨/inner/outer/wep…），其余在全量
+// 模式下全部显示，非全量模式只在"从骨链"开关打开时显示可摆放的链根。
+static bool RigShowBone(void *t, const char *name, bool useAll) {
+  if (!t)
+    return false;
+  bool isHuman = FindTransformIndex(t) >= 0;
+  if (!isHuman && IsNoisyBoneName(name))
+    return false;
+  if (useAll || isHuman)
+    return true;
+  return g_showAccessoryRoots && IsAccessoryChainRoot(t);
+}
 
 // 叠加层状态（面板直接显示，方便排查）
 static char g_overlayStatus[128] = "off";
 
 // 上一帧叠加层投影的关节屏幕坐标缓存（供 WM_NCHITTEST 命中测试，overlay 客户端坐标）
-static const int kMaxJointCache = 128;
+// 关节缓存：供输入路由做命中测试（hover → 覆盖层吃鼠标）。必须能装下整条骨架：
+// humanoid 55 根 + 从骨链根上百根，实测角色约 190+，之前 128 会溢出，导致排在后面
+// 的关节 hover 永远为 false、点击被路由给游戏（表现为"有些关节能点有些点不动"）。
+static const int kMaxJointCache = 1024;
 static float g_jointSx[kMaxJointCache] = {};
 static float g_jointSy[kMaxJointCache] = {};
 static void *g_jointTrans[kMaxJointCache] = {};
@@ -384,12 +404,12 @@ static void DrawSkeletonOverlay() {
   for (size_t i = 0; i < s_allBones.size(); i++) {
     if (!s_allBones[i].transform)
       continue;
-    if (!useAll && FindTransformIndex(s_allBones[i].transform) < 0)
+    if (!RigShowBone(s_allBones[i].transform, s_allBones[i].name, useAll))
       continue;
     int pi = s_allBones[i].parentIdx;
     if (pi < 0 || pi >= (int)s_allBones.size())
       continue;
-    if (!useAll && FindTransformIndex(s_allBones[pi].transform) < 0)
+    if (!RigShowBone(s_allBones[pi].transform, s_allBones[pi].name, useAll))
       continue;
     float a[2], b[2];
     if (!ProjectBone(GetBoneWorldPos(s_allBones[pi].transform), a[0], a[1]))
@@ -404,7 +424,7 @@ static void DrawSkeletonOverlay() {
     void *t = s_allBones[i].transform;
     if (!t)
       continue;
-    if (!useAll && FindTransformIndex(t) < 0)
+    if (!RigShowBone(t, s_allBones[i].name, useAll))
       continue;
     float sx, sy;
     if (!ProjectBone(GetBoneWorldPos(t), sx, sy))
@@ -500,12 +520,20 @@ static void HandleRigClick() {
       bestName = nm;
     }
   };
-  if (g_fullBones && !s_allBones.empty())
+  bool useAll = g_fullBones && !s_allBones.empty();
+  if (!s_allBones.empty()) {
+    // 与叠加层用同一套过滤：humanoid +（默认开）从骨链根，全量模式下全部
     for (const auto &b : s_allBones)
-      Pick(b.transform, b.name);
-  else
+      if (RigShowBone(b.transform, b.name, useAll))
+        Pick(b.transform, b.name);
+  } else {
     for (int i = 0; i < s_humanBoneCount; i++)
       Pick(s_humanBones[i].transform, s_humanBones[i].name);
+  }
+  // 诊断：点击是否到达覆盖层、选中了哪根骨（只在真正点击时打一行）
+  Log("[RIG] click -> %s (dist=%.1f, joints=%d)",
+      bestT ? (bestName && bestName[0] ? bestName : "(unnamed)") : "none",
+      (double)bd, g_jointCount);
   SelectTransform(bestT, bestName); // 点空处 bestT=null → 取消
 }
 

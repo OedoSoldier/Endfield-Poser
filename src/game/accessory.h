@@ -32,6 +32,8 @@ struct AccessoryBone {
   bool locked;    // 锁定：钉在当前姿势，恢复/FK/镜像跳过
   Vec3 localPos;
   Quat localRot;
+  Vec3 frozenPos; // 冻结瞬间姿态（"复位到冻结时刻"用，不随手动编辑改变）
+  Quat frozenRot;
   std::vector<void *> physicsComps; // 该骨 GameObject 上的物理/布料组件实例
 };
 
@@ -52,6 +54,63 @@ struct RawAccessoryBone {
 static std::vector<AccessoryBone> s_accessoryBones;
 static std::vector<AccessoryChain> s_accessoryChains;
 static std::vector<RawAccessoryBone> s_rawBones;
+
+// 内部辅助骨/表情驱动骨/物理碰撞体/挂点等：摆姿用不到，两种模式都不显示
+// （humanoid 骨不参与这个过滤，见 rig_gizmo.h 的 RigShowBone）。
+static bool IsNoisyBoneName(const char *n) {
+  if (!n || !n[0])
+    return true;
+  char low[128];
+  int i = 0;
+  for (; n[i] && i < (int)sizeof(low) - 1; i++) {
+    char c = n[i];
+    low[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+  }
+  low[i] = 0;
+  static const char *const kSkip[] = {"nub",      "twist",   "corrective",
+                                      "collider", "brow",    "eye",
+                                      "face",     "lip",     "line",
+                                      "head_",    "local",   "(clone)",
+                                      "inner",    "outer",   "wep",
+                                      nullptr};
+  for (int k = 0; kSkip[k]; k++)
+    if (strstr(low, kSkip[k]))
+      return true;
+  return false;
+}
+
+// 是否是"可摆放"的从骨链根：3D 叠加层/点选默认只暴露链根（头发/裙子/飘带整条跟着
+// 转），逐根微调交给"全量骨骼"开关；内部辅助骨按命名过滤掉。
+static bool IsAccessoryChainRoot(void *t) {
+  if (!t)
+    return false;
+  for (const AccessoryChain &c : s_accessoryChains) {
+    if (c.rootBoneIdx < 0 || c.rootBoneIdx >= (int)s_accessoryBones.size())
+      continue;
+    const AccessoryBone &b = s_accessoryBones[c.rootBoneIdx];
+    if (b.transform != t)
+      continue;
+    return !IsNoisyBoneName(b.name);
+  }
+  return false;
+}
+
+// 取某根从骨"冻结瞬间"的姿态（复位用）。手动编辑只改 localPos/localRot，
+// 不会动 frozenPos/frozenRot，所以随时能回到冻结那一刻。
+static bool GetAccessoryFrozenPose(void *t, Vec3 *pos, Quat *rot) {
+  if (!t)
+    return false;
+  for (const AccessoryBone &b : s_accessoryBones) {
+    if (b.transform != t)
+      continue;
+    if (pos)
+      *pos = b.frozenPos;
+    if (rot)
+      *rot = b.frozenRot;
+    return true;
+  }
+  return false;
+}
 
 // 手动编辑从骨（旋转盘 / WebUI）后，把新姿势写回冻结快照 = 新的冻结基线。
 // 不这么做的话 MaintainFreeze 每帧的 ApplyAccessorySnapshot 会把编辑立刻打回去，
@@ -196,6 +255,8 @@ static void RebuildAccessories() {
              s_rawBones[i].name[0] ? s_rawBones[i].name : "bone");
     b.localPos = GetBoneLocalPos(b.transform);
     b.localRot = GetBoneLocalRot(b.transform);
+    b.frozenPos = b.localPos;
+    b.frozenRot = b.localRot;
     CollectPhysicsComponents(b);
 
     int bidx = (int)s_accessoryBones.size();
@@ -286,13 +347,17 @@ static void CaptureAccessorySnapshot() {
   for (AccessoryBone &b : s_accessoryBones) {
     b.localPos = GetBoneLocalPos(b.transform);
     b.localRot = GetBoneLocalRot(b.transform);
+    b.frozenPos = b.localPos; // 冻结瞬间姿态单独留一份，供"复位"用
+    b.frozenRot = b.localRot;
   }
 }
 
 static void ApplyAccessorySnapshot() {
   // 回写期间挂起钩子：避免自己写自己（多一次 O(n) 扫描），也避免把回写当成手动编辑
   void (*prevHook)(void *) = g_boneWriteHook;
+  void (*prevHook2)(void *) = g_boneWriteHook2;
   g_boneWriteHook = nullptr;
+  g_boneWriteHook2 = nullptr; // 冻结维持的每帧回写不算"编辑"，不能进撤销栈
   for (AccessoryBone &b : s_accessoryBones) {
     if (b.locked)
       continue; // 锁定骨保持钉住姿势
@@ -300,6 +365,7 @@ static void ApplyAccessorySnapshot() {
     SetBoneLocalRot(b.transform, b.localRot);
   }
   g_boneWriteHook = prevHook;
+  g_boneWriteHook2 = prevHook2;
 }
 
 // 每帧维护：角色切换时重建从骨列表（供主循环调用）

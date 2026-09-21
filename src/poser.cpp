@@ -16,6 +16,9 @@
 #include "game/smc_morph.h"
 #include "editor/selection.h"
 #include "editor/rig_gizmo.h"
+#include "editor/panel_bones.h"
+#include "editor/undo.h"
+#include "editor/ik_control.h"
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "config.h"
@@ -97,56 +100,25 @@ static bool CursorVisible() {
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 void GameFrameTick() {
   __try {
-    // 光标接管：按住 Alt（游戏自带的"呼出鼠标"）或正在拖拽旋转盘时，由我们维持
-    // cursor 自由（游戏相机会每帧重锁，只设一次会被顶回去）；Alt 松开后恢复进入前
-    // 的状态，鼠标完全还给游戏。其余时间我们完全不碰游戏光标。
-    // 实测：游戏自己的 lock 状态是"闪一下"的（0→1 立刻回），不能作为判定依据。
+    // 光标完全交给游戏自己管：按 Alt 显示光标是游戏自带行为，插件不改它的
+    // lockState/visible（强行改写会和系统按线程计数的 ShowCursor 状态打架，
+    // 表现为"光标没了"）。我们只读取状态：lockState==None 视为光标可用，
+    // 面板/关节才吃鼠标。
     {
-      static bool s_cursorTaken = false;
-      static int s_origLock = 0;
-      static bool s_origVisible = true;
-      bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-      bool wantFree = g_guiVisible && (altHeld || g_inputDragging);
-      if (wantFree) {
-        if (!s_cursorTaken) {
-          s_origLock = CursorLockState();
-          s_origVisible = CursorVisible();
-          s_cursorTaken = true;
-          Log("[INPUT] cursor takeover (alt=%d lock=%d vis=%d)", (int)altHeld,
-              s_origLock, (int)s_origVisible);
-        }
-        // 每帧维持：游戏自己的相机控制器会重新 lock 回去
-        if (g_cursor_set_lockState) {
-          int v = 0;
-          void *p[] = {&v};
-          Invoke(g_cursor_set_lockState, nullptr, p);
-        }
-        if (g_cursor_set_visible) {
-          int v = 1; // 用系统光标，不画 ImGui 光标，避免双光标
-          void *p[] = {&v};
-          Invoke(g_cursor_set_visible, nullptr, p);
-        }
-        g_gameCursorFree = true;
-        ImGui::GetIO().MouseDrawCursor = false;
-      } else {
-        if (s_cursorTaken) {
-          if (g_cursor_set_lockState) {
-            int v = s_origLock;
-            void *p[] = {&v};
-            Invoke(g_cursor_set_lockState, nullptr, p);
-          }
-          if (g_cursor_set_visible) {
-            int v = s_origVisible ? 1 : 0;
-            void *p[] = {&v};
-            Invoke(g_cursor_set_visible, nullptr, p);
-          }
-          s_cursorTaken = false;
-          Log("[INPUT] cursor released (lock=%d vis=%d)", s_origLock,
-              (int)s_origVisible);
-        }
-        g_gameCursorFree = false;
-        ImGui::GetIO().MouseDrawCursor = false;
+      int lockNow = CursorLockState();
+      bool visNow = CursorVisible();
+      g_cursorFreeNow = (lockNow == 0); // 0 = CursorLockMode.None
+      (void)visNow;
+      // 系统光标被游戏隐藏时补一个软光标（Windows 的显示计数按线程算，指针压在
+      // 游戏窗口上时可能画不出来）；游戏自己显示了就不重复画。
+      bool osShown = false;
+      __try {
+        CURSORINFO ci;
+        ci.cbSize = sizeof(ci);
+        osShown = GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) != 0;
+      } __except (1) {
       }
+      ImGui::GetIO().MouseDrawCursor = g_cursorFreeNow && !osShown;
     }
     // 角色捕获自愈：SetMainCharacter hook 漏触发/时机错过时，
     // 周期性从 PlayerController 补捞当前角色（约每 2 秒一次）。
@@ -222,6 +194,26 @@ static void RefreshCharacterBones() {
 static bool g_pinPanels = true;
 
 void DrawPoserGui() {
+  // 撤销/重做：安装写骨钩子（一次性）+ 每帧合并连续编辑 + 快捷键
+  {
+    static bool s_undoHooked = false;
+    if (!s_undoHooked) {
+      s_undoHooked = true;
+      InstallUndoHook();
+      Log("[UNDO] hook installed");
+    }
+    UndoTick();
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+      if (GetAsyncKeyState('Z') & 1) {
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+          RedoPerform();
+        else
+          UndoPerform();
+      }
+      if (GetAsyncKeyState('Y') & 1)
+        RedoPerform();
+    }
+  }
   __try { GameFrameTick(); } __except (1) {
     Log("[POSER] GameFrameTick exception code=0x%X", GetExceptionCode());
   }
@@ -235,6 +227,12 @@ void DrawPoserGui() {
     HandleRigClick();
   } __except (1) {
     Log("[POSER] HandleRigClick exception code=0x%X", GetExceptionCode());
+  }
+  __try {
+    IkSolveAll();        // 冻结态解算四肢 IK（启用中的控制器）
+    DrawIkControllers(); // 目标点渲染 + 选中 + 命中标记
+  } __except (1) {
+    Log("[POSER] IK controllers exception code=0x%X", GetExceptionCode());
   }
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
@@ -255,6 +253,12 @@ void DrawPoserGui() {
         g_selectedName[0] ? g_selectedName : u8"\u672a\u9009\u4e2d");
     ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
     ImGui::Checkbox(u8"\u5168\u91cf\u9aa8\u9abc(\u5fae\u8c03)", &g_fullBones);
+    ImGui::SameLine();
+    ImGui::Checkbox(u8"\u4ece\u9aa8\u94fe", &g_showAccessoryRoots);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u52fe\u9009\u540e\u975e\u5168\u91cf\u6a21\u5f0f\u4e5f\u663e\u793a\u53ef\u6446\u653e\u7684\u4ece\u9aa8\u94fe\u6839\uff08\u5934\u53d1/\u88d9\u5b50/\u98d8\u5e26\uff09\uff1b\u9010\u6839\u5fae\u8c03\u8bf7\u7528\u5168\u91cf\u9aa8\u9abc\u3002");
+    ImGui::SameLine();
+    ImGui::Checkbox(u8"\u9aa8\u9abc\u5c42\u7ea7", &g_showBoneTree);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u9ed8\u8ba4\u53ea\u663e\u793a\u4e3b\u8981\u9aa8\u9abc\uff1b\u52fe\u9009\u540e\u53e0\u52a0\u5c42\u5c55\u793a/\u53ef\u62fe\u53d6\u6240\u6709\u9aa8\u9abc\uff08\u542b\u624b\u6307\u7b49\uff09\uff0c\u7528\u4e8e\u7cbe\u7ec6\u5fae\u8c03\u3002\u5168\u91cf\u6536\u96c6\u59cb\u7ec8\u8fdb\u884c\u3002");
     if (g_fullBones && s_allBones.empty())
@@ -331,6 +335,11 @@ void DrawPoserGui() {
         Log("[POSER] DrawBoneRotationGizmo exception code=0x%X",
             GetExceptionCode());
       }
+      __try {
+        DrawIkGizmo(); // 控制器目标点的平移手柄
+      } __except (1) {
+        Log("[POSER] DrawIkGizmo exception code=0x%X", GetExceptionCode());
+      }
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -355,6 +364,9 @@ void DrawPoserGui() {
     DrawMorphPanel();
   }
   ImGui::End();
+
+  // 骨骼层级面板（Blender 风格：树 + 搜索 + 选中骨参数）
+  DrawBoneTreePanel();
 
 }
 

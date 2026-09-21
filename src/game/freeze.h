@@ -93,6 +93,8 @@ static void CollectIKOnTransform(void *t, int depth) {
   }
 }
 
+static void DumpNativeIkOnce(); // 定义在下方（诊断用）
+
 static void CollectIKComponents() {
   s_ikBipedCount = s_ikGrounderCount = s_ikLookAtCount = s_ikDamperCount = 0;
   s_animatorMono = nullptr;
@@ -103,6 +105,37 @@ static void CollectIKComponents() {
   Log("[POSER] IK comps: biped=%d grounder=%d lookAt=%d damper=%d mono=%p",
       s_ikBipedCount, s_ikGrounderCount, s_ikLookAtCount, s_ikDamperCount,
       s_animatorMono);
+  DumpNativeIkOnce();
+}
+
+// [诊断] 一次性把游戏原生 BipedIK 的字段结构 + 当前字段值打进日志，
+// 用来判断能否直接驱动游戏自带的 IK（FinalIK）：找 solvers / 目标 / 权重字段。
+static void DumpNativeIkOnce() {
+  static bool done = false;
+  if (done || s_ikBipedCount == 0)
+    return;
+  done = true;
+  void *biped = s_ikBiped[0];
+  DumpFieldsHierarchy(il2cpp_object_get_class(biped));
+  __try {
+    void *cur = il2cpp_object_get_class(biped);
+    int depth = 0;
+    while (cur && depth < 6) {
+      void *it = nullptr, *f;
+      while ((f = il2cpp_class_get_fields(cur, &it))) {
+        const char *fn = il2cpp_field_get_name(f);
+        size_t fo = il2cpp_field_get_offset(f);
+        if (fo >= 0x800)
+          continue;
+        void *v = *(void **)((char *)biped + fo);
+        Log("[IKDUMP]   [0x%X] %s = %p", (int)fo, fn ? fn : "?", v);
+      }
+      cur = il2cpp_class_get_parent(cur);
+      depth++;
+    }
+  } __except (1) {
+    Log("[IKDUMP] fields dump exception");
+  }
 }
 
 static void SetIKComponentsEnabled(bool on) {

@@ -47,9 +47,32 @@ static HWND g_guiHwnd = nullptr;
 static bool g_inputTakeMouse = false;  // 指针落在 ImGui 窗口内容上
 static bool g_inputHoverGizmo = false; // 指针悬停在旋转盘环上
 static bool g_inputDragging = false;   // gizmo 拖拽中：必须持续吃，否则松开消息丢给游戏
-static bool g_gameCursorFree = false;  // 游戏光标已呼出（lockState == None）
+// 当前光标是否真的自由（lockState == None）。既包括按住 Alt 时我们强制放开的，
+// 也包括游戏自己放开的情况（摄影模式、菜单等）。判定规则：光标出来了就该能点
+// 面板，不必再额外按 Alt。
+static bool g_cursorFreeNow = false;
 static bool g_inputWantsText = false;  // 输入框聚焦中（键盘临时归覆盖层）
+// 左键在我们窗口按下且尚未松开：拖拽/点选期间必须一直吃鼠标，否则松开消息会丢给
+// 游戏或落进黑洞，ImGui 的 MouseDown 永远卡在按下 → 之后点哪都没反应。
+static bool g_inputMouseHeld = false;
 static int g_inputRouteLogged = -1;    // 路由日志去重
+
+// click_through 模式：给窗口加/去 WS_EX_LAYERED|WS_EX_TRANSPARENT 实现真正的鼠标穿透
+// （分层窗口会被系统在命中测试里整体跳过，跨进程也有效——HTTRANSPARENT 只能同线程）。
+// 这个标志和 DComp 合成可能冲突（窗口可能不再显示），所以做成可选开关。
+static void SetOverlayClickThrough(bool on) {
+  static int s_ctState = -1;
+  if (!g_guiHwnd || (int)on == s_ctState)
+    return;
+  s_ctState = (int)on;
+  LONG ex = GetWindowLongW(g_guiHwnd, GWL_EXSTYLE);
+  LONG nw = on ? (ex | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+               : (ex & ~(WS_EX_LAYERED | WS_EX_TRANSPARENT));
+  SetWindowLongW(g_guiHwnd, GWL_EXSTYLE, nw);
+  SetWindowPos(g_guiHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  Log("[INPUT] overlay click-through=%d", (int)on);
+}
 static volatile bool g_guiVisible = false;
 static volatile bool g_guiRunning = false;
 
@@ -197,8 +220,8 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
   // 拖拽中强制吃：否则松开左键的消息会丢给游戏，手柄会卡在拖拽态。
   if (msg == WM_NCHITTEST) {
     bool take = g_guiVisible &&
-                (g_inputDragging ||
-                 (g_gameCursorFree && (g_inputTakeMouse || g_inputHoverGizmo)));
+                (g_inputDragging || g_inputMouseHeld ||
+                 (g_cursorFreeNow && (g_inputTakeMouse || g_inputHoverGizmo)));
     int route = take ? 1 : 0;
     if (route != g_inputRouteLogged) {
       g_inputRouteLogged = route;
@@ -206,6 +229,10 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
     }
     return take ? HTCLIENT : HTTRANSPARENT;
   }
+  if (msg == WM_LBUTTONDOWN)
+    g_inputMouseHeld = true;
+  else if (msg == WM_LBUTTONUP)
+    g_inputMouseHeld = false;
   bool imguiHandled =
       ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
   if (imguiHandled)
@@ -370,13 +397,23 @@ static DWORD WINAPI GuiThread(LPVOID) {
     // 原因：HTTRANSPARENT 只能把命中转给"同一线程"的下层窗口，覆盖层在本进程
     // 自建线程上、游戏窗口在主线程，跨线程放行等于把点击吞掉（实测游戏点不动）。
     bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    bool shouldShow =
-        g_guiVisible && !IsIconic(g_gameHwnd) && (altHeld || g_inputDragging);
+    // click_through 模式：面板打开就常驻显示，靠分层穿透把鼠标让给游戏；
+    // 默认模式：只有按住 Alt（或拖拽中）才显示覆盖层，其余时间整窗隐藏。
+    bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd) &&
+                      (g_clickThrough || altHeld || g_inputDragging);
     static int s_showLogged = -1;
     if ((int)shouldShow != s_showLogged) {
       s_showLogged = (int)shouldShow;
       Log("[GUI] overlay %s (panel=%d alt=%d)", shouldShow ? "shown" : "hidden",
           (int)g_guiVisible, (int)altHeld);
+    }
+    // 真穿透逐位置决定：默认穿透（鼠标全归游戏），只有当光标自由、且指针确实落在
+    // 面板/关节/旋转环上（或正在拖拽）时才关掉穿透，把这次交互留给覆盖层。这样
+    // 摄影模式里点游戏 UI 也照样有效，不再依赖跨线程 HTTRANSPARENT。
+    if (g_clickThrough) {
+      bool overInteractive = g_inputTakeMouse || g_inputHoverGizmo ||
+                             g_inputDragging || g_inputMouseHeld;
+      SetOverlayClickThrough(!(g_cursorFreeNow && overInteractive));
     }
     if (shouldShow) {
       if (!s_panelShown) {

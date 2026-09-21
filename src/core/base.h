@@ -6,7 +6,7 @@
 #include <cstring>
 
 #define POSER_VERSION_MAJOR 0
-#define POSER_VERSION_MINOR 1
+#define POSER_VERSION_MINOR 2
 #define POSER_VERSION_PATCH 0
 
 #define POSER_STRINGIFY2(x) #x

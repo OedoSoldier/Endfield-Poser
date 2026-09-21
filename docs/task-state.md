@@ -2,6 +2,26 @@
 
 > 目的：阶段性存档，方便后续（或换会话）直接接续开发。
 
+## 〇、2026-09-21 发布状态（v0.2.0）
+
+**本轮新增（游戏内体验为主）**
+
+- 骨骼层级面板（Blender 风格：树 + 搜索 + 与 3D 选中联动）；选中骨可调 **旋转/位置**（滑条 + 数值输入 + 复位；humanoid 复位到 A-pose，从骨复位到冻结瞬间）
+- **撤销/重做**（Ctrl+Z / Ctrl+Y，整骨架快照，连续拖拽按 400ms 合并成一步）
+- **输入路由重做**：按命中区域 + 光标状态决定鼠标归属。`plugin/poser_config.txt` 里 `click_through=1` 时覆盖层常驻显示并真穿透（`WS_EX_LAYERED|TRANSPARENT`），按住 Alt 或游戏自己放开光标时才接管；文本输入临时抢焦点
+- 从骨链：默认不显示；勾「从骨链」显示可摆放链根；命名过滤 `Nub/Twist/corrective/Collider/表情骨/inner/outer/wep`
+- 关节缓存 128 → 1024（之前溢出导致"有些关节点不动"）
+
+**已知问题（发布时未修）**
+
+- **IK 控制器未生效**：`src/editor/ik_control.h` 已实现（目标点 + 平移手柄 + 解析式 2-bone 解算），实测拖拽后骨骼不跟随，用 `g_ikFeatureEnabled = false` 整体关闭（面板/解算/绘制都跳过）
+- **姿态保存不完整**：只存 humanoid 骨（含手指，共 55 根）的绝对 local 变换；从骨、形态键、相机都不进文件
+- **裙摆碰撞调节失效**：`MC_Skirt` 识别失败（日志 `[SKIRT] skirtIdx=-1`），`ApplySkirtColliderScale` 从未执行
+- **直启必崩**：必须经启动器启动（原因与判据见 `AGENT.md` §3）
+- 撤销不覆盖形态键权重，也不回滚从骨的"冻结基线"（`frozenPos/frozenRot`）
+
+**雪藏**：Blender 桥（`tools/blender/`、`docs/blender-bridge.md`，见下文 §二）
+
 ## 一、当前已完成的
 
 ### 游戏侧（已推送 a28d143）
