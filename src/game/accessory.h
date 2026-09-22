@@ -158,7 +158,10 @@ static int ApplyAccessoryPoseEntries(const std::vector<PoseBone> &in) {
 // 不这么做的话 MaintainFreeze 每帧的 ApplyAccessorySnapshot 会把编辑立刻打回去，
 // 表现为「能选中、能拖旋转盘，但骨一动不动」。
 static void SyncAccessorySnapshotFromTransform(void *t) {
-  if (!t || s_accessoryBones.empty())
+  if (!t)
+    return;
+  SyncHumanBoneSnapshot(t); // humanoid 骨也同步（换角色时保存"用户摆好的"姿态）
+  if (s_accessoryBones.empty())
     return;
   for (AccessoryBone &b : s_accessoryBones) {
     if (b.transform != t)

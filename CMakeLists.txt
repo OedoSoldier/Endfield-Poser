@@ -22,6 +22,7 @@ if(WIN32)
     src/core/game_hooks.h
     src/core/gui_overlay.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h
+    src/game/char_state.h
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
     src/editor/panel_bones.h
     src/editor/ik_control.h

@@ -12,6 +12,7 @@
 #include "game/skeleton.h"
 #include "game/accessory.h"
 #include "game/freeze.h"
+#include "game/char_state.h"
 #include "game/morph.h"
 #include "game/smc_morph.h"
 #include "editor/selection.h"
@@ -157,6 +158,7 @@ void GameFrameTick() {
     // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
     if (g_charChanged) {
     g_charChanged = false;
+    SaveCharStateOnSwitch(); // 先把旧角色的冻结状态存进内存表（必须在重建之前）
     s_restCaptured = false; // 新角色：A-pose 基线作废，下次重建时重捕
     RebuildAllBones();   // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
     RebuildHumanBones();
@@ -166,7 +168,7 @@ void GameFrameTick() {
       ResetSkirtState();    // 裙子碰撞：清空旧角色布料采集
       if (!s_restCaptured)
         CaptureRestPose();  // 角色最初姿态 = A-pose 基线
-      ReapplyFreezeForNewCharacter(); // 冻结态下换角色：对新角色重建整套冻结状态
+      RestoreCharStateOnSwitch(); // 冻过的角色：恢复姿态并重新压制写者；没冻过：保持默认
     }
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
@@ -422,6 +424,7 @@ static void OnGuiShutdownRestore() {
   Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
   UnfreezeCharacter();
   RestoreBlendShapes();
+  ReleaseAllGrips(); // 后台还冻结着的角色也要把写者还回去
 }
 
 // 姿态文件扩展：从骨 + 形态键（skeleton.h 通过钩子调用，避免底层反向包含）

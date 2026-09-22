@@ -183,6 +183,20 @@ static void ApplyPoseSnapshot() {
   }
 }
 
+// 写骨钩子用：把 humanoid 骨的手动改动同步进内存快照——换角色时要存的是
+// "用户摆好的姿态"，而快照默认只有冻结瞬间的值。O(55) 开销可忽略。
+static void SyncHumanBoneSnapshot(void *t) {
+  if (!t)
+    return;
+  for (int i = 0; i < s_humanBoneCount; i++) {
+    if (s_humanBones[i].transform != t)
+      continue;
+    s_humanBones[i].localPos = GetBoneLocalPos(t);
+    s_humanBones[i].localRot = GetBoneLocalRot(t);
+    return;
+  }
+}
+
 // 固化当前姿势为编辑基线：重建列表 + 采集快照
 static void PinCurrentPose() {
   RebuildHumanBones();

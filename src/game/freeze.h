@@ -34,6 +34,97 @@ static void *s_ikDamper[4];
 static int s_ikDamperCount = 0;
 static void *s_animatorMono = nullptr;
 
+// ---- 已冻结角色的"写者把手" ----
+// 冻结是逐角色的：切走后旧角色的组件指针仍要每帧压制，否则它会被游戏重新启用、
+// 自己又动起来（多角色同场时尤其明显）。这里按角色记录一份写者指针清单。
+struct FrozenGrip {
+  void *animator = nullptr;
+  void *animComp = nullptr;
+  void *biped[POSER_MAX_IK_COMPS] = {};
+  int bipedCount = 0;
+  void *grounder[POSER_MAX_IK_COMPS] = {};
+  int grounderCount = 0;
+  void *lookAt[POSER_MAX_IK_COMPS] = {};
+  int lookAtCount = 0;
+  void *damper[4] = {};
+  int damperCount = 0;
+  void *animMono = nullptr;
+};
+static std::vector<FrozenGrip> g_frozenGrips;
+
+// 把某个把手的全部写者设为 enabled/disabled
+static void ApplyGripEnabled(const FrozenGrip &g, bool on) {
+  if (!g_animator_set_enabled)
+    return;
+  int v = on ? 1 : 0;
+  void *params[] = {&v};
+  auto Apply = [&](void *c) {
+    if (!c)
+      return;
+    __try {
+      Invoke(g_animator_set_enabled, c, params);
+    } __except (1) {
+    }
+  };
+  Apply(g.animator);
+  Apply(g.animComp);
+  for (int i = 0; i < g.bipedCount; i++) Apply(g.biped[i]);
+  for (int i = 0; i < g.grounderCount; i++) Apply(g.grounder[i]);
+  for (int i = 0; i < g.lookAtCount; i++) Apply(g.lookAt[i]);
+  for (int i = 0; i < g.damperCount; i++) Apply(g.damper[i]);
+  Apply(g.animMono);
+}
+
+// 用当前采集到的写者列表，为"当前角色"登记一份把手
+static void RegisterCurrentGrip() {
+  FrozenGrip g;
+  g.animator = g_charAnimator;
+  g.animComp = g_charAnimComp;
+  g.animMono = s_animatorMono;
+  g.bipedCount = s_ikBipedCount;
+  for (int i = 0; i < s_ikBipedCount; i++) g.biped[i] = s_ikBiped[i];
+  g.grounderCount = s_ikGrounderCount;
+  for (int i = 0; i < s_ikGrounderCount; i++) g.grounder[i] = s_ikGrounder[i];
+  g.lookAtCount = s_ikLookAtCount;
+  for (int i = 0; i < s_ikLookAtCount; i++) g.lookAt[i] = s_ikLookAt[i];
+  g.damperCount = s_ikDamperCount;
+  for (int i = 0; i < s_ikDamperCount; i++) g.damper[i] = s_ikDamper[i];
+  for (const FrozenGrip &old : g_frozenGrips)
+    if (old.animator == g.animator)
+      return; // 已在册
+  g_frozenGrips.push_back(g);
+  Log("[POSER] frozen grip registered (animator=%p, grips=%d)", g.animator,
+      (int)g_frozenGrips.size());
+}
+
+// 每帧压制所有已冻结角色（含后台角色）
+static void MaintainFrozenGrips() {
+  for (const FrozenGrip &g : g_frozenGrips)
+    ApplyGripEnabled(g, false);
+}
+
+// 解除某个角色的把手（解冻它时调用）：恢复其写者并移除记录
+static void ReleaseGripFor(void *animator) {
+  for (size_t i = 0; i < g_frozenGrips.size(); i++) {
+    if (g_frozenGrips[i].animator != animator)
+      continue;
+    ApplyGripEnabled(g_frozenGrips[i], true);
+    g_frozenGrips.erase(g_frozenGrips.begin() + (long)i);
+    Log("[POSER] frozen grip released (animator=%p, left=%d)", animator,
+        (int)g_frozenGrips.size());
+    return;
+  }
+}
+
+// 释放全部把手（禁用插件 / 退出时调用）：把所有角色的写者恢复回去
+static void ReleaseAllGrips() {
+  for (const FrozenGrip &g : g_frozenGrips)
+    ApplyGripEnabled(g, true);
+  if (!g_frozenGrips.empty())
+    Log("[POSER] released all frozen grips (%d)", (int)g_frozenGrips.size());
+  g_frozenGrips.clear();
+}
+
 // 递归采集：遍历角色整个 Transform 层级，按类名收集会写骨骼的组件
 static void CollectIKOnTransform(void *t, int depth) {
   if (!t || depth > 6)
@@ -194,9 +285,11 @@ static void RestorePoseWriters() {
 // 每帧维持冻结：游戏常会重新启用 Animator/动画组件/IK 组件，
 // 只在冻结瞬间关一次不够（"四肢一改就回弹"的根源）。逐帧强制关闭全部写者。
 static void MaintainFreeze() {
+  MaintainFrozenGrips(); // 后台已冻结角色：无论当前角色是否冻结都要压制
   if (!g_frozen)
     return;
   SkirtTick();
+  MaintainFrozenGrips(); // 后台已冻结角色也要保持压制（多角色同场）
   if (g_animator_set_enabled) {
     int v = 0;
     void *params[] = {&v};
@@ -259,6 +352,7 @@ static void FreezeCharacter() {
   // 3. 抑制其余骨骼写者：FinalIK/Grounder/LookAt/Damper + 从骨物理。
   //    （之前这个调用缺失，导致四肢一直被游戏 IK 写回、一改就弹回去）
   SuppressPoseWriters();
+  RegisterCurrentGrip(); // 登记这个角色的写者把手（后台也要持续压制）
   Log("[POSER] Freeze: writers suppressed");
   SkirtBegin();
   Log("[POSER] Freeze: skirt begin");
@@ -299,27 +393,11 @@ static void UnfreezeCharacter() {
     Log("[POSER] Freeze: accessory physics restored (option ON)");
   }
   RestoreSkirtColliders();
+  ReleaseGripFor(g_charAnimator); // 当前角色解冻：恢复它的写者
   g_frozen = false;
   Log("[POSER] Unfrozen");
 }
 
-// 冻结态下切换角色：整套冻结状态必须对新角色重建。
-// 关键点是**写者组件指针**——s_ikBiped/s_ikGrounder/... 是冻结时从旧角色采集的，
-// 换角色后它们失效，而新角色的 FinalIK/Grounder 没被抑制，会继续写骨，
-// 表现就是"冻结状态下换角色后动作异常"。这里对新角色重新采集并禁用，
-// 并按新角色的当前姿态重新钉快照（不动 s_rest* 的 A-pose 基线）。
-static void ReapplyFreezeForNewCharacter() {
-  if (!g_frozen || !g_charAnimator)
-    return;
-  SuppressPoseWriters(); // CollectIKComponents() + SetIKComponentsEnabled(false)
-  PinCurrentPose();      // 新角色当前姿态 = 新的冻结基线
-  if (g_freezeAccessories) {
-    if (s_accessoryChains.empty())
-      RebuildAccessories();
-    CaptureAccessorySnapshot();
-    SetAllPhysicsEnabled(false);
-    ApplyAccessorySnapshot();
-  }
-  SkirtBegin();
-  Log("[POSER] freeze re-applied to new character (bones=%d)", s_humanBoneCount);
-}
+// 换角色的冻结处理已改为"按角色记忆"：见 game/char_state.h 的
+// SaveCharStateOnSwitch / RestoreCharStateOnSwitch（切走保存、切回恢复、
+// 没冻过的角色保持默认不冻结）。
