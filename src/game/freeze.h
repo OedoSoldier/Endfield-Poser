@@ -302,3 +302,24 @@ static void UnfreezeCharacter() {
   g_frozen = false;
   Log("[POSER] Unfrozen");
 }
+
+// 冻结态下切换角色：整套冻结状态必须对新角色重建。
+// 关键点是**写者组件指针**——s_ikBiped/s_ikGrounder/... 是冻结时从旧角色采集的，
+// 换角色后它们失效，而新角色的 FinalIK/Grounder 没被抑制，会继续写骨，
+// 表现就是"冻结状态下换角色后动作异常"。这里对新角色重新采集并禁用，
+// 并按新角色的当前姿态重新钉快照（不动 s_rest* 的 A-pose 基线）。
+static void ReapplyFreezeForNewCharacter() {
+  if (!g_frozen || !g_charAnimator)
+    return;
+  SuppressPoseWriters(); // CollectIKComponents() + SetIKComponentsEnabled(false)
+  PinCurrentPose();      // 新角色当前姿态 = 新的冻结基线
+  if (g_freezeAccessories) {
+    if (s_accessoryChains.empty())
+      RebuildAccessories();
+    CaptureAccessorySnapshot();
+    SetAllPhysicsEnabled(false);
+    ApplyAccessorySnapshot();
+  }
+  SkirtBegin();
+  Log("[POSER] freeze re-applied to new character (bones=%d)", s_humanBoneCount);
+}

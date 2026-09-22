@@ -166,6 +166,7 @@ void GameFrameTick() {
       ResetSkirtState();    // 裙子碰撞：清空旧角色布料采集
       if (!s_restCaptured)
         CaptureRestPose();  // 角色最初姿态 = A-pose 基线
+      ReapplyFreezeForNewCharacter(); // 冻结态下换角色：对新角色重建整套冻结状态
     }
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
