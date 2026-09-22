@@ -37,7 +37,8 @@ if(WIN32)
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src)
   target_compile_definitions(poser PRIVATE
-    APPLEPIE_PLUGIN_IMPL _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+    APPLEPIE_PLUGIN_IMPL _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN
+    IMGUI_DEFINE_MATH_OPERATORS)
   # /EHa：让 __except 也能捕获 C++ 异常（IL2CPP 调用可能抛 0xe06d7363，
   # /EHsc 下这类异常会直接崩掉游戏进程）
   target_compile_options(poser PRIVATE /EHa)

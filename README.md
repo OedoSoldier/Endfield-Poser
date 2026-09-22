@@ -67,6 +67,7 @@
 gui_toggle_key=VK_F12     # 支持 VK_F12 / F12 / 0x7B 三种写法
 freeze_key=VK_F11         # 冻结 / 解冻（同样支持名字或十六进制）
 click_through=1           # 1=覆盖层常驻并真穿透（推荐）；0=按住 Alt 才显示面板
+overlay_mode=0            # 0=自动（检测到 XXMI/3DMigoto 时改用分层窗口）；1=强制 DComp；2=强制分层窗口
 default_pose_dir=plugin\poses
 ```
 
