@@ -34,6 +34,11 @@
 `vulkan-1.dll` 代理拉起（日志 `[PROXY] plugins loaded via vulkan-1.dll (Vulkan path)`）；
 注意必须用窗口化/无边框全屏，独占全屏会绕过 DWM 合成导致覆盖层面板不可见。
 
+**按角色记忆冻结（2026-09-22）**：`src/game/char_state.h` 按角色（Animator 物体名去掉 `(Clone)#NN`）
+记住 冻结标记 + 姿态（按骨名，用 PoseDoc；不含表情骨）。切走保存、切回恢复、没冻过的角色保持默认不冻结；
+`freeze.h` 的 `FrozenGrip` + `MaintainFrozenGrips()` 让后台已冻结角色持续保持压制，
+解冻/禁用插件时 `ReleaseGripFor` / `ReleaseAllGrips` 归还写者。限制：只有当前角色可编辑。
+
 **已移除（做过但没做好的）**：
 
 - 骨骼层级树面板（Blender 风格树 + 搜索）——实测不理想（提交 `05a1b51`）
