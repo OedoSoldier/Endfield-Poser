@@ -36,6 +36,17 @@ static void DrawSMCSection() {
     SMCRestoreWeights();
     SMCFaceSetDriving(true);
   }
+  ImGui::SameLine();
+  if (ImGui::SmallButton(u8"\u8bfb\u5165\u5f53\u524d\u8868\u60c5")) {
+    // 把角色脸上正在演的表情读成滑条初值（原来是"全 0 起步"）
+    SMCReadCurrentToSliders();
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip(u8"\u628a\u6e38\u620f\u5f53\u524d\u7684 morph \u6743\u91cd"
+                      u8"\u8bfb\u8fdb\u6ed1\u6761\uff0c\u518d\u63a5\u7740\u8c03");
+  const char *readStatus = SMCReadStatusText();
+  if (readStatus && readStatus[0])
+    ImGui::TextDisabled("%s", readStatus);
   ImGui::Separator();
 
   ImGui::BeginChild("##smclist", ImVec2(0, 0), false);

@@ -18,7 +18,7 @@ struct BoneHandle {
   HumanBodyBones humanBone;
   void *transform;
   char name[128];
-  bool locked; // 锁定后：ApplyPoseSnapshot/FK/镜像等跳过此骨
+  bool locked; // 锁定后：ApplyPoseSnapshot 等操作跳过此骨
   Vec3 localPos;
   Quat localRot;
 };
@@ -278,56 +278,10 @@ static int FindHumanBoneIndex(HumanBodyBones bone) {
   return -1;
 }
 
-// ---- 姿态操作（Task 3.3）：镜像 / 存取 ----
-// 镜像四元数（跨左右平面 X=0）：q' = (-qx, qy, qz, -qw)。
-// Unity Humanoid 左右骨局部轴互为镜像，故直接用该共轭公式。
-static Quat MirrorQuat(Quat q) { return Quat{-q.x, q.y, q.z, -q.w}; }
-static Vec3 MirrorPos(Vec3 p) { return Vec3{-p.x, p.y, p.z}; }
+// 镜像功能实验失败、已整体移除（骨骼局部轴约定不明，实测会拉散骨架）。
+// 需要时从 git 历史里挑回来重做，别再用"按局部轴翻 x"那套假设。
 
-// 左右对称对（镜像/复制用）
-struct SymPair { HumanBodyBones l, r; };
-static const SymPair kSymPairs[] = {
-    {LeftShoulder, RightShoulder}, {LeftUpperArm, RightUpperArm},
-    {LeftLowerArm, RightLowerArm}, {LeftHand, RightHand},
-    {LeftUpperLeg, RightUpperLeg}, {LeftLowerLeg, RightLowerLeg},
-    {LeftFoot, RightFoot},         {LeftToes, RightToes},
-    {LeftThumbProximal, RightThumbProximal},
-    {LeftThumbIntermediate, RightThumbIntermediate},
-    {LeftThumbDistal, RightThumbDistal},
-    {LeftIndexProximal, RightIndexProximal},
-    {LeftIndexIntermediate, RightIndexIntermediate},
-    {LeftIndexDistal, RightIndexDistal},
-    {LeftMiddleProximal, RightMiddleProximal},
-    {LeftMiddleIntermediate, RightMiddleIntermediate},
-    {LeftMiddleDistal, RightMiddleDistal},
-    {LeftRingProximal, RightRingProximal},
-    {LeftRingIntermediate, RightRingIntermediate},
-    {LeftRingDistal, RightRingDistal},
-    {LeftLittleProximal, RightLittleProximal},
-    {LeftLittleIntermediate, RightLittleIntermediate},
-    {LeftLittleDistal, RightLittleDistal},
-};
-static const int kSymPairCount = (int)(sizeof(kSymPairs) / sizeof(kSymPairs[0]));
-
-// 把一侧位姿镜像复制到另一侧（leftToRight=false 表示 R→L）
-static void MirrorPose(bool leftToRight) {
-  int done = 0;
-  for (int i = 0; i < kSymPairCount; i++) {
-    int si = FindHumanBoneIndex(leftToRight ? kSymPairs[i].l : kSymPairs[i].r);
-    int di = FindHumanBoneIndex(leftToRight ? kSymPairs[i].r : kSymPairs[i].l);
-    if (si < 0 || di < 0)
-      continue;
-    if (s_humanBones[si].locked || s_humanBones[di].locked)
-      continue;
-    Quat q = GetBoneLocalRot(s_humanBones[si].transform);
-    Vec3 p = GetBoneLocalPos(s_humanBones[si].transform);
-    SetBoneLocalRot(s_humanBones[di].transform, MirrorQuat(q));
-    SetBoneLocalPos(s_humanBones[di].transform, MirrorPos(p));
-    done++;
-  }
-  Log("[POSER] Mirrored %s: %d bones", leftToRight ? "L->R" : "R->L", done);
-}
-
+// ---- 姿态操作（Task 3.3）：存取 ----
 // 采集当前全部 Humanoid 骨到位姿文档（存盘用）。
 // 存绝对 local pos/rot：读回时无需 A-pose 基线，跨会话/换角色都稳定。
 // 姿态文件的扩展钩子：从骨（accessory.h）与形态键（morph.h）由上层注册补进来

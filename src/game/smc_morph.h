@@ -66,6 +66,7 @@ struct SMCExtraTarget {
   int jobStartIdx;
   int jobCount;
   bool resolved;
+  int morphId; // 解析时记录：用于把游戏当前的 morph 权重读回滑条
 };
 
 struct SMCExtraMorph {
@@ -88,6 +89,16 @@ static int s_offAllBonesTransforms = -1;
 static int s_offBoneIDToIdx = -1;
 static int s_offMorphMappingNames = -1; // AvatarData 上
 static int s_offSmcEyeLookAt = -1;
+static int s_offPhonemeWeights = -1;    // m_phonemesWeights（口型权重）
+static int s_offMicroExprWeights = -1;  // m_microExpressionWeights（微表情权重）
+static int s_offMainEmotion = -1;       // m_mainEmotion（当前表情 Pose）
+
+// ---- 读回游戏当前表情状态（输出到面板滑条）----
+static bool s_morphWeightProbed = false;
+static bool s_fieldsDumped = false;
+static bool s_allMorphsIsFloatArray = false;
+static int s_allMorphsWeightOff = -1; // m_allMorphs 元素内的 float 权重偏移
+static char s_allMorphsClass[64] = "";
 
 // ---- 运行时状态 ----
 static void *s_smcClass = nullptr;
@@ -108,6 +119,24 @@ static bool s_faceBonesCaptured = false;
 static bool s_faceBoneTouched[SMC_MAX_FACE_BONES] = {};
 static bool s_faceBoneEvalOk = false; // 本帧是否成功按权重重算过 s_faceBones
 static void **s_faceBoneRefs = nullptr;
+
+// 中性脸基线（等价于身体的 A-pose 基准）：
+// 不能拿"锁定时游戏正在演的那张脸"当默认值——那样滑条就变成在表情上叠表情。
+// 做法：让 job hook 把 morph 增量整表清零若干帧，游戏会把骨骼写回中性位姿，
+// 这时读到的才是真正的默认值；之后所有表情都是"默认值 + 权重×增量"。
+static bool s_captureNeutral = false;
+static int s_neutralFrames = 0;
+
+// 驱动用的基准位姿。默认 = 中性脸；冻结时改成"当前脸 − 拟合出的权重增量"，
+// 这样冻结瞬间脸完全不变（表情被冻住），而滑条仍表示"相对默认值"的权重。
+static SMCFaceBone s_driveBase[SMC_MAX_FACE_BONES];
+static bool s_driveBaseReady = false;
+static float s_fitW[SMC_NUM_MOUTH + 32] = {};
+static SMCFaceBone s_lastFacePoseBuf[SMC_MAX_FACE_BONES];
+static bool s_lastFacePoseValid = false;
+static bool s_wasFrozen = false;
+static bool s_holdApplied = false;
+#define SMC_MAX_SLIDERS (SMC_NUM_MOUTH + 32)
 
 static int s_boneIDToIdx[SMC_BONE_MAP_SIZE];
 static int s_boneIDMapCount = 0;
@@ -217,6 +246,753 @@ static void SMCCaptureBigList(void *smcBase);
 static void SMCRestoreBigList();
 static void SMCWriteTouchedBones();
 
+// ---- SMC 实例归属判定 ----
+// 摄影模式里场上每个角色都有自己的 SkeletalMorphCore，而且都会调用
+// DoEvaluateMorphToBoneJob。"谁先跑谁被锁"会锁到别的角色：滑条算出来的面部增量
+// 写到别人的骨头上，当前编辑的角色就"怎么拖都没反应"。这里用两重判据确认实例
+// 属于当前编辑角色：①面部骨指针与当前角色骨骼列表有交集；②面部骨挂在当前角色
+// 根 Transform 下。判不出（-1）按"属于"处理，避免误伤能用的角色。
+// 上限压得比较小：判定连续否掉这么多候选就说明这套判据在当前场景不可信，
+// 立刻退回旧的"先到先得"，别让用户等太久。
+#define SMC_MAX_REJECTED 6
+#define SMC_SNAPSHOT_MAX 640
+static void *s_smcRejected[SMC_MAX_REJECTED] = {};
+static int s_smcRejectedCount = 0;
+static int s_smcRejectStrikes = 0;
+static bool s_smcOwnershipGaveUp = false; // 所有候选都不匹配 → 退回先到先得
+static void *s_smcCheckedInstance = nullptr; // 已做过归属校验的实例
+
+// 当前角色骨骼指针快照（主线程刷新，job hook 只做只读比较，不调 IL2CPP）
+static void *s_charBoneXforms[SMC_SNAPSHOT_MAX] = {};
+static int s_charBoneXformCount = 0;
+static int s_charBoneXformRev = -1;
+
+static bool SMCIsRejected(void *smc) {
+  for (int i = 0; i < s_smcRejectedCount; i++)
+    if (s_smcRejected[i] == smc)
+      return true;
+  return false;
+}
+
+// 读 SMC 的 m_allBonesTransforms（面部骨 Transform 数组），纯裸内存读，SEH 兜底
+static bool SMCReadBoneArrayRaw(void *smc, void ***outBones, int *outLen) {
+  *outBones = nullptr;
+  *outLen = 0;
+  if (!smc)
+    return false;
+  __try {
+    int btOff =
+        SafeOff(s_offAllBonesTransforms, 0x60, "smc.allBonesTransforms");
+    void *arr = *(void **)((char *)smc + btOff);
+    if (!arr)
+      return false;
+    int n = *(int *)((char *)arr + IL2CPP_ARRAY_LEN);
+    if (n <= 0 || n > SMC_MAX_FACE_BONES)
+      return false;
+    *outBones = (void **)((char *)arr + IL2CPP_ARRAY_DATA);
+    *outLen = n;
+    return true;
+  } __except (1) {
+    return false;
+  }
+}
+
+static void SMCRefreshCharBoneSnapshot() {
+  if (s_charBoneXformRev == s_bonesRev)
+    return;
+  s_charBoneXformCount = 0;
+  for (size_t i = 0;
+       i < s_allBones.size() && s_charBoneXformCount < SMC_SNAPSHOT_MAX; i++) {
+    if (s_allBones[i].transform)
+      s_charBoneXforms[s_charBoneXformCount++] = s_allBones[i].transform;
+  }
+  s_charBoneXformRev = s_bonesRev;
+  Log("[SMC] char bone snapshot: %d transforms (rev=%d)",
+      s_charBoneXformCount, s_bonesRev);
+}
+
+// 1=属于当前角色 0=不属于 -1=判不出
+static int SMCOwnershipTest(void *smc, char *detail, int detailSz) {
+  detail[0] = 0;
+  void **bones = nullptr;
+  int len = 0;
+  if (!SMCReadBoneArrayRaw(smc, &bones, &len)) {
+    snprintf(detail, detailSz, "no face bone array");
+    return -1;
+  }
+  SMCRefreshCharBoneSnapshot();
+  int hits = 0;
+  int firstIdx = -1;
+  for (int i = 0; i < len; i++) {
+    if (!bones[i])
+      continue;
+    if (firstIdx < 0)
+      firstIdx = i;
+    for (int j = 0; j < s_charBoneXformCount; j++) {
+      if (s_charBoneXforms[j] == bones[i]) {
+        hits++;
+        break;
+      }
+    }
+  }
+  bool underRoot = false;
+  if (firstIdx >= 0 && g_transform_get_parent) {
+    void *root = GetCharRootTransform();
+    if (root) {
+      __try {
+        void *cur = bones[firstIdx];
+        for (int d = 0; d < 16 && cur; d++) {
+          if (cur == root) {
+            underRoot = true;
+            break;
+          }
+          cur = Invoke(g_transform_get_parent, cur);
+        }
+      } __except (1) {
+      }
+    }
+  }
+  if (hits > 0) {
+    snprintf(detail, detailSz, "bone overlap %d/%d", hits, len);
+    return 1;
+  }
+  if (underRoot) {
+    snprintf(detail, detailSz,
+             "face bone under char root (overlap 0/%d)", len);
+    return 1;
+  }
+  if (s_charBoneXformCount < 100) {
+    snprintf(detail, detailSz, "inconclusive: char bone list=%d",
+             s_charBoneXformCount);
+    return -1;
+  }
+  snprintf(detail, detailSz,
+           "no bone overlap 0/%d, not under char root (char bones=%d)", len,
+           s_charBoneXformCount);
+  return 0;
+}
+
+static void SMCSetEyeLookAtIK(void *smc, bool enable) {
+  if (!smc)
+    return;
+  __try {
+    int eyeOff = SafeOff(s_offSmcEyeLookAt, 0x1DD, "smc.enableEyeLookAtIK");
+    if (eyeOff > 0)
+      *(bool *)((char *)smc + eyeOff) = enable;
+  } __except (1) {
+  }
+}
+
+// 取该实例第一根面部骨的名字——比组件所在 GO 名更能说明"这是谁的脸"
+static void SMCFirstBoneName(void *smc, char *buf, int sz) {
+  buf[0] = 0;
+  void **bones = nullptr;
+  int len = 0;
+  if (!SMCReadBoneArrayRaw(smc, &bones, &len))
+    return;
+  for (int i = 0; i < len; i++) {
+    if (!bones[i])
+      continue;
+    GetBoneName(bones[i], buf, sz);
+    return;
+  }
+}
+
+// ---- 读回游戏当前表情状态（输出到面板滑条）----
+// 游戏把每个 morph 的当前权重放在 SkeletalMorphCore 的 m_allMorphs（按 morphId 索引，
+// morphId 就是 hashmap 里的 vi[0]）。这里一次性探明元素结构（float[] 或对象数组 +
+// 其中的 float 权重字段），之后按 morphId 取值，把"当前脸上的表情"填进滑条。
+// 字段名 + 声明类型（只调反射，不解引用，绝对不会崩）
+static void SMCDumpFieldsTyped(void *klass, const char *label) {
+  if (!klass || !il2cpp_class_get_fields)
+    return;
+  const char *cn =
+      il2cpp_class_get_name ? il2cpp_class_get_name(klass) : "?";
+  Log("[SMC] fields of %s (%s):", cn ? cn : "?", label);
+  void *it = nullptr, *f;
+  int n = 0;
+  while ((f = il2cpp_class_get_fields(klass, &it)) && n < 80) {
+    const char *fn = il2cpp_field_get_name ? il2cpp_field_get_name(f) : "?";
+    int fo = (int)il2cpp_field_get_offset(f);
+    const char *ftn = "?";
+    if (il2cpp_field_get_type && il2cpp_type_get_name) {
+      void *ft = il2cpp_field_get_type(f);
+      if (ft)
+        ftn = il2cpp_type_get_name(ft);
+    }
+    Log("[SMC]   [0x%X] %s : %s", fo, fn ? fn : "?", ftn ? ftn : "?");
+    n++;
+  }
+}
+
+// 一个字段可能是 managed 数组/List（指针指向对象），也可能是内联 native buffer
+// （ptr,len,cap 三连）。两种解释分别兜底，任何一种崩掉都不影响另一种和后续步骤。
+static void SMCDumpBufferCandidates(void *smc, int off, const char *label) {
+  if (!smc || off < 0) {
+    Log("[SMC] %s: offset unresolved", label);
+    return;
+  }
+  void *p = nullptr;
+  int inlineLen = 0;
+  __try {
+    p = *(void **)((char *)smc + off);
+    inlineLen = *(int *)((char *)smc + off + 8);
+    Log("[SMC] %s off=0x%X ptr=%p inline(len=%d cap=%d)", label, off, p,
+        inlineLen, *(int *)((char *)smc + off + 12));
+  } __except (1) {
+    Log("[SMC] %s: inline read failed", label);
+    return;
+  }
+  if (!p)
+    return;
+  // 解释 1：native 缓冲（buf 就是数据）
+  if (inlineLen > 0 && inlineLen <= 64) {
+    __try {
+      float *fl = (float *)p;
+      char line[192] = {};
+      int pos = 0;
+      for (int i = 0; i < inlineLen && i < 14 && pos < 176; i++)
+        pos += snprintf(line + pos, sizeof(line) - pos, "%.3f ", fl[i]);
+      Log("[SMC] %s native floats: %s", label, line);
+    } __except (1) {
+      Log("[SMC] %s: native float read failed", label);
+    }
+  }
+  // 解释 2：managed 数组/List（ptr 指向 IL2CPP 对象）
+  __try {
+    void *cls =
+        il2cpp_object_get_class ? il2cpp_object_get_class(p) : nullptr;
+    if (!cls) {
+      Log("[SMC] %s managed: no class", label);
+      return;
+    }
+    const char *cn = il2cpp_class_get_name ? il2cpp_class_get_name(cls) : "?";
+    int len = *(int *)((char *)p + IL2CPP_ARRAY_LEN);
+    Log("[SMC] %s managed: class=%s len=%d", label, cn ? cn : "?", len);
+  } __except (1) {
+    Log("[SMC] %s: not a managed object (native buffer?)", label);
+  }
+}
+
+// MainEmotion._pose → Pose 里的 MorphCtrlValue 列表（_ctrlName + _value），
+// 这是"角色当前表情"最直接的来源：带名字，能直接对上滑条目标。
+static void SMCProbeEmotionPose(void *smc) {
+  if (!smc)
+    return;
+  void *mainEmo = nullptr;
+  int meOff = -1;
+  __try {
+    meOff =
+        SafeOff(s_offMainEmotion, 0x3C0, "smc.mainEmotion");
+    mainEmo = *(void **)((char *)smc + meOff);
+  } __except (1) {
+    Log("[SMC] emotion: mainEmotion read failed");
+    return;
+  }
+  Log("[SMC] emotion: mainEmotion off=0x%X ptr=%p", meOff, mainEmo);
+  if (!mainEmo)
+    return;
+  void *ec = nullptr;
+  __try {
+    ec = il2cpp_object_get_class(mainEmo);
+  } __except (1) {
+  }
+  if (!ec)
+    return;
+  __try {
+    SMCDumpFieldsTyped(ec, "MainEmotion");
+  } __except (1) {
+  }
+  const char *poseNames[] = {"_pose", "m_pose", "pose"};
+  int poseOff = FindFieldInHierarchy(ec, poseNames, 3, nullptr);
+  Log("[SMC] emotion: _pose=0x%X", poseOff);
+  if (poseOff < 0)
+    return;
+  void *pose = nullptr;
+  __try {
+    pose = *(void **)((char *)mainEmo + poseOff);
+  } __except (1) {
+    return;
+  }
+  if (!pose)
+    return;
+  void *pc = nullptr;
+  __try {
+    pc = il2cpp_object_get_class(pose);
+  } __except (1) {
+  }
+  if (!pc)
+    return;
+  __try {
+    SMCDumpFieldsTyped(pc, "EmotionPose");
+  } __except (1) {
+  }
+  // 逐个字段：凡是看起来像 List 的，就把元素里的 名字+数值 打出来
+  __try {
+    void *it = nullptr, *f;
+    int listed = 0;
+    while ((f = il2cpp_class_get_fields(pc, &it)) && listed < 4) {
+      const char *fn = il2cpp_field_get_name(f);
+      int fo = (int)il2cpp_field_get_offset(f);
+      const char *ftn = "?";
+      if (il2cpp_field_get_type && il2cpp_type_get_name) {
+        void *ft = il2cpp_field_get_type(f);
+        if (ft)
+          ftn = il2cpp_type_get_name(ft);
+      }
+      if (!ftn || !fn || !strstr(ftn, "List"))
+        continue;
+      void *lst = *(void **)((char *)pose + fo);
+      if (!lst)
+        continue;
+      int len = *(int *)((char *)lst + IL2CPP_LIST_SIZE);
+      void *items = *(void **)((char *)lst + IL2CPP_LIST_ITEMS);
+      Log("[SMC] emotion: %s (%s) len=%d", fn, ftn, len);
+      if (!items || len <= 0 || len > 200)
+        continue;
+      listed++;
+      for (int i = 0; i < len && i < 24; i++) {
+        void *elem =
+            *(void **)((char *)items + IL2CPP_ARRAY_DATA + i * 8);
+        if (!elem)
+          continue;
+        void *elemCls = il2cpp_object_get_class(elem);
+        if (!elemCls)
+          continue;
+        const char *nameFields[] = {"_ctrlName", "m_ctrlName", "ctrlName",
+                                    "_name"};
+        const char *valFields[] = {"_value", "m_value", "value"};
+        int no = FindFieldInHierarchy(elemCls, nameFields, 4, nullptr);
+        int vo = FindFieldInHierarchy(elemCls, valFields, 3, nullptr);
+        char nm[96] = "";
+        float val = -1.0f;
+        if (no > 0) {
+          void *so = *(void **)((char *)elem + no);
+          if (so)
+            ReadStr(so, nm, sizeof(nm));
+        }
+        if (vo > 0)
+          val = *(float *)((char *)elem + vo);
+        Log("[SMC] emotion:   [%d] '%s' = %.3f", i, nm, val);
+      }
+    }
+  } __except (1) {
+    Log("[SMC] emotion: list dump exception");
+  }
+}
+
+static void SMCProbeMorphWeights(void *smc) {
+  if (s_morphWeightProbed || !smc)
+    return;
+  s_morphWeightProbed = true;
+  Log("[SMC] ==== weight source probe start (smc=%p) ====", smc);
+  // 1) 类字段的名字 + 声明类型（纯反射，不解引用）
+  if (!s_fieldsDumped && s_smcClass) {
+    s_fieldsDumped = true;
+    SMCDumpFieldsTyped(s_smcClass, "SkeletalMorphCore");
+  }
+  int amOff = -1, phOff = -1, mxOff = -1;
+  __try {
+    amOff = SafeOff(s_offAllMorphs, 0x210, "smc.allMorphs");
+  } __except (1) {
+  }
+  __try {
+    phOff = SafeOff(s_offPhonemeWeights, 0x320, "smc.phonemesWeights");
+  } __except (1) {
+  }
+  __try {
+    mxOff = SafeOff(s_offMicroExprWeights, 0x330, "smc.microExprWeights");
+  } __except (1) {
+  }
+  // 2) 三个候选：managed 对象 / 内联 native buffer 两种解释分别打印
+  SMCDumpBufferCandidates(smc, amOff, "allMorphs");
+  SMCDumpBufferCandidates(smc, phOff, "phonemes");
+  SMCDumpBufferCandidates(smc, mxOff, "microExpr");
+  // 3) managed 解释成立时：元素类字段 + 挑一个 float 权重字段
+  __try {
+    void *am = *(void **)((char *)smc + amOff);
+    if (am) {
+      void *amCls = il2cpp_object_get_class(am);
+      const char *acn = amCls ? il2cpp_class_get_name(amCls) : "";
+      int len = *(int *)((char *)am + IL2CPP_ARRAY_LEN);
+      if (len > 0 && len < 4096) {
+        void *elem0 = *(void **)((char *)am + IL2CPP_ARRAY_DATA);
+        void *ec = elem0 ? il2cpp_object_get_class(elem0) : nullptr;
+        if (ec) {
+          const char *ecn = il2cpp_class_get_name(ec);
+          if (ecn) {
+            strncpy(s_allMorphsClass, ecn, sizeof(s_allMorphsClass) - 1);
+            s_allMorphsClass[sizeof(s_allMorphsClass) - 1] = 0;
+          }
+          Log("[SMC] allMorphs elem class=%s", ecn ? ecn : "?");
+          SMCDumpFieldsTyped(ec, "allMorphs elem");
+          void *it = nullptr, *f;
+          int firstFloat = -1;
+          while ((f = il2cpp_class_get_fields(ec, &it))) {
+            int fo = (int)il2cpp_field_get_offset(f);
+            if (fo < 0x10 || fo > 0x80)
+              continue;
+            const char *fn = il2cpp_field_get_name(f);
+            const char *ftn = "?";
+            if (il2cpp_field_get_type && il2cpp_type_get_name) {
+              void *ft = il2cpp_field_get_type(f);
+              if (ft)
+                ftn = il2cpp_type_get_name(ft);
+            }
+            if (!ftn || !strstr(ftn, "Single"))
+              continue;
+            if (firstFloat < 0)
+              firstFloat = fo;
+            if (fn && (strstr(fn, "weight") || strstr(fn, "Weight") ||
+                       strstr(fn, "value") || strstr(fn, "Value")))
+              s_allMorphsWeightOff = fo;
+          }
+          if (s_allMorphsWeightOff < 0)
+            s_allMorphsWeightOff = firstFloat;
+        }
+        if (acn && (strstr(acn, "Single") || strstr(acn, "Float"))) {
+          s_allMorphsIsFloatArray = true;
+          float *d = (float *)((char *)am + IL2CPP_ARRAY_DATA);
+          char line[192] = {};
+          int pos = 0;
+          for (int i = 0; i < len && i < 12 && pos < 176; i++)
+            pos += snprintf(line + pos, sizeof(line) - pos, "%.3f ", d[i]);
+          Log("[SMC] allMorphs float[]: %s", line);
+        }
+        Log("[SMC] allMorphs managed: class=%s len=%d weightField=0x%X",
+            acn ? acn : "?", len, s_allMorphsWeightOff);
+      }
+    }
+  } __except (1) {
+    Log("[SMC] allMorphs managed interpretation failed");
+  }
+  // 4) MainEmotion → EmotionPose 链路（带名字，最直接的来源）
+  SMCProbeEmotionPose(smc);
+  Log("[SMC] ==== weight source probe end ====");
+}
+
+static bool SMCReadMorphWeight(void *smc, int morphId, float *out) {
+  *out = 0.0f;
+  if (!smc || morphId < 0 || !s_morphWeightProbed)
+    return false;
+  float v = 0.0f;
+  __try {
+    int amOff = SafeOff(s_offAllMorphs, 0x210, "smc.allMorphs");
+    void *am = *(void **)((char *)smc + amOff);
+    if (!am)
+      return false;
+    int len = *(int *)((char *)am + IL2CPP_ARRAY_LEN);
+    if (morphId >= len)
+      return false;
+    if (s_allMorphsIsFloatArray) {
+      v = ((float *)((char *)am + IL2CPP_ARRAY_DATA))[morphId];
+    } else {
+      if (s_allMorphsWeightOff < 0)
+        return false;
+      void *elem = *(void **)((char *)am + IL2CPP_ARRAY_DATA + morphId * 8);
+      if (!elem)
+        return false;
+      v = *(float *)((char *)elem + s_allMorphsWeightOff);
+    }
+  } __except (1) {
+    return false;
+  }
+  // 明显不是权重就丢掉，避免把垃圾值当成表情填进滑条
+  if (!(v == v) || v < -0.05f || v > 1.5f)
+    return false;
+  *out = v;
+  return true;
+}
+
+static void CharGoName(char *buf, int sz) {
+  buf[0] = 0;
+  __try {
+    void *root = GetCharRootTransform();
+    void *go = (root && g_component_get_gameObject)
+                   ? Invoke(g_component_get_gameObject, root)
+                   : nullptr;
+    void *nb = (go && g_object_get_name) ? Invoke(g_object_get_name, go)
+                                         : nullptr;
+    if (nb)
+      ReadStr(nb, buf, sz);
+  } __except (1) {
+  }
+}
+
+// 放弃当前锁定的实例（把它的大列表还回游戏），保留面板权重与驱动开关
+static void SMCDropLockKeepWeights() {
+  SMCRestoreBigList();
+  s_smcCore = nullptr;
+  s_confirmedSMC = nullptr;
+  s_frame = 0;
+  s_bigListCaptured = false;
+  s_capturedLen = 0;
+  s_faceBoneRefs = nullptr;
+  s_faceBoneCount = 0;
+  s_faceBonesCaptured = false;
+  s_captureNeutral = false;
+  s_neutralFrames = 0;
+  s_driveBaseReady = false;
+  s_lastFacePoseValid = false;
+  s_holdApplied = false;
+  for (int i = 0; i < SMC_MAX_SLIDERS; i++)
+    s_fitW[i] = 0.0f;
+  s_boneMapReady = false;
+  s_boneIDMapCount = 0;
+  s_eyeIKDisabled = false;
+  s_smcCheckedInstance = nullptr;
+  memset(s_boneIDToIdx, -1, sizeof(s_boneIDToIdx));
+  memset(s_faceBoneTouched, 0, sizeof(s_faceBoneTouched));
+  for (int i = 0; i < SMC_NUM_MOUTH; i++)
+    s_mouthShapes[i].resolved = false;
+  for (int i = 0; i < s_extraMorphCount; i++)
+    for (int t = 0; t < s_extraMorphs[i].targetCount; t++)
+      s_extraMorphs[i].targets[t].resolved = false;
+  s_mouthResolved = false;
+  s_extraMorphsResolved = false;
+}
+
+static void SMCRejectInstanceAndDropLock(void *smc) {
+  if (smc && s_smcRejectedCount < SMC_MAX_REJECTED)
+    s_smcRejected[s_smcRejectedCount++] = smc;
+  SMCDropLockKeepWeights();
+}
+
+// ---- 表情位姿 ↔ 权重 ----
+// 冻结时必须"保持当前表情"，所以要在冻结瞬间把当前脸 P 反解成滑条权重：
+// 用捕获到的 morph 增量做基向量，坐标下降拟合 w（滑条是相对中性默认值的权重），
+// 再把拟合不出来的残差折进 s_driveBase —— 这样 w = w₀ 时脸精确等于 P。
+
+// 把某个滑条（0..4 口型，5.. 表情）的"单位权重增量"按骨累加；返回触及骨骼数
+static int SMCCollectSliderUnit(int idx, float (*uPos)[3], float (*uRot)[3],
+                                int *touched, int maxTouched) {
+  int n = 0;
+  if (idx < 0 || idx >= SMC_MAX_SLIDERS)
+    return 0;
+  if (idx < SMC_NUM_MOUTH) {
+    if (!s_mouthShapes[idx].resolved)
+      return 0;
+    int start = s_mouthShapes[idx].jobStartIdx;
+    int cnt = s_mouthShapes[idx].jobCount;
+    if (start < 0 || cnt <= 0 || start + cnt > s_capturedLen)
+      return 0;
+    for (int i = start; i < start + cnt; i++) {
+      const SMCMorphBoneEntry &e = s_capturedExpression[i];
+      int b = (e.boneID >= 0 && e.boneID < SMC_BONE_MAP_SIZE)
+                  ? s_boneIDToIdx[e.boneID]
+                  : -1;
+      if (b < 0 || b >= s_faceBoneCount)
+        continue;
+      if (fabsf(e.deltaPosX) > 1.0f || fabsf(e.deltaPosY) > 1.0f ||
+          fabsf(e.deltaPosZ) > 1.0f)
+        continue;
+      bool first = (uPos[b][0] == 0.0f && uPos[b][1] == 0.0f &&
+                    uPos[b][2] == 0.0f && uRot[b][0] == 0.0f &&
+                    uRot[b][1] == 0.0f && uRot[b][2] == 0.0f);
+      uPos[b][0] += e.deltaPosX;
+      uPos[b][1] += e.deltaPosY;
+      uPos[b][2] += e.deltaPosZ;
+      if (fabsf(e.deltaRotX) < 30.0f && fabsf(e.deltaRotY) < 30.0f &&
+          fabsf(e.deltaRotZ) < 30.0f) {
+        uRot[b][0] += e.deltaRotX;
+        uRot[b][1] += e.deltaRotY;
+        uRot[b][2] += e.deltaRotZ;
+      }
+      if (first && n < maxTouched)
+        touched[n++] = b;
+    }
+    return n;
+  }
+  int em = idx - SMC_NUM_MOUTH;
+  if (em >= s_extraMorphCount)
+    return 0;
+  for (int t = 0; t < s_extraMorphs[em].targetCount; t++) {
+    const SMCExtraTarget &tgt = s_extraMorphs[em].targets[t];
+    if (!tgt.resolved || tgt.startIdx < 0 ||
+        tgt.startIdx + tgt.count > s_capturedLen)
+      continue;
+    bool isEye = (strncmp(tgt.endfieldName, "eye_", 4) == 0);
+    for (int i = tgt.startIdx; i < tgt.startIdx + tgt.count; i++) {
+      const SMCMorphBoneEntry &e = s_capturedExpression[i];
+      int b = (e.boneID >= 0 && e.boneID < SMC_BONE_MAP_SIZE)
+                  ? s_boneIDToIdx[e.boneID]
+                  : -1;
+      if (b < 0 || b >= s_faceBoneCount)
+        continue;
+      if (fabsf(e.deltaPosX) > 1.0f || fabsf(e.deltaPosY) > 1.0f ||
+          fabsf(e.deltaPosZ) > 1.0f)
+        continue;
+      bool first = (uPos[b][0] == 0.0f && uPos[b][1] == 0.0f &&
+                    uPos[b][2] == 0.0f && uRot[b][0] == 0.0f &&
+                    uRot[b][1] == 0.0f && uRot[b][2] == 0.0f);
+      uPos[b][0] += e.deltaPosX;
+      uPos[b][1] += e.deltaPosY;
+      uPos[b][2] += e.deltaPosZ;
+      if (!isEye && fabsf(e.deltaRotX) < 30.0f && fabsf(e.deltaRotY) < 30.0f &&
+          fabsf(e.deltaRotZ) < 30.0f) {
+        uRot[b][0] += e.deltaRotX;
+        uRot[b][1] += e.deltaRotY;
+        uRot[b][2] += e.deltaRotZ;
+      }
+      if (first && n < maxTouched)
+        touched[n++] = b;
+    }
+  }
+  return n;
+}
+
+// 目标总增量（相对中性脸）：位移向量 + 欧拉角向量
+static void SMCTargetDelta(int b, const SMCFaceBone *target, const SMCFaceBone *base,
+                           float *outPos, float *outEuler) {
+  outPos[0] = target[b].px - base[b].px;
+  outPos[1] = target[b].py - base[b].py;
+  outPos[2] = target[b].pz - base[b].pz;
+  Quat bq(base[b].rx, base[b].ry, base[b].rz, base[b].rw);
+  Quat tq(target[b].rx, target[b].ry, target[b].rz, target[b].rw);
+  Quat d = NormQ(tq * Conj(bq));
+  Vec3 e = d.ToEulerDeg();
+  outEuler[0] = e.x;
+  outEuler[1] = e.y;
+  outEuler[2] = e.z;
+}
+
+static float SMCPoseResidual(const SMCFaceBone *a, const SMCFaceBone *b, int count) {
+  float worst = 0.0f;
+  for (int i = 0; i < count; i++) {
+    float dp = fabsf(a[i].px - b[i].px) + fabsf(a[i].py - b[i].py) +
+               fabsf(a[i].pz - b[i].pz);
+    Quat aq(a[i].rx, a[i].ry, a[i].rz, a[i].rw);
+    Quat bq(b[i].rx, b[i].ry, b[i].rz, b[i].rw);
+    float da = Quat::Angle(aq, bq);
+    float e = dp + da;
+    if (e > worst)
+      worst = e;
+  }
+  return worst;
+}
+
+// 把当前脸 P 反解成权重（相对中性脸），并把残差折进 s_driveBase
+static void SMCHoldPoseAsWeights(const SMCFaceBone *target) {
+  const int nSliders = SMC_NUM_MOUTH + s_extraMorphCount;
+  if (s_faceBoneCount <= 0 || nSliders > SMC_MAX_SLIDERS || s_capturedLen <= 0)
+    return;
+  static float uPos[SMC_MAX_FACE_BONES][3];
+  static float uRot[SMC_MAX_FACE_BONES][3];
+  static int touched[SMC_MAX_FACE_BONES];
+  static float sumPos[SMC_MAX_FACE_BONES][3];
+  static float sumRot[SMC_MAX_FACE_BONES][3];
+  static float reqPos[SMC_MAX_FACE_BONES][3];
+  static float reqRot[SMC_MAX_FACE_BONES][3];
+  memset(sumPos, 0, sizeof(sumPos));
+  memset(sumRot, 0, sizeof(sumRot));
+  for (int b = 0; b < s_faceBoneCount; b++)
+    SMCTargetDelta(b, target, s_faceRestPose, reqPos[b], reqRot[b]);
+  for (int i = 0; i < nSliders; i++)
+    s_fitW[i] = 0.0f;
+  // 坐标下降：每次把残差投影到该滑条的影响方向上
+  for (int pass = 0; pass < 3; pass++) {
+    for (int idx = 0; idx < nSliders; idx++) {
+      memset(uPos, 0, sizeof(uPos));
+      memset(uRot, 0, sizeof(uRot));
+      int nt = SMCCollectSliderUnit(idx, uPos, uRot, touched, SMC_MAX_FACE_BONES);
+      if (nt <= 0)
+        continue;
+      float num = 0.0f, den = 0.0f;
+      for (int k = 0; k < nt; k++) {
+        int b = touched[k];
+        if (b < 0 || b >= s_faceBoneCount)
+          continue;
+        for (int c = 0; c < 3; c++) {
+          float othersP = sumPos[b][c] - s_fitW[idx] * uPos[b][c];
+          float othersR = sumRot[b][c] - s_fitW[idx] * uRot[b][c];
+          num += (reqPos[b][c] - othersP) * uPos[b][c];
+          num += (reqRot[b][c] - othersR) * uRot[b][c];
+          den += uPos[b][c] * uPos[b][c] + uRot[b][c] * uRot[b][c];
+        }
+      }
+      if (den < 1e-8f)
+        continue;
+      float nw = s_fitW[idx] + num / den;
+      if (nw < 0.0f)
+        nw = 0.0f;
+      if (nw > 1.0f)
+        nw = 1.0f;
+      float dw = nw - s_fitW[idx];
+      s_fitW[idx] = nw;
+      if (dw != 0.0f) {
+        for (int k = 0; k < nt; k++) {
+          int b = touched[k];
+          if (b < 0 || b >= s_faceBoneCount)
+            continue;
+          for (int c = 0; c < 3; c++) {
+            sumPos[b][c] += dw * uPos[b][c];
+            sumRot[b][c] += dw * uRot[b][c];
+          }
+        }
+      }
+    }
+  }
+  // 残差折进基准位姿：base = P − Σ w₀×增量（旋转用逆作用）
+  int nz = 0;
+  for (int b = 0; b < s_faceBoneCount; b++) {
+    s_driveBase[b] = target[b];
+    s_driveBase[b].px -= sumPos[b][0];
+    s_driveBase[b].py -= sumPos[b][1];
+    s_driveBase[b].pz -= sumPos[b][2];
+    Quat back = Conj(Quat::FromEulerDeg(
+        Vec3(sumRot[b][0], sumRot[b][1], sumRot[b][2])));
+    Quat tq(target[b].rx, target[b].ry, target[b].rz, target[b].rw);
+    Quat bq = NormQ(back * tq);
+    s_driveBase[b].rx = bq.x;
+    s_driveBase[b].ry = bq.y;
+    s_driveBase[b].rz = bq.z;
+    s_driveBase[b].rw = bq.w;
+  }
+  s_driveBaseReady = true;
+  // 滑条 = 拟合出的权重
+  for (int i = 0; i < SMC_NUM_MOUTH; i++)
+    s_mouthWeights[i] = s_fitW[i];
+  for (int em = 0; em < s_extraMorphCount; em++) {
+    s_extraMorphs[em].weight = s_fitW[SMC_NUM_MOUTH + em];
+    s_extraMorphs[em].prevWeight = s_fitW[SMC_NUM_MOUTH + em];
+    if (s_fitW[SMC_NUM_MOUTH + em] > 0.001f)
+      nz++;
+  }
+  // 拟合质量：把反解结果再演算一遍，看和当前脸差多少
+  float residual = 0.0f;
+  if (s_faceBonesCaptured)
+    residual = SMCPoseResidual(target, s_driveBase, s_faceBoneCount);
+  s_driving = true;
+  Log("[SMC] hold current face: sliders fitted (%d expr nonzero), "
+      "residual(base↔face)=%.4f",
+      nz, residual);
+}
+
+// 归零时把基准与权重一起复位到中性默认脸
+static void SMCClearHold() {
+  if (s_faceBonesCaptured)
+    memcpy(s_driveBase, s_faceRestPose, sizeof(s_driveBase));
+  s_driveBaseReady = s_faceBonesCaptured;
+  for (int i = 0; i < SMC_MAX_SLIDERS; i++)
+    s_fitW[i] = 0.0f;
+}
+
+static void SMCSnapshotFacePose() {
+  if (!s_faceBoneRefs || s_faceBoneCount <= 0)
+    return;
+  for (int i = 0; i < s_faceBoneCount; i++) {
+    if (!s_faceBoneRefs[i]) {
+      s_lastFacePoseBuf[i].transform = nullptr;
+      continue;
+    }
+    Vec3 p = GetBoneLocalPos(s_faceBoneRefs[i]);
+    Quat r = GetBoneLocalRot(s_faceBoneRefs[i]);
+    s_lastFacePoseBuf[i] = {p.x, p.y, p.z, r.x, r.y, r.z, r.w,
+                            s_faceBoneRefs[i]};
+  }
+  s_lastFacePoseValid = true;
+}
+
 // 动态解析 SMC 类字段偏移（优先字段名，失败回退 SafeOff 常量）
 static void ResolveSMCOffsets(void *cls) {
   if (!cls)
@@ -243,6 +1019,9 @@ static void ResolveSMCOffsets(void *cls) {
     s_offAllBonesTransforms = getOff("m_allBonesTransforms");
     s_offBoneIDToIdx = getOff("m_boneIDToIdx");
     s_offSmcEyeLookAt = getOff("m_isEyeLookAtIKEnable");
+    s_offPhonemeWeights = getOff("m_phonemesWeights");
+    s_offMicroExprWeights = getOff("m_microExpressionWeights");
+    s_offMainEmotion = getOff("m_mainEmotion");
     if (s_offSmcEyeLookAt < 0)
       s_offSmcEyeLookAt = getOff("enableEyeLookAtIK");
     if (s_offSmcEyeLookAt < 0)
@@ -250,10 +1029,12 @@ static void ResolveSMCOffsets(void *cls) {
     if (s_offSmcEyeLookAt < 0)
       s_offSmcEyeLookAt = getOff("_enableEyeLookAtIK");
     Log("[SMC] offsets: allMorphs=%d bigList=%d hashMap=%d bsDirty=%d "
-        "boneDirty=%d avatarData=%d bones=%d boneIDToIdx=%d eyeLookAt=%d",
+        "boneDirty=%d avatarData=%d bones=%d boneIDToIdx=%d eyeLookAt=%d "
+        "phonemes=%d microExpr=%d mainEmotion=%d",
         s_offAllMorphs, s_offBigList, s_offNativeHashMap, s_offMorphBSDirty,
         s_offAllMorphBoneDirty, s_offAvatarData, s_offAllBonesTransforms,
-        s_offBoneIDToIdx, s_offSmcEyeLookAt);
+        s_offBoneIDToIdx, s_offSmcEyeLookAt, s_offPhonemeWeights,
+        s_offMicroExprWeights, s_offMainEmotion);
   } __except (1) {
     Log("[SMC] ResolveSMCOffsets exception");
   }
@@ -320,6 +1101,10 @@ static void SMCRestoreBigList() {
 static void ResolveSMCMouthShapes(void *smcBase) {
   if (s_mouthResolved)
     return;
+  // morphId 每次重新解析：读回当前表情权重时按它索引 m_allMorphs
+  for (int em = 0; em < s_extraMorphCount; em++)
+    for (int t = 0; t < s_extraMorphs[em].targetCount; t++)
+      s_extraMorphs[em].targets[t].morphId = -1;
   __try {
     int hmOff = SafeOff(s_offNativeHashMap, 0xF8, "smc.nativeHashMap");
     void *hmBuffer = *(void **)((char *)smcBase + hmOff);
@@ -431,6 +1216,7 @@ static void ResolveSMCMouthShapes(void *smcBase) {
             SMCExtraTarget &tgt = s_extraMorphs[em].targets[t];
             if (!tgt.resolved && strcmp(nn, tgt.endfieldName) == 0) {
               tgt.nameHash = keys[e];
+              tgt.morphId = morphId;
               tgt.startIdx = smcStart;
               tgt.count = smcCount;
               tgt.jobStartIdx = smcStart;
@@ -450,10 +1236,11 @@ static void ResolveSMCMouthShapes(void *smcBase) {
         }
       }
       s_extraMorphsResolved = (resolvedTargets > 0);
-      Log("[SMC] Resolved %d/%d extra morph targets", resolvedTargets,
-          s_extraMorphCount > 0
-              ? s_extraMorphs[0].targetCount * s_extraMorphCount
-              : 0);
+      int totalTargets = 0;
+      for (int em = 0; em < s_extraMorphCount; em++)
+        totalTargets += s_extraMorphs[em].targetCount;
+      Log("[SMC] Resolved %d/%d extra morph targets (morph names=%d)",
+          resolvedTargets, totalTargets, nameArrLen);
     } else {
       Log("[SMC] morphMappingNames empty: arr=%p len=%d", nameArr,
           nameArrLen);
@@ -469,25 +1256,45 @@ static void ResolveSMCMouthShapes(void *smcBase) {
 static void __fastcall HookedSMCMorphJob(void *__this, void *param1,
                                          void *param2, void *methodInfo) {
   if (!s_confirmedSMC && param1) {
-    s_confirmedSMC = param1;
-    Log("[SMC] Confirmed SMC from MorphToBoneJob: %p", param1);
-    if (!s_eyeIKDisabled) {
-      s_eyeIKDisabled = true;
-      __try {
-        int eyeOff = SafeOff(s_offSmcEyeLookAt, 0x1DD,
-                             "smc.enableEyeLookAtIK");
-        *(bool *)((char *)param1 + eyeOff) = false;
-        Log("[SMC] EyeLookAtIK disabled at SMC+0x%X", eyeOff);
-      } __except (1) {
-        Log("[SMC] Failed to disable EyeLookAtIK");
-      }
+    // 归属未确认前只登记候选，EyeLookAtIK 等副作用等主线程校验通过再做
+    if (s_smcOwnershipGaveUp || !SMCIsRejected(param1)) {
+      s_confirmedSMC = param1;
+      Log("[SMC] Candidate from MorphToBoneJob: %p (%d rejected)", param1,
+          s_smcRejectedCount);
+    } else if (++s_smcRejectStrikes > 240) {
+      // 场上候选全被判为"不属于当前角色"：放弃归属判定，退回先到先得
+      s_smcOwnershipGaveUp = true;
+      s_smcRejectedCount = 0;
+      s_smcRejectStrikes = 0;
+      s_confirmedSMC = param1;
+      Log("[SMC] ownership lookup gave up -> lock first-seen %p", param1);
     }
   }
   if (!s_bigListCaptured && param1 && param1 == s_confirmedSMC)
     SMCCaptureBigList(param1);
 
+  // 中性基线采样：把大列表增量"整表"清零（不只我们映射到的那批骨），
+  // 让游戏本帧把脸写回中性位姿，主线程据此抓基准
+  if (s_captureNeutral && s_bigListCaptured && param1 &&
+      param1 == s_confirmedSMC) {
+    __try {
+      int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
+      void *bigBuf = *(void **)((char *)param1 + blOff);
+      int bigLen = *(int *)((char *)param1 + blOff + 8);
+      if (bigBuf && bigLen > 0 && bigLen == s_capturedLen) {
+        SMCMorphBoneEntry *live = (SMCMorphBoneEntry *)bigBuf;
+        for (int i = 0; i < bigLen; i++) {
+          live[i].deltaPosX = live[i].deltaPosY = live[i].deltaPosZ = 0;
+          live[i].deltaRotX = live[i].deltaRotY = live[i].deltaRotZ = 0;
+        }
+      }
+    } __except (1) {
+    }
+  }
+
   // 面板驱动中：清零大列表增量，防止游戏按原始 morph 权重改写骨骼
-  if (s_driving && s_faceBonesCaptured && s_boneMapReady && param1 &&
+  // （同样限定冻结态：解冻后继续清零会让角色的脸一直不动）
+  if (s_driving && g_frozen && s_faceBonesCaptured && s_boneMapReady && param1 &&
       param1 == s_confirmedSMC) {
     __try {
       int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
@@ -573,6 +1380,46 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     SMCCaptureBigList(__this); // job hook 可能已抓过，这里兜底
   }
 
+  // 归属校验（主线程，锁定后第 3 帧做一次）：不匹配就放弃这个实例，等 job hook
+  // 锁下一个候选。不能在这里硬撑：滑条会写到别的角色脸上，当前角色毫无反应。
+  if (s_frame >= 3 && s_smcCheckedInstance != __this) {
+    s_smcCheckedInstance = __this;
+    if (s_smcOwnershipGaveUp) {
+      SMCSetEyeLookAtIK(__this, false);
+      s_eyeIKDisabled = true;
+      Log("[SMC] ownership check skipped (gave up) -> accepting %p", __this);
+    } else {
+      char detail[160];
+      char owner[128];
+      char current[128];
+      int verdict = SMCOwnershipTest(__this, detail, sizeof(detail));
+      if (verdict == 0 && s_smcRejectedCount < SMC_MAX_REJECTED) {
+        SMCFirstBoneName(__this, owner, sizeof(owner));
+        CharGoName(current, sizeof(current));
+        Log("[SMC] reject instance %p bone0='%s' current='%s': %s", __this,
+            owner, current, detail);
+        SMCRejectInstanceAndDropLock(__this);
+        if (s_origSMCUpdate)
+          s_origSMCUpdate(__this, deltaTime, methodInfo);
+        return; // 本帧不驱动，等新候选
+      }
+      SMCSetEyeLookAtIK(__this, false);
+      s_eyeIKDisabled = true;
+      if (verdict == 1) {
+        SMCFirstBoneName(__this, owner, sizeof(owner));
+        CharGoName(current, sizeof(current));
+        Log("[SMC] accepted instance %p bone0='%s' current='%s': %s", __this,
+            owner, current, detail);
+      } else {
+        Log("[SMC] accepted instance %p: %s", __this, detail);
+      }
+      if (verdict == 0) {
+        s_smcOwnershipGaveUp = true; // 拒绝名单满了，别再折腾
+        Log("[SMC] reject list full -> accept anyway");
+      }
+    }
+  }
+
   // 驱动中：先写上一帧结果，抵消游戏本帧改写。
   // 必须限定在冻结态：hook 是启动时就装上的，解冻后若继续写，会永久盖住游戏的面部动画。
   if (s_driving && g_frozen && s_faceBonesCaptured && s_frame > 5)
@@ -596,20 +1443,28 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     }
   }
 
-  // 静息位姿（一次性，首帧捕获）
-  if (s_faceBoneRefs && !s_faceBonesCaptured && s_frame >= 1) {
-    int captured = 0;
-    for (int i = 0; i < s_faceBoneCount; i++) {
-      if (!s_faceBoneRefs[i])
-        continue;
-      Vec3 p = GetBoneLocalPos(s_faceBoneRefs[i]);
-      Quat r = GetBoneLocalRot(s_faceBoneRefs[i]);
-      s_faceBones[i] = {p.x, p.y, p.z, r.x, r.y, r.z, r.w, s_faceBoneRefs[i]};
-      captured++;
-    }
-    memcpy(s_faceRestPose, s_faceBones, sizeof(s_faceBones));
-    s_faceBonesCaptured = true;
-    Log("[SMC] Rest pose captured: %d bones", captured);
+  // 中性基线：不再"首帧即静息"（那会把锁定时正在演的表情当成默认值）。
+  // 冻结后先记下当前脸，再让 job hook 把 morph 增量清零几帧，游戏会把骨骼写回
+  // 中性位姿，那时抓到的才是默认值；滑条 0 = 中性脸（对应身体的 A-pose 基准）。
+  if (s_faceBoneRefs && !s_faceBonesCaptured && s_bigListCaptured &&
+      !s_captureNeutral) {
+    s_captureNeutral = true;
+    s_neutralFrames = 0;
+    Log("[SMC] neutral baseline: sampling (morph deltas zeroed for a few "
+        "frames) ...");
+  }
+
+  // 冻结瞬间：保住当前表情。用上一帧（未冻结）的脸反解成滑条权重，
+  // 拟合不出来的部分折进基准位姿 —— 冻结不当场改变脸，滑条也仍是"相对默认值"。
+  if (!g_frozen) {
+    s_holdApplied = false;
+  } else if (s_faceBonesCaptured && s_driveBaseReady && !s_holdApplied &&
+             !s_captureNeutral) {
+    s_holdApplied = true;
+    if (!s_lastFacePoseValid)
+      SMCSnapshotFacePose();
+    if (s_lastFacePoseValid)
+      SMCHoldPoseAsWeights(s_lastFacePoseBuf);
   }
 
   // 骨 ID → 骨骼数组下标映射（第 20 帧后游戏数据就绪）
@@ -674,7 +1529,8 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
           s_mouthWeights[s] *= scale;
       }
 
-      memcpy(s_faceBones, s_faceRestPose, sizeof(s_faceBones));
+      const SMCFaceBone *basePose = s_driveBaseReady ? s_driveBase : s_faceRestPose;
+      memcpy(s_faceBones, basePose, sizeof(s_faceBones));
       float deltaPosAccum[SMC_MAX_FACE_BONES][3] = {};
       float deltaRotAccum[SMC_MAX_FACE_BONES][3] = {};
       memset(s_faceBoneTouched, 0, sizeof(s_faceBoneTouched));
@@ -753,14 +1609,14 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
       for (int b = 0; b < s_faceBoneCount; b++) {
         if (!s_faceBoneTouched[b])
           continue;
-        s_faceBones[b].px = s_faceRestPose[b].px + deltaPosAccum[b][0];
-        s_faceBones[b].py = s_faceRestPose[b].py + deltaPosAccum[b][1];
-        s_faceBones[b].pz = s_faceRestPose[b].pz + deltaPosAccum[b][2];
+        s_faceBones[b].px = basePose[b].px + deltaPosAccum[b][0];
+        s_faceBones[b].py = basePose[b].py + deltaPosAccum[b][1];
+        s_faceBones[b].pz = basePose[b].pz + deltaPosAccum[b][2];
         Quat dq = Quat::FromEulerDeg(
             Vec3(deltaRotAccum[b][0], deltaRotAccum[b][1],
                  deltaRotAccum[b][2]));
-        Quat rq(s_faceRestPose[b].rx, s_faceRestPose[b].ry,
-                s_faceRestPose[b].rz, s_faceRestPose[b].rw);
+        Quat rq(basePose[b].rx, basePose[b].ry, basePose[b].rz,
+                basePose[b].rw);
         Quat res = dq * rq;
         float len = sqrtf(res.x * res.x + res.y * res.y + res.z * res.z +
                           res.w * res.w);
@@ -798,9 +1654,55 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
   if (s_origSMCUpdate)
     s_origSMCUpdate(__this, deltaTime, methodInfo);
 
+  // 采样到中性脸：把当前（零 morph）位姿定为默认值，权重归零并接管驱动，
+  // 这样"滑条全 0 = 中性脸"，不会再出现"滑条 0 但脸还在笑"
+  if (s_captureNeutral) {
+    s_neutralFrames++;
+    if (s_neutralFrames >= 3) {
+      int captured = 0;
+      for (int i = 0; i < s_faceBoneCount; i++) {
+        if (!s_faceBoneRefs[i])
+          continue;
+        Vec3 p = GetBoneLocalPos(s_faceBoneRefs[i]);
+        Quat r = GetBoneLocalRot(s_faceBoneRefs[i]);
+        s_faceBones[i] = {p.x, p.y, p.z, r.x, r.y, r.z, r.w,
+                          s_faceBoneRefs[i]};
+        captured++;
+      }
+      memcpy(s_faceRestPose, s_faceBones, sizeof(s_faceBones));
+      // 默认脸 = 中性脸；驱动基准复位到默认（「全部归零」的目标就是它）
+      memcpy(s_driveBase, s_faceRestPose, sizeof(s_driveBase));
+      s_driveBaseReady = true;
+      float vsFace = s_lastFacePoseValid
+                         ? SMCPoseResidual(s_lastFacePoseBuf, s_faceRestPose,
+                                           s_faceBoneCount)
+                         : -1.0f;
+      s_faceBonesCaptured = true;
+      s_captureNeutral = false;
+      for (int i = 0; i < SMC_NUM_MOUTH; i++)
+        s_mouthWeights[i] = 0.0f;
+      for (int i = 0; i < s_extraMorphCount; i++) {
+        s_extraMorphs[i].weight = 0.0f;
+        s_extraMorphs[i].prevWeight = 0.0f;
+      }
+      s_driving = true;
+      SMCRestoreBigList();
+      Log("[SMC] neutral baseline captured: %d bones (distance to current "
+          "face=%.4f) -> default face = neutral",
+          captured, vsFace);
+    }
+  }
+
   // 覆盖写回（原始 Update 之后）
   if (s_driving && g_frozen && s_faceBonesCaptured && s_frame > 5)
     SMCWriteTouchedBones();
+
+  // 未冻结时隔帧记录"当前脸"，供冻结瞬间反解使用（解冻后脸由游戏/动画驱动）
+  if (!g_frozen && !s_captureNeutral) {
+    static int s_snapTick = 0;
+    if ((s_snapTick++ & 1) == 0)
+      SMCSnapshotFacePose();
+  }
 }
 
 // 安装 SMC hook（IL2CPP Resolve 成功后调用一次）
@@ -863,9 +1765,20 @@ static void ResetSMCState() {
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
   s_faceBonesCaptured = false;
+  s_captureNeutral = false;
+  s_neutralFrames = 0;
+  s_driveBaseReady = false;
+  s_lastFacePoseValid = false;
+  s_holdApplied = false;
+  for (int i = 0; i < SMC_MAX_SLIDERS; i++)
+    s_fitW[i] = 0.0f;
   s_boneMapReady = false;
   s_boneIDMapCount = 0;
   s_eyeIKDisabled = false;
+  s_smcCheckedInstance = nullptr;
+  s_smcRejectedCount = 0;
+  s_smcRejectStrikes = 0;
+  s_smcOwnershipGaveUp = false;
   memset(s_boneIDToIdx, -1, sizeof(s_boneIDToIdx));
   memset(s_faceBoneTouched, 0, sizeof(s_faceBoneTouched));
   for (int i = 0; i < SMC_NUM_MOUTH; i++) {
@@ -881,6 +1794,9 @@ static void ResetSMCState() {
   s_mouthResolved = false;
   s_extraMorphsResolved = false;
   s_driving = false;
+  // 上次没探明权重布局的话，换角色后再探一次（探明过就沿用，避免重复刷日志）
+  if (!s_allMorphsIsFloatArray && s_allMorphsWeightOff < 0)
+    s_morphWeightProbed = false;
   Log("[SMC] state reset");
 }
 
@@ -939,9 +1855,198 @@ static void SMCSliderSet(int i, float v) {
       SMCSliderLabel(i), v, (int)g_frozen, s_faceBoneCount);
 }
 
+// 面板按钮：把游戏当前的 morph 权重读进滑条
+// （原来滑条一律从 0 开始，角色脸上正演着的表情看不到；读一次就能接着调）
+// 从 MainEmotion._pose 的 MorphCtrlValue 列表读"当前表情"：元素带 _ctrlName/_value，
+// 名字就是角色的 morph 控制名，能直接对上滑条目标（多个同名取最大）。返回命中数。
+static int SMCReadPoseValues(void *smc, float *exprVals, float *mouthVals) {
+  int hits = 0;
+  __try {
+    int meOff = SafeOff(s_offMainEmotion, 0x3C0, "smc.mainEmotion");
+    void *mainEmo = *(void **)((char *)smc + meOff);
+    if (!mainEmo)
+      return 0;
+    void *ec = il2cpp_object_get_class(mainEmo);
+    if (!ec)
+      return 0;
+    const char *poseNames[] = {"_pose", "m_pose", "pose"};
+    int poseOff = FindFieldInHierarchy(ec, poseNames, 3, nullptr);
+    if (poseOff <= 0)
+      return 0;
+    void *pose = *(void **)((char *)mainEmo + poseOff);
+    if (!pose)
+      return 0;
+    void *pc = il2cpp_object_get_class(pose);
+    if (!pc)
+      return 0;
+    void *it = nullptr, *f;
+    while ((f = il2cpp_class_get_fields(pc, &it))) {
+      const char *fn = il2cpp_field_get_name(f);
+      int fo = (int)il2cpp_field_get_offset(f);
+      const char *ftn = "?";
+      if (il2cpp_field_get_type && il2cpp_type_get_name) {
+        void *ft = il2cpp_field_get_type(f);
+        if (ft)
+          ftn = il2cpp_type_get_name(ft);
+      }
+      if (!fn || !ftn || !strstr(ftn, "List"))
+        continue;
+      void *lst = *(void **)((char *)pose + fo);
+      if (!lst)
+        continue;
+      int len = *(int *)((char *)lst + IL2CPP_LIST_SIZE);
+      void *items = *(void **)((char *)lst + IL2CPP_LIST_ITEMS);
+      if (!items || len <= 0 || len > 300)
+        continue;
+      for (int i = 0; i < len; i++) {
+        void *elem = *(void **)((char *)items + IL2CPP_ARRAY_DATA + i * 8);
+        if (!elem)
+          continue;
+        void *ec2 = il2cpp_object_get_class(elem);
+        if (!ec2)
+          continue;
+        const char *nameFields[] = {"_ctrlName", "m_ctrlName", "ctrlName",
+                                    "_name"};
+        const char *valFields[] = {"_value", "m_value", "value"};
+        int no = FindFieldInHierarchy(ec2, nameFields, 4, nullptr);
+        int vo = FindFieldInHierarchy(ec2, valFields, 3, nullptr);
+        if (no <= 0 || vo <= 0)
+          continue;
+        void *so = *(void **)((char *)elem + no);
+        char nm[96] = "";
+        if (so)
+          ReadStr(so, nm, sizeof(nm));
+        float val = *(float *)((char *)elem + vo);
+        if (!nm[0] || !(val == val) || val < -0.05f || val > 1.5f)
+          continue;
+        bool used = false;
+        for (int em = 0; em < s_extraMorphCount; em++) {
+          for (int t = 0; t < s_extraMorphs[em].targetCount; t++) {
+            const SMCExtraTarget &tgt = s_extraMorphs[em].targets[t];
+            if (tgt.resolved && strcmp(nm, tgt.endfieldName) == 0) {
+              if (val > exprVals[em])
+                exprVals[em] = val;
+              used = true;
+            }
+          }
+        }
+        for (int m = 0; m < SMC_NUM_MOUTH; m++) {
+          if (_stricmp(nm, s_mouthShapes[m].name) == 0) {
+            mouthVals[m] = val;
+            used = true;
+          }
+        }
+        if (used)
+          hits++;
+      }
+    }
+  } __except (1) {
+    Log("[SMC] read current: pose list exception");
+  }
+  return hits;
+}
+
+static char s_smcReadStatus[128] = "";
+
+static const char *SMCReadStatusText() { return s_smcReadStatus; }
+
+static void SMCReadCurrentToSliders() {
+  void *smc = s_smcCore ? s_smcCore : s_confirmedSMC;
+  if (!smc) {
+    snprintf(s_smcReadStatus, sizeof(s_smcReadStatus), "%s", "no SMC core");
+    Log("[SMC] read current: no locked SMC core");
+    return;
+  }
+  SMCProbeMorphWeights(smc);
+  // 游戏里的权重本来就是"相对中性默认值"的，所以先把基准复位再填，
+  // 这样读进来等价于"把脸设成游戏当前的表情"
+  SMCClearHold();
+  int mouths = 0, exprs = 0;
+  float exprVals[32] = {};
+  float mouthVals[SMC_NUM_MOUTH] = {};
+  int poseHits = 0;
+  if (s_extraMorphCount <= 32)
+    poseHits = SMCReadPoseValues(smc, exprVals, mouthVals);
+  const char *src = "pose";
+  if (poseHits > 0) {
+    for (int i = 0; i < SMC_NUM_MOUTH; i++) {
+      if (mouthVals[i] <= 0.0f)
+        continue;
+      s_mouthWeights[i] = mouthVals[i];
+      mouths++;
+    }
+    for (int em = 0; em < s_extraMorphCount; em++) {
+      if (exprVals[em] <= 0.0f)
+        continue;
+      s_extraMorphs[em].weight = exprVals[em];
+      s_extraMorphs[em].prevWeight = exprVals[em];
+      exprs++;
+    }
+  } else {
+    // 退回：按 morphId 直接读 m_allMorphs
+    src = "allMorphs";
+    for (int i = 0; i < SMC_NUM_MOUTH; i++) {
+      float w = 0.0f;
+      if (s_mouthShapes[i].morphId < 0 ||
+          !SMCReadMorphWeight(smc, s_mouthShapes[i].morphId, &w))
+        continue;
+      if (w < 0.0f)
+        w = 0.0f;
+      if (w > 1.0f)
+        w = 1.0f;
+      s_mouthWeights[i] = w;
+      mouths++;
+    }
+    for (int em = 0; em < s_extraMorphCount; em++) {
+      float best = 0.0f;
+      bool got = false;
+      for (int t = 0; t < s_extraMorphs[em].targetCount; t++) {
+        const SMCExtraTarget &tgt = s_extraMorphs[em].targets[t];
+        if (!tgt.resolved || tgt.morphId < 0)
+          continue;
+        float w = 0.0f;
+        if (!SMCReadMorphWeight(smc, tgt.morphId, &w))
+          continue;
+        if (w > best)
+          best = w;
+        got = true;
+      }
+      if (!got)
+        continue;
+      if (best < 0.0f)
+        best = 0.0f;
+      if (best > 1.0f)
+        best = 1.0f;
+      s_extraMorphs[em].weight = best;
+      s_extraMorphs[em].prevWeight = best;
+      exprs++;
+    }
+  }
+  char line[192] = {};
+  int pos = 0;
+  for (int i = 0; i < SMC_NUM_MOUTH && pos < (int)sizeof(line) - 16; i++)
+    pos += snprintf(line + pos, sizeof(line) - pos, "%s=%.2f ",
+                    s_mouthShapes[i].name, s_mouthWeights[i]);
+  Log("[SMC] read current -> src=%s poseHits=%d mouth=%d expr=%d "
+      "(allMorphs=%s weightOff=0x%X) mouth values: %s",
+      src, poseHits, mouths, exprs,
+      s_allMorphsClass[0] ? s_allMorphsClass : "?", s_allMorphsWeightOff,
+      line);
+  if (mouths + exprs > 0) {
+    s_driving = true;
+    snprintf(s_smcReadStatus, sizeof(s_smcReadStatus), "%s: %d mouth, %d expr",
+             src, mouths, exprs);
+  } else {
+    snprintf(s_smcReadStatus, sizeof(s_smcReadStatus),
+             "%s", "no usable source (see log)");
+  }
+}
+
 static void SMCRestoreWeights() {
   for (int i = 0; i < SMC_NUM_MOUTH; i++)
     s_mouthWeights[i] = 0.0f;
   for (int i = 0; i < s_extraMorphCount; i++)
     s_extraMorphs[i].weight = 0.0f;
+  // 基准也一起复位：归零 = 回到中性默认脸（不是回到当前位置）
+  SMCClearHold();
 }

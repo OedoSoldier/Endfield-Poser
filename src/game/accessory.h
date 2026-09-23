@@ -7,7 +7,7 @@
 //   1. 递归遍历根 Transform 全部子骨，识别非 Humanoid 从骨并按父子连续链分组；
 //   2. 对每条从骨的 GameObject 枚举组件，识别物理/布料组件（类名探针，见
 //      kPhysicsClassSubstrings），提供逐链/逐骨禁用物理（Behaviour.set_enabled）；
-//   3. 逐骨锁定：锁定的骨在快照恢复/FK/镜像等操作中被跳过，并钉在当前姿势。
+//   3. 逐骨锁定：锁定的骨在快照恢复等操作中被跳过，并钉在当前姿势。
 //
 // [in-game] 探针说明：实际物理组件类名（DynamicBone/CommonDynamicBone/Cloth/
 // MagicaCloth/SpringBone…）需在游戏内核对；命中即按 Behaviour 禁用，未命中则
@@ -29,7 +29,7 @@ struct AccessoryBone {
   char name[128];
   int parentIdx;  // 原始遍历列表中的父骨下标（-1 = 根）
   int chainId;    // 所属从骨链 id
-  bool locked;    // 锁定：钉在当前姿势，恢复/FK/镜像跳过
+  bool locked;    // 锁定：钉在当前姿势，恢复等操作跳过
   Vec3 localPos;
   Quat localRot;
   Vec3 frozenPos; // 冻结瞬间姿态（"复位到冻结时刻"用，不随手动编辑改变）
@@ -367,7 +367,7 @@ static void MaintainAccessoryPhysicsFreeze() {
   }
 }
 
-// ---- 锁定（钉在当前姿势；恢复/FK/镜像跳过）----
+// ---- 锁定（钉在当前姿势；恢复等操作跳过）----
 static void SetAccessoryBoneLocked(int boneIdx, bool locked) {
   if (boneIdx < 0 || boneIdx >= (int)s_accessoryBones.size())
     return;

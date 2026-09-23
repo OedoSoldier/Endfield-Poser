@@ -539,7 +539,9 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(0);
     OpenLog("plugin\\poser_log.txt");
-    Log("[POSER] === Endfield Poser v%s attached ===", POSER_VERSION);
+    // 带上编译时间：一版一测时用来确认跑的是哪次构建
+    Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
+        POSER_VERSION, __DATE__, __TIME__);
     CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
   }
   return TRUE;
