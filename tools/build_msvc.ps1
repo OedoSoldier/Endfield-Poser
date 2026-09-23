@@ -92,6 +92,9 @@ $rcCmdLine = 'call "' + $vcvars + '" >nul 2>&1 && rc /nologo /I src /fo build\ob
 Remove-Item -LiteralPath 'build\obj\poser.res' -Force -ErrorAction SilentlyContinue
 cmd /d /c $rcCmdLine
 if ($LASTEXITCODE -ne 0) { throw "rc failed: src\poser.rc" }
+if (-not (Test-Path 'build\obj\poser.res')) {
+  throw "rc reported success but build\obj\poser.res is missing"
+}
 
 Write-Host '=== Building poser.dll ==='
 $poserArgs = "$common /DAPPLEPIE_PLUGIN_IMPL $inc /LD " +

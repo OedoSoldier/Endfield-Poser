@@ -1,4 +1,4 @@
-# Endfield Poser 使用教程（v0.3.0）
+# Endfield Poser 使用教程（v0.3.1）
 
 面向第一次上手的玩家：从安装到摆出一张能出片的姿势，全部流程走一遍。
 遇到问题直接看最后一节「排查」。
@@ -21,7 +21,8 @@
 
 ## 1. 安装
 
-从 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 下载 `EndfieldPoser-v0.3.0.zip`，
+从 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 下载 `EndfieldPoser-v0.3.1.zip`
+（包里的 `安全安装.bat` 可走安装/卸载向导），
 把里面的文件按下面放到游戏目录：
 
 | 包内文件 | 放到 |
@@ -46,7 +47,7 @@
 - `plugin\poser_log.txt` —— 日志，正常启动应该能看到这几行（顺序即执行顺序）：
 
   ```
-  [POSER] === Endfield Poser v0.3.0 attached ===
+  [POSER] === Endfield Poser v0.3.1 attached ===
   [CFG] gui_toggle_key=... 
   [POSER] Resolving IL2CPP...
   [POSER] IL2CPP resolved. Initializing game hooks.

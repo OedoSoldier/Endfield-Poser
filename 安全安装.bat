@@ -154,12 +154,18 @@ if exist "%~dp0vulkan-1.dll" (
     echo  - 已复制 vulkan-1.dll
 )
 
-xcopy "%~dp0plugin" "%TARGET_DIR%\plugin\" /E /I /Y >nul
+if not exist "%TARGET_DIR%\plugin" mkdir "%TARGET_DIR%\plugin" >nul 2>&1
+copy /Y "%~dp0plugin\poser.dll" "%TARGET_DIR%\plugin\" >nul
 if errorlevel 1 (
-    echo [错误] 复制 plugin 文件夹失败！
+    echo [错误] 复制 poser.dll 失败！
     goto error_exit
 )
-echo  - 已复制 plugin 文件夹及插件配置
+if not exist "%TARGET_DIR%\plugin\poser_config.txt" (
+    copy /Y "%~dp0plugin\poser_config.txt" "%TARGET_DIR%\plugin\" >nul
+    echo  - 已复制 poser.dll 与默认 poser_config.txt
+) else (
+    echo  - 已复制 poser.dll；检测到已有 poser_config.txt，保留你当前的配置（不覆盖）
+)
 
 echo.
 echo ======================================================================
@@ -256,17 +262,15 @@ if exist "%TARGET_DIR%\vulkan-1.dll.backup" (
     )
 )
 
-REM 3. 清理 plugin 文件夹
-if exist "%TARGET_DIR%\plugin" (
-    rd /s /q "%TARGET_DIR%\plugin"
-    if errorlevel 1 (
-        echo [错误] 删除 plugin 文件夹失败，请检查是否有文件被占用。
-        goto error_exit
-    )
-    echo [3/3] 成功：已删除插件 plugin 文件夹。
-) else (
-    echo [3/3] 提示：未发现 plugin 文件夹。
+REM 3. 只移除插件文件，保留 plugin\poses 姿态预设与日志（避免误删用户数据）
+if exist "%TARGET_DIR%\plugin\poser.dll" del /f /q "%TARGET_DIR%\plugin\poser.dll" >nul
+if exist "%TARGET_DIR%\plugin\poser_config.txt" del /f /q "%TARGET_DIR%\plugin\poser_config.txt" >nul
+if exist "%TARGET_DIR%\plugin\poser.dll" (
+    echo [错误] 删除 poser.dll 失败，请先完全退出游戏再试。
+    goto error_exit
 )
+rd "%TARGET_DIR%\plugin" >nul 2>&1
+echo [3/3] 已移除插件文件（plugin\poses 姿态预设与日志已保留）。
 
 echo.
 echo ======================================================================

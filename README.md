@@ -5,12 +5,12 @@
 《明日方舟：终末地》的游戏内摆姿插件：把角色冻结在当前姿态，用 3D 旋转盘和参数面板直接摆姿势，
 保存 / 载入姿态预设，方便游戏内取景与后续参考。
 
-- 下载：[Releases · v0.3.0](https://github.com/honxi1/Endfield-Poser/releases/tag/v0.3.0)
+- 下载：[Releases · v0.3.1](https://github.com/honxi1/Endfield-Poser/releases/tag/v0.3.1)
 - 依赖全部自包含在 `deps/`，不依赖 EIEM 的构建产物（注入链路的思路参考 EIEM，AGPL-3.0）
 
 ## 下载与安装
 
-从 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 下载 `EndfieldPoser-v0.3.0.zip`，解压后按目录对应放置：
+从 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 下载 `EndfieldPoser-v0.3.1.zip`，解压后按目录对应放置（也可以直接双击包里的 `安全安装.bat` 走向导）：
 
 | 包内文件 | 放到 |
 |---|---|
