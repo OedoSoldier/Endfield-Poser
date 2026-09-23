@@ -25,6 +25,11 @@
 （包里的 `安全安装.bat` 可走安装/卸载向导），
 把里面的文件按下面放到游戏目录：
 
+> 🧙 **省事做法**：直接双击包里的 `安全安装.bat`，把游戏根目录拖进窗口按提示走。
+> 它会校验游戏目录 → 把原版 `d3dcompiler_47.dll` / `vulkan-1.dll` 备份成 `.backup` → 安装；
+> 卸载时还原备份，并且**只删插件文件，不会动你的 `plugin\poses` 姿态预设、日志和已有配置**。
+> 想手动装就是下面这张表。
+
 | 包内文件 | 放到 |
 |---|---|
 | `d3dcompiler_47.dll` | 游戏根目录（**先备份游戏自带的那份**） |
@@ -39,6 +44,10 @@
 > ⚠️ **必须用 Hypergryph 启动器启动游戏**。直接双击 `Endfield.exe` 会在 IL2CPP 运行时初始化
 > 完成前注入，触发 Unity GC 致命错误（弹 `Threads explicit registering is not previously enabled`），
 > 游戏卡死。这是唯一一条硬性要求。
+
+> 🎮 **装了 XXMI / 3DMigoto 的话**：它们会注入自己的 `d3d11.dll` 并 hook `IDXGIFactory`，
+> 早期会让插件的 DComp 覆盖层在开屏页崩溃（黑屏卡住）。v0.3.1 起插件会**自动检测并改用分层窗口**
+> 路径；也可以手动固定：配置里 `overlay_mode=0` 自动（默认）/ `1` 强制 DComp / `2` 强制分层窗口。
 
 ## 2. 第一次启动：确认插件活着
 
@@ -190,6 +199,8 @@
 |---|---|
 | 游戏启动就卡死弹 GC 错误 | 没用启动器启动。关掉，走 Hypergryph Launcher 重开 |
 | 日志停在 `Resolving IL2CPP...` | 同上 |
+| 装了 XXMI/3DMigoto 后开屏黑屏、日志停在 GUI 初始化前 | 覆盖层与它们的 `d3d11.dll` 冲突：先试 `overlay_mode=2`（强制分层窗口）；日志里会打 `foreign d3d11.dll detected` |
+| 面板看不见但游戏正常 | 别用独占全屏（会绕过 DWM 合成）；或把 `overlay_mode` 在 1/2 之间换一下 |
 | 面板呼不出来 | 确认按的是配置里的键（默认 F12）；确认日志有 `panel ready` |
 | 点不动面板/骨骼 | 没按 Alt；或指针没落在关节 14px 内 |
 | 鼠标"消失" | 游戏把系统光标隐藏了，插件会补一个软光标；若仍看不见，按住 Alt 试 |
@@ -217,5 +228,6 @@
 gui_toggle_key=VK_F12     # 支持 VK_F12 / F12 / 0x7B
 freeze_key=VK_F11         # 冻结 / 解冻（可改，写法同上）
 click_through=1           # 1=覆盖层常驻并真穿透（推荐）；0=按住 Alt 才显示面板
+overlay_mode=0            # 0=自动（检测到 XXMI/3DMigoto 时改用分层窗口）；1=强制 DComp；2=强制分层窗口
 default_pose_dir=plugin\poses
 ```
