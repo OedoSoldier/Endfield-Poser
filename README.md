@@ -138,6 +138,17 @@ endfield-poser/
 - **第三方依赖**（全部自包含在 `deps/`，不联网）：imgui（MIT）、ImGuizmo 1.83（MIT）、
   MinHook（BSD-2-Clause）、nlohmann/json（MIT）；其中 imgui 与 MinHook 的源码/静态库取自 EIEM 仓库。
 
+## 交流 / 反馈
+
+非官方粉丝项目与交流群，与 Hypergryph 无关。
+
+- QQ 群：**终末地影棚爱好者**（群号 1126684901）
+- 扫码入群：
+
+![QQ 群](docs/qq-group.jpg)
+
+遇到问题欢迎带上 `plugin\poser_log.txt` 与复现步骤，在 issue 或群里反馈。
+
 ## 许可
 
 本仓库整体构成 **AGPL-3.0** 衍生作品（`src/core/` 的注入层参考 AGPL-3.0 的 EIEM），
