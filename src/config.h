@@ -14,6 +14,9 @@ static char g_defaultPoseDir[MAX_PATH] = "";
 // click_through=1：覆盖层常驻显示，用 WS_EX_LAYERED|TRANSPARENT 做真穿透；
 // 按住 Alt 时才取消穿透、由面板吃鼠标。默认 0 = 按住 Alt 才显示覆盖层。
 static bool g_clickThrough = true; // 默认常驻 + 真穿透（实测手感更好）
+// overlay_mode：0=auto（检测到 XXMI/3DMigoto 的 d3d11.dll 时用分层窗口，否则 DComp）
+//               1=强制 DComp   2=强制分层窗口（UpdateLayeredWindow，兼容性最好）
+static int g_overlayMode = 0;
 
 // Default pose dir: prefer deriving from poser.dll location (...\plugin\poses)
 // so presets work regardless of the game's working directory.
@@ -120,6 +123,7 @@ static bool LoadPoserConfig() {
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
     else if (strcmp(key, "freeze_key") == 0)      g_freezeVK = ParseVK(val, VK_F11);
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
+    else if (strcmp(key, "overlay_mode") == 0)    g_overlayMode = (int)strtoul(val, nullptr, 0);
     else if (strcmp(key, "default_pose_dir") == 0) {
       if (val[0] == '\0') {
         ResolveDefaultPoseDir();
@@ -146,7 +150,7 @@ static bool LoadPoserConfig() {
     }
   }
   fclose(f);
-  Log("[CFG] gui_toggle_key=%d (0x%X) freeze_key=%d (0x%X)",
-      g_guiToggleVK, g_guiToggleVK, g_freezeVK, g_freezeVK);
+  Log("[CFG] gui_toggle_key=%d (0x%X) freeze_key=%d (0x%X) overlay_mode=%d",
+      g_guiToggleVK, g_guiToggleVK, g_freezeVK, g_freezeVK, g_overlayMode);
   return true;
 }

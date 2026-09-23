@@ -8,6 +8,7 @@
 #include <dwmapi.h>
 #include <dcomp.h>
 #include <imm.h>
+#include <tlhelp32.h>
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -68,6 +69,7 @@ static int g_inputRouteLogged = -1;    // 路由日志去重
 // click_through 模式：给窗口加/去 WS_EX_LAYERED|WS_EX_TRANSPARENT 实现真正的鼠标穿透
 // （分层窗口会被系统在命中测试里整体跳过，跨进程也有效——HTTRANSPARENT 只能同线程）。
 // 这个标志和 DComp 合成可能冲突（窗口可能不再显示），所以做成可选开关。
+static bool g_layeredOverlay = false; // 当前是否使用分层窗口路径（见下方"分层窗口覆盖层"一节）
 static void SetOverlayClickThrough(bool on) {
   static int s_ctState = -1;
   if (!g_guiHwnd || (int)on == s_ctState)
@@ -76,6 +78,8 @@ static void SetOverlayClickThrough(bool on) {
   LONG ex = GetWindowLongW(g_guiHwnd, GWL_EXSTYLE);
   LONG nw = on ? (ex | WS_EX_LAYERED | WS_EX_TRANSPARENT)
                : (ex & ~(WS_EX_LAYERED | WS_EX_TRANSPARENT));
+  if (g_layeredOverlay)
+    nw |= WS_EX_LAYERED; // 分层路径下 WS_EX_LAYERED 不能摘，只切 TRANSPARENT
   SetWindowLongW(g_guiHwnd, GWL_EXSTYLE, nw);
   SetWindowPos(g_guiHwnd, HWND_TOPMOST, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -92,6 +96,184 @@ static IDCompositionDevice *g_pDCompDevice = nullptr;
 static IDCompositionTarget *g_pDCompTarget = nullptr;
 static IDCompositionVisual *g_pDCompVisual = nullptr;
 
+// ---- 分层窗口（UpdateLayeredWindow）覆盖层 ----
+// XXMI / 3DMigoto 会把自己的 d3d11.dll 注入游戏进程，并给 IDXGIFactory 的
+// CreateSwapChain* 打全局 vtable 钩子。DCompositionCreateDevice 内部会走到这些钩子，
+// 此时钩子拿到的不是它包装过的设备，最终在 dxgi 里访问无效地址，整个游戏进程崩掉
+// （表现为黑屏卡在开屏页）。
+// 故此采用 ImGui 画到离屏纹理，拷贝到 staging再由CPU 读回，最后 UpdateLayeredWindow 逐像素 alpha 渲染。
+static ID3D11Texture2D *g_pLayerTex = nullptr;      // 离屏渲染目标
+static ID3D11Texture2D *g_pLayerStaging = nullptr;  // CPU 可读副本
+static HDC g_layerDC = nullptr;                     // 与 DIB 关联的内存 DC
+static HBITMAP g_layerBmp = nullptr;                // 32bpp 顶朝下 DIB
+static HGDIOBJ g_layerOldBmp = nullptr;
+static void *g_layerBits = nullptr;
+static int g_layerW = 0, g_layerH = 0;
+
+static bool DetectForeignD3D11() {
+  wchar_t sysDir[MAX_PATH] = {};
+  GetSystemDirectoryW(sysDir, MAX_PATH);
+  size_t sysLen = wcslen(sysDir);
+  bool found = false;
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
+                                         GetCurrentProcessId());
+  if (snap == INVALID_HANDLE_VALUE)
+    return false;
+  MODULEENTRY32W me = {};
+  me.dwSize = sizeof(me);
+  if (Module32FirstW(snap, &me)) {
+    do {
+      if (_wcsicmp(me.szModule, L"d3d11.dll") != 0)
+        continue;
+      if (_wcsnicmp(me.szExePath, sysDir, sysLen) != 0) {
+        char path[MAX_PATH] = {};
+        WideCharToMultiByte(CP_UTF8, 0, me.szExePath, -1, path, MAX_PATH, nullptr, nullptr);
+        Log("[GUI] foreign d3d11.dll detected: %s", path);
+        found = true;
+      }
+    } while (Module32NextW(snap, &me));
+  }
+  CloseHandle(snap);
+  return found;
+}
+
+// 从 System32 取原版 D3D11CreateDevice，绕开代理 d3d11.dll 的包装设备。
+static PFN_D3D11_CREATE_DEVICE GetSystemD3D11CreateDevice() {
+  static PFN_D3D11_CREATE_DEVICE s_fn = nullptr;
+  if (s_fn)
+    return s_fn;
+  wchar_t path[MAX_PATH] = {};
+  GetSystemDirectoryW(path, MAX_PATH);
+  wcscat_s(path, MAX_PATH, L"\\d3d11.dll");
+  HMODULE m = LoadLibraryExW(path, nullptr, 0);
+  if (m)
+    s_fn = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(m, "D3D11CreateDevice");
+  if (!s_fn)
+    Log("[GUI] WARN: system d3d11.dll unavailable, falling back to import");
+  return s_fn ? s_fn : &D3D11CreateDevice;
+}
+
+static void ReleaseLayerResources() {
+  if (g_pMainRenderTargetView) { g_pMainRenderTargetView->Release(); g_pMainRenderTargetView = nullptr; }
+  if (g_pLayerStaging) { g_pLayerStaging->Release(); g_pLayerStaging = nullptr; }
+  if (g_pLayerTex) { g_pLayerTex->Release(); g_pLayerTex = nullptr; }
+  if (g_layerDC) {
+    if (g_layerOldBmp) SelectObject(g_layerDC, g_layerOldBmp);
+    DeleteDC(g_layerDC);
+    g_layerDC = nullptr;
+    g_layerOldBmp = nullptr;
+  }
+  if (g_layerBmp) { DeleteObject(g_layerBmp); g_layerBmp = nullptr; }
+  g_layerBits = nullptr;
+  g_layerW = g_layerH = 0;
+}
+
+static bool CreateLayerResources(int w, int h) {
+  ReleaseLayerResources();
+  if (w <= 0) w = 1;
+  if (h <= 0) h = 1;
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = w;
+  td.Height = h;
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_DEFAULT;
+  td.BindFlags = D3D11_BIND_RENDER_TARGET;
+  if (FAILED(g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_pLayerTex)))
+    return false;
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  if (FAILED(g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_pLayerStaging)))
+    return false;
+  if (FAILED(g_pd3dDevice->CreateRenderTargetView(g_pLayerTex, nullptr,
+                                                   &g_pMainRenderTargetView)))
+    return false;
+
+  BITMAPINFO bi = {};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  HDC screen = GetDC(nullptr);
+  g_layerDC = CreateCompatibleDC(screen);
+  g_layerBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &g_layerBits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!g_layerDC || !g_layerBmp || !g_layerBits)
+    return false;
+  g_layerOldBmp = SelectObject(g_layerDC, g_layerBmp);
+  g_layerW = w;
+  g_layerH = h;
+  return true;
+}
+
+static bool CreateDeviceLayered(HWND hWnd) {
+  D3D_FEATURE_LEVEL featureLevel;
+  const D3D_FEATURE_LEVEL featureLevelArray[] = {D3D_FEATURE_LEVEL_11_0};
+  PFN_D3D11_CREATE_DEVICE create = GetSystemD3D11CreateDevice();
+  HRESULT hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                      featureLevelArray, 1, D3D11_SDK_VERSION,
+                      &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+  if (hr == DXGI_ERROR_UNSUPPORTED) {
+    hr = create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+                featureLevelArray, 1, D3D11_SDK_VERSION,
+                &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+  }
+  if (FAILED(hr)) {
+    Log("[GUI] layered: D3D11CreateDevice failed: 0x%08X", hr);
+    return false;
+  }
+  RECT rc;
+  GetClientRect(hWnd, &rc);
+  if (!CreateLayerResources(rc.right - rc.left, rc.bottom - rc.top)) {
+    Log("[GUI] layered: offscreen resources failed");
+    return false;
+  }
+  // 分层窗口常驻 WS_EX_LAYERED 是 UpdateLayeredWindow 的前提
+  LONG ex = GetWindowLongW(hWnd, GWL_EXSTYLE);
+  SetWindowLongW(hWnd, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+  g_layeredOverlay = true;
+  Log("[GUI] Layered (UpdateLayeredWindow) overlay created %dx%d", g_layerW, g_layerH);
+  return true;
+}
+
+static void PresentLayered() {
+  if (!g_layerBits || !g_pLayerStaging)
+    return;
+  g_pd3dDeviceContext->CopyResource(g_pLayerStaging, g_pLayerTex);
+  D3D11_MAPPED_SUBRESOURCE map = {};
+  if (FAILED(g_pd3dDeviceContext->Map(g_pLayerStaging, 0, D3D11_MAP_READ, 0, &map)))
+    return;
+  const size_t rowBytes = (size_t)g_layerW * 4;
+  for (int y = 0; y < g_layerH; y++)
+    memcpy((char *)g_layerBits + rowBytes * y,
+           (const char *)map.pData + (size_t)map.RowPitch * y, rowBytes);
+  g_pd3dDeviceContext->Unmap(g_pLayerStaging, 0);
+
+  RECT wr;
+  GetWindowRect(g_guiHwnd, &wr);
+  POINT dst = {wr.left, wr.top};
+  SIZE sz = {g_layerW, g_layerH};
+  POINT src = {0, 0};
+  BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  UpdateLayeredWindow(g_guiHwnd, nullptr, &dst, &sz, g_layerDC, &src, 0, &bf, ULW_ALPHA);
+}
+
+// 覆盖层尺寸跟随游戏窗口后，分层纹理需要同步重建。
+static void LayeredSyncSize() {
+  RECT rc;
+  GetClientRect(g_guiHwnd, &rc);
+  int w = rc.right - rc.left, h = rc.bottom - rc.top;
+  if (w > 0 && h > 0 && (w != g_layerW || h != g_layerH)) {
+    if (!CreateLayerResources(w, h))
+      Log("[GUI] layered: resize to %dx%d failed", w, h);
+  }
+}
+
 struct EnumWindowCtx { DWORD pid; HWND result; };
 static BOOL CALLBACK EnumWindowProc(HWND hwnd, LPARAM lParam) {
   auto *ctx = reinterpret_cast<EnumWindowCtx *>(lParam);
@@ -99,7 +281,7 @@ static BOOL CALLBACK EnumWindowProc(HWND hwnd, LPARAM lParam) {
   GetWindowThreadProcessId(hwnd, &pid);
   if (pid != ctx->pid)
     return TRUE;
-  // 精确匹配 Unity 主窗口（游戏进程含 Qt/CEF 等子窗口，不能取第一个）
+  // 匹配 Unity 主窗口。由于游戏进程含 Qt/CEF 等子窗口，不能取第一个。
   char cls[64] = {};
   GetClassNameA(hwnd, cls, sizeof(cls));
   if (strcmp(cls, "UnityWndClass") == 0 && IsWindowVisible(hwnd)) {
@@ -149,7 +331,7 @@ static void CleanupRenderTarget() {
   }
 }
 
-static bool CreateDeviceD3D(HWND hWnd) {
+static bool CreateDeviceD3DImpl(HWND hWnd) {
   UINT createDeviceFlags = 0;
   D3D_FEATURE_LEVEL featureLevel;
   const D3D_FEATURE_LEVEL featureLevelArray[] = {D3D_FEATURE_LEVEL_11_0};
@@ -211,8 +393,20 @@ static bool CreateDeviceD3D(HWND hWnd) {
   return true;
 }
 
+// 如果第三方 d3d11 钩子可能让 DComp 初始化直接访问违例，使用 SEH catch.
+static bool CreateDeviceD3D(HWND hWnd) {
+  __try {
+    return CreateDeviceD3DImpl(hWnd);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Log("[GUI] CreateDeviceD3D raised exception 0x%08X", GetExceptionCode());
+    return false;
+  }
+}
+
 static void CleanupDeviceD3D() {
   CleanupRenderTarget();
+  ReleaseLayerResources();
+  g_layeredOverlay = false;
   if (g_pDCompVisual) { g_pDCompVisual->Release(); g_pDCompVisual = nullptr; }
   if (g_pDCompTarget) { g_pDCompTarget->Release(); g_pDCompTarget = nullptr; }
   if (g_pDCompDevice) { g_pDCompDevice->Release(); g_pDCompDevice = nullptr; }
@@ -316,17 +510,40 @@ static DWORD WINAPI GuiThread(LPVOID) {
   // 覆盖层窗口不关联 IME：避免面板获得输入法上下文、一按键盘就弹输入法
   ImmAssociateContext(g_guiHwnd, (HIMC)nullptr);
 
-  // DComp 合成在游戏刚启动时可能暂不可用（0x887A0001），重试几次
+  // 覆盖层渲染路径选择（overlay_mode：0=auto 1=dcomp 2=layered）。
+  // auto：进程里有第三方 d3d11.dll（XXMI/3DMigoto）就走分层路径，否则走 DComp；
+  // DComp 重试失败后也退回分层路径。
   bool d3dOk = false;
-  for (int i = 0; i < 8 && !d3dOk; i++) {
-    d3dOk = CreateDeviceD3D(g_guiHwnd);
-    if (!d3dOk) {
-      Log("[GUI] CreateDeviceD3D attempt %d failed, retrying...", i + 1);
-      Sleep(1000);
+  bool useLayered = (g_overlayMode == 2) ||
+                    (g_overlayMode == 0 && DetectForeignD3D11());
+  if (useLayered)
+    Log("[GUI] overlay path: layered (mode=%d)", g_overlayMode);
+  if (!useLayered) {
+    // DComp 合成在游戏刚启动时可能暂不可用（0x887A0001），重试几次
+    for (int i = 0; i < 8 && !d3dOk; i++) {
+      d3dOk = CreateDeviceD3D(g_guiHwnd);
+      if (!d3dOk) {
+        Log("[GUI] CreateDeviceD3D attempt %d failed, retrying...", i + 1);
+        CleanupDeviceD3D();
+        Sleep(1000);
+      }
+    }
+    if (!d3dOk && g_overlayMode != 1) {
+      Log("[GUI] DComp path unavailable, falling back to layered overlay");
+      useLayered = true;
+    }
+  }
+  if (useLayered && !d3dOk) {
+    for (int i = 0; i < 3 && !d3dOk; i++) {
+      d3dOk = CreateDeviceLayered(g_guiHwnd);
+      if (!d3dOk) {
+        CleanupDeviceD3D();
+        Sleep(500);
+      }
     }
   }
   if (!d3dOk) {
-    Log("[GUI] ERROR: CreateDeviceD3D failed after retries!");
+    Log("[GUI] ERROR: overlay device creation failed after retries!");
     CleanupDeviceD3D();
     DestroyWindow(g_guiHwnd);
     return 0;
@@ -477,6 +694,8 @@ static DWORD WINAPI GuiThread(LPVOID) {
       if (::GetCursorPos(&mp) && ::ScreenToClient(g_guiHwnd, &mp))
         ImGui::GetIO().AddMousePosEvent((float)mp.x, (float)mp.y);
     }
+    if (g_layeredOverlay)
+      LayeredSyncSize();
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -515,7 +734,12 @@ static DWORD WINAPI GuiThread(LPVOID) {
     g_pd3dDeviceContext->ClearRenderTargetView(g_pMainRenderTargetView,
                                                 clear_color);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    g_pSwapChain->Present(0, 0);
+    if (g_layeredOverlay) {
+      PresentLayered();
+      Sleep(8); // 分层路径没有垂直同步，限一下帧率，省 CPU
+    } else {
+      g_pSwapChain->Present(0, 0);
+    }
   }
 
   Log("[GUI] Shutting down...");
