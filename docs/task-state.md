@@ -91,4 +91,38 @@
 - 桥接插件源码在 `tools/blender/endfield_poser_bridge/`，安装位置 `%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\endfield_poser_bridge\`。
 - 无头测试跑法：
   `& 'C:\Program Files\Blender Foundation\Blender 5.2\blender.exe' --background --factory-startup -P <script>`（需提权）。
-- git push 需走代理：`git -c http.proxy=http://127.0.0.1:7897 push`（Clash Verge 混合端口 7897）。
+- git push 走本机 HTTP 代理：`git -c http.proxy=http://127.0.0.1:10090 -c https.proxy=http://127.0.0.1:10090 push`
+  （端口取自系统代理设置 `HKCU:\...\Internet Settings\ProxyServer`；换机器时先 `Test-NetConnection 127.0.0.1 -Port <port>` 确认）。
+
+## 四、未来计划：共享姿态库（未开始）
+
+目标：玩家摆好的姿态可以上传到公共库，其他人按角色筛选、预览、一键下载。
+
+**前置技术点**
+
+1. **跨角色适配**：姿态按骨名存，不同角色骨架不同 → 每份姿态要标注**适用角色**（模型名，如
+   `chr_0005_chen_postmodel`），应用时报告骨匹配率（如 55/55 骨匹配）。
+2. **表情不参与**：SMC 权重不进姿态文件（跨角色会错乱），共享姿态 = 身体 + 从骨；库里要写明这一点。
+3. **只传数据**：JSON 纯数据；客户端要校验字段范围（位置/旋转限幅）、文件大小上限、拒绝路径穿越。
+
+**路线（每步可独立上线）**
+
+- **阶段 0（建议先做，成本最低）**
+  - 姿态文件加元数据：`format`（格式版本）、`char`（适用角色）、`author`、`tags`、`created`；
+  - WebUI 加"**从 URL 导入**"：粘贴直链（GitHub raw 等）→ 下载到 `plugin\poses\`，
+    不需要任何服务器就能和群里的人互换姿态。
+- **阶段 1（零运维）**：把 GitHub 仓库当库——`library/` 目录收姿态文件，投稿走 PR / issue 附件，
+  CI 自动生成 `index.json`（列表 + 角色 + 作者 + 标签 + 下载地址）；插件/WebUI 读索引浏览与一键下载。
+  优点：免费、有历史、合并即审核；缺点：投稿门槛对有 GitHub 账号的人友好，对纯玩家略高。
+- **阶段 2（自建服务）**：薄 REST 服务（列表 / 详情 / 上传 + 缩略图）+ 对象存储 + 后台审核队列；
+  到这里才需要域名、服务器与内容审核责任。
+- **阶段 3（社区功能）**：账号、点赞收藏、标签/角色筛选、热度排序。
+
+**缩略图**：优先用 3D 骨骼叠加层离屏渲染一张"火柴人姿势预览"（本地生成、风格统一、无隐私问题）；
+备选是上传时附游戏内截图（插件内截图目前未实现，见"已知问题"）。
+
+**风险与合规**：只托管姿态 JSON 与预览图，**不要托管模型/贴图等游戏资源**；加文件大小限制、
+内容去重（hash）、举报与下架入口。
+
+**下一步（未开工）**：先做阶段 0 的元数据 + URL 导入，观察群里互传的使用情况（角色分布、
+平均骨匹配率），再决定走 GitHub 库还是自建服务。
