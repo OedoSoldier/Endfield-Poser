@@ -2,6 +2,25 @@
 
 > 目的：阶段性存档，方便后续（或换会话）直接接续开发。
 
+## 〇、2026-09-24 v0.3.3：XXMI 兼容与输入修复（**已发布**）
+
+- **热键"有时有用有时没用"**：根因是 `GetAsyncKeyState(vk) & 1` 的按下锁存位会被
+  游戏/XXMI/3DMigoto 抢走。改成独立线程 5ms 轮询 + 自己判断上升沿（`HotkeyPollThread`）。
+- **F12 让游戏卡住**：装了 XXMI 走的分层窗口路径原来每帧整屏 GPU→CPU 回读（4K ≈33MB/帧）。
+  改成按 ImGui 顶点包围盒算脏矩形（并与上一帧矩形求并集），只回读/上传那一块；
+  另加每秒一行的 `[GUI] layered present ... copy/map/ulw` 耗时日志。
+- **崩溃隐患**：分层模式没有 swap chain，`WM_SIZE` 里却无条件 `ResizeBuffers` → 改分辨率/全屏切换崩。
+  现在分层模式走 `LayeredSyncSize()`。
+- 迟注入的 XXMI 会在 DComp 重试期间复检；检测到第三方 d3d11.dll 且热键是裸 F10~F12 时面板提示。
+- **面板内改键**：主面板 `快捷键（可改）` → 改键 → 按新键 → 写回 `poser_config.txt`；
+  支持 Ctrl/Shift 前缀与单键；插件自己输入框打字时热键暂停；热键只在前台是游戏时响应。
+- **默认键改成 `L` / `P`**：XXMI/3DMigoto 直接轮询 F11/F12，连 `Ctrl+F12` 也会触发它们的动作。
+- 踩坑记录：`build\obj\poser.res` 被删除后，**第一次**跑 build 脚本的 rc 步骤会失败
+  （`rc reported success but ... is missing`），再跑一次或手动 rc 即可；发版前务必确认
+  `FileVersion` 已是新版本号。
+- 附注：Applepie 管理器的热键接口只有 VK 码（`AP_GetHotkeys` 返回 `currentVK`），
+  看不到 `CTRL+` 修饰键——在管理器里改键会写回裸 VK，覆盖掉面板里设的组合。
+
 ## 一、2026-09-23 本轮主题：表情（SMC）修复 —— **v0.3.2 已发布**
 
 > 代码在 `src/game/smc_morph.h`（主体）、`src/editor/panel_morph.h`、`src/poser.cpp`。
