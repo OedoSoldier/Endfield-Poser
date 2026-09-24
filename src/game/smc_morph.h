@@ -236,10 +236,14 @@ static bool s_extraMorphsResolved = false;
 
 // ---- hook 类型 ----
 typedef void(__fastcall *SMCSMCUpdate_t)(void *, float, void *);
-typedef void(__fastcall *SMCMorphJob_t)(void *, void *, void *, void *);
+// Native x64 ABI for a 16-byte job value returned by MorphToBoneJob(uint, job).
+// The 16-byte return value adds a hidden result pointer before the instance;
+// the callee must return that same pointer in RAX. MethodInfo is argument five.
+// Keep the native result/dependency storage opaque and forward it unchanged.
+typedef void *(__fastcall *SMCMorphJob_t)(void *result, void *smc, uint32_t count,
+                                         void *dependency, void *methodInfo);
 static SMCSMCUpdate_t s_origSMCUpdate = nullptr;
 static SMCMorphJob_t s_origMorphJob = nullptr;
-static SMCMorphJob_t s_origSpecialMorphJob = nullptr;
 
 // ---- 前向声明 ----
 static void ResolveSMCOffsets(void *cls);
@@ -1255,8 +1259,7 @@ static void ResolveSMCMouthShapes(void *smcBase) {
 }
 
 // DoEvaluateMorphToBoneJob：确认 SMC 实例、抓大列表、驱动时清零游戏自身增量
-static void __fastcall SMCMorphJobBody(void *__this, void *param1,
-                                         void *param2, void *methodInfo) {
+static void SMCMorphJobBefore(void *param1) {
   if (!s_confirmedSMC && param1) {
     // 归属未确认前只登记候选，EyeLookAtIK 等副作用等主线程校验通过再做
     if (s_smcOwnershipGaveUp || !SMCIsRejected(param1)) {
@@ -1319,15 +1322,6 @@ static void __fastcall SMCMorphJobBody(void *__this, void *param1,
     } __except (1) {
     }
   }
-  if (s_origMorphJob)
-    s_origMorphJob(__this, param1, param2, methodInfo);
-}
-
-static void __fastcall HookedSMCSpecialMorphJob(void *__this, void *param1,
-                                                void *param2,
-                                                void *methodInfo) {
-  if (s_origSpecialMorphJob)
-    s_origSpecialMorphJob(__this, param1, param2, methodInfo);
 }
 
 // 写回面部骨骼（局部位姿）。
@@ -1349,13 +1343,16 @@ static void SMCMotionPublish(const SMCMotionFrame& f) {
   AcquireSRWLockExclusive(&s_motionFaceLock); s_motionFaceMailbox=f; ReleaseSRWLockExclusive(&s_motionFaceLock);
 }
 
-static void __fastcall HookedSMCMorphJob(void *self, void *a, void *b, void *method) {
+static void *__fastcall HookedSMCMorphJob(void *result, void *smc, uint32_t count,
+                                        void *dependency, void *method) {
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (!lock.owns_lock() || CharacterSwitchInProgress()) {
-    if (s_origMorphJob) s_origMorphJob(self, a, b, method);
-    return;
-  }
-  SMCMorphJobBody(self, a, b, method);
+  if (lock.owns_lock() && !CharacterSwitchInProgress())
+    SMCMorphJobBefore(smc);
+  // Returning explicitly preserves RAX across the lock destructor as well as
+  // busy/switching paths; a tail-call accidentally preserving RAX is insufficient.
+  return s_origMorphJob
+             ? s_origMorphJob(result, smc, count, dependency, method)
+             : result;
 }
 static void SMCMotionConsume() {
   AcquireSRWLockShared(&s_motionFaceLock); s_motionFaceCurrent=s_motionFaceMailbox; ReleaseSRWLockShared(&s_motionFaceLock);
@@ -1779,6 +1776,71 @@ static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
   SMCUpdateBody(self, dt, method);
 }
 
+static bool SMCJobValueType(void *type) {
+  if (!type || !il2cpp_type_get_type || !il2cpp_class_from_type ||
+      !il2cpp_class_value_size || il2cpp_type_get_type(type) != 0x11)
+    return false; // IL2CPP_TYPE_VALUETYPE
+  void *klass = il2cpp_class_from_type(type);
+  if (!klass)
+    return false;
+  uint32_t alignment = 0;
+  // The engine can wrap Unity's job handle. We never inspect its fields: the
+  // value kind/size determines this native ABI, not its managed name/namespace.
+  return il2cpp_class_value_size(klass, &alignment) == 16;
+}
+
+static bool SMCValidateHookSignatures(void *update, void *job) {
+  if (!update || !job || sizeof(void *) != 8 ||
+      !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||
+      !il2cpp_method_get_return_type || !il2cpp_method_get_param ||
+      !il2cpp_type_get_type)
+    return false;
+  uint32_t flags = 0;
+  if ((il2cpp_method_get_flags(update, &flags) & 0x10) ||
+      (il2cpp_method_get_flags(job, &flags) & 0x10) ||
+      il2cpp_method_get_param_count(update) != 1 ||
+      il2cpp_method_get_param_count(job) != 2)
+    return false; // both must be instance methods
+  void *updateReturn = il2cpp_method_get_return_type(update);
+  void *deltaTime = il2cpp_method_get_param(update, 0);
+  void *count = il2cpp_method_get_param(job, 0);
+  return updateReturn && deltaTime && count &&
+         il2cpp_type_get_type(updateReturn) == 1 && // void
+         il2cpp_type_get_type(deltaTime) == 0xc &&  // float
+         (il2cpp_type_get_type(count) == 8 ||       // int32 / uint32 share
+          il2cpp_type_get_type(count) == 9) &&      // the same integer ABI
+         SMCJobValueType(il2cpp_method_get_return_type(job)) &&
+         SMCJobValueType(il2cpp_method_get_param(job, 1));
+}
+
+static void SMCLogHookMethod(void *method, const char *label) {
+  if (!method || !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||
+      !il2cpp_method_get_return_type || !il2cpp_method_get_param ||
+      !il2cpp_type_get_type || !il2cpp_class_from_type ||
+      !il2cpp_class_get_name || !il2cpp_class_get_namespace)
+    return;
+  uint32_t impl = 0;
+  uint32_t count = il2cpp_method_get_param_count(method);
+  Log("[SMC] ABI %s: flags=0x%x params=%u", label,
+      il2cpp_method_get_flags(method, &impl), count);
+  for (int i = -1; i < static_cast<int>(count) && i < 4; ++i) {
+    void *type = i < 0 ? il2cpp_method_get_return_type(method)
+                      : il2cpp_method_get_param(method, i);
+    if (!type)
+      continue;
+    int kind = il2cpp_type_get_type(type);
+    void *klass = il2cpp_class_from_type(type);
+    const char *name = klass ? il2cpp_class_get_name(klass) : nullptr;
+    const char *space = klass ? il2cpp_class_get_namespace(klass) : nullptr;
+    uint32_t alignment = 0;
+    int size = klass && kind == 0x11 && il2cpp_class_value_size
+                   ? il2cpp_class_value_size(klass, &alignment)
+                   : -1;
+    Log("[SMC] ABI %s slot=%d type=0x%x %s.%s valueBytes=%d", label, i,
+        kind, space ? space : "?", name ? name : "?", size);
+  }
+}
+
 // 安装 SMC hook（IL2CPP Resolve 成功后调用一次）
 static void InstallSMCFaceHooks() {
   __try {
@@ -1805,24 +1867,20 @@ static void InstallSMCFaceHooks() {
     Log("[SMC] SkeletalMorphCore class found");
 
     void *updateMethod = FindMethod(smcClass, "Update", 1);
-    if (updateMethod)
-      Hook(updateMethod, "SkeletalMorphCore.Update", (void *)HookedSMCUpdate,
-           (void **)&s_origSMCUpdate);
-    else
-      Log("[SMC] Update method not found");
-
     void *jobMethod = FindMethod(smcClass, "DoEvaluateMorphToBoneJob", 2);
-    if (jobMethod)
-      Hook(jobMethod, "DoEvaluateMorphToBoneJob", (void *)HookedSMCMorphJob,
-           (void **)&s_origMorphJob);
-    else
-      Log("[SMC] DoEvaluateMorphToBoneJob not found");
-
-    void *specialJob =
-        FindMethod(smcClass, "DoEvaluateSpecialMorphToBoneJob", 2);
-    if (specialJob)
-      Hook(specialJob, "DoEvaluateSpecialMorphToBoneJob",
-           (void *)HookedSMCSpecialMorphJob, (void **)&s_origSpecialMorphJob);
+    SMCLogHookMethod(updateMethod, "Update");
+    SMCLogHookMethod(jobMethod, "MorphJob");
+    if (!SMCValidateHookSignatures(updateMethod, jobMethod)) {
+      Log("[SMC] Callback signature mismatch; facial hooks disabled");
+      return;
+    }
+    Log("[SMC] Callback ABI verified: instance Update(float), "
+        "value16 MorphJob(count32, value16)");
+    Hook(updateMethod, "SkeletalMorphCore.Update", (void *)HookedSMCUpdate,
+         (void **)&s_origSMCUpdate);
+    Hook(jobMethod, "DoEvaluateMorphToBoneJob", (void *)HookedSMCMorphJob,
+         (void **)&s_origMorphJob);
+    // SpecialMorphJob was a no-op interceptor. Leave its native ABI untouched.
   } __except (1) {
     Log("[SMC] InstallSMCFaceHooks exception");
   }

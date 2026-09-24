@@ -127,6 +127,11 @@ if(MSVC)
   target_compile_options(test_smc_switch PRIVATE /EHa)
   target_link_libraries(test_smc_switch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  add_poser_test(test_smc_abi tests/test_smc_abi.cpp)
+  target_include_directories(test_smc_abi PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_smc_abi PRIVATE /EHa)
+  target_link_libraries(test_smc_abi PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
 endif()
 
 endif()

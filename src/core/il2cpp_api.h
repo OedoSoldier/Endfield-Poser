@@ -22,6 +22,8 @@ D(void *, il2cpp_image_get_class, void *, size_t);
 D(void *, il2cpp_class_get_methods, void *, void **);
 D(const char *, il2cpp_method_get_name, void *);
 D(uint32_t, il2cpp_method_get_param_count, void *);
+D(uint32_t, il2cpp_method_get_flags, void *, uint32_t *);
+D(int32_t, il2cpp_class_value_size, void *, uint32_t *);
 D(const char *, il2cpp_class_get_name, void *);
 D(const char *, il2cpp_class_get_namespace, void *);
 D(void *, il2cpp_object_get_class, void *);
@@ -115,6 +117,8 @@ static bool Resolve() {
   R(il2cpp_class_get_methods);
   R(il2cpp_method_get_name);
   R(il2cpp_method_get_param_count);
+  R(il2cpp_method_get_flags);
+  R(il2cpp_class_value_size);
   R(il2cpp_class_get_name);
   R(il2cpp_class_get_namespace);
   R(il2cpp_object_get_class);
