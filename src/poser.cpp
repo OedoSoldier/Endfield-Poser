@@ -130,6 +130,39 @@ void GameFrameTick() {
     // 骨骼数为 0 也要补捞：角色切换/场景变化后 g_charAnimator 可能残留
     // 失效指针（非空），此时重建出来是 0 根骨，必须强制重新捕获。
     static int s_captureRetry = 0;
+    // 周期确认当前 Animator 还活着：场景切换/换实例后旧对象会被 Destroy，
+    // 此时指针非空但已失效，骨骼列表里全是死变换 —— 画面就是"骨架钉在原地"。
+    // 侦测到就丢掉捕获，交给下面的补捞逻辑重新抓当前角色。
+    static int s_aliveCheck = 0;
+    static int s_deadStrikes = 0;
+    if (++s_aliveCheck >= 60) { // 约 1 秒（隐藏时循环 30ms 一次）
+      s_aliveCheck = 0;
+      bool animatorDead = g_charAnimator && !CharAnimatorAlive();
+      bool bonesDead = !animatorDead && !CachedBonesAlive();
+      if (animatorDead || bonesDead) {
+        // 连续两次（约 2 秒）都判死才动手，避免场景加载瞬间的误判
+        if (++s_deadStrikes >= 2) {
+          s_deadStrikes = 0;
+          Log("[POSER] capture invalid (%s) -> unfreeze + drop capture",
+              animatorDead ? "animator destroyed" : "bone transforms destroyed");
+          // 关键：**先解冻**。否则冻结时关掉的 Animator/IK/物理不会被还原，
+          // 游戏侧的角色会一直僵在原地（而插件又已经抓不到它，无法自救）。
+          if (g_frozen) {
+            UnfreezeCharacter();
+            RestoreBlendShapes();
+          }
+          ReleaseAllGrips(); // 死实例的冻结 grip 也一起清掉，避免每帧去写死对象
+          g_charAnimator = nullptr;
+          g_mainCharEntity = nullptr;
+          g_charChanged = false; // 死实例不需要保存状态，也别触发重建双消费
+          s_humanBoneCount = 0;
+          s_allBones.clear();
+          s_captureRetry = 60; // 下一次循环立刻补捞
+        }
+      } else {
+        s_deadStrikes = 0;
+      }
+    }
     if (!g_charAnimator || s_humanBoneCount == 0) {
       if (++s_captureRetry >= 60) {
         s_captureRetry = 0;
@@ -230,6 +263,13 @@ void DrawPoserGui() {
                        ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     ImGui::Text("v%s", POSER_VERSION);
+    // 当前实际生效的热键（配置可能是老版本留下的值，别让用户以为"默认就是 L/P"）
+    {
+      char hk1[48] = {}, hk2[48] = {};
+      HotkeyDisplay(g_guiToggleVK, g_guiToggleCtrl, hk1, sizeof(hk1));
+      HotkeyDisplay(g_freezeVK, g_freezeCtrl, hk2, sizeof(hk2));
+      ImGui::TextDisabled("\u547c\u51fa %s   \u51bb\u7ed3 %s", hk1, hk2);
+    }
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
       ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);

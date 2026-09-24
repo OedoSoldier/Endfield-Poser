@@ -515,6 +515,26 @@ static void *GetCharRootTransform() {
   return g_charAnimator ? SafeGetComponentTransform(g_charAnimator) : nullptr;
 }
 
+// Unity 对象被 Destroy 后，托管包装对象还在（指针非空），但 UnityEngine.Object
+// 的第一个字段 m_CachedPtr(0x10) 会被清 0。用它判断"这个实例还活着吗"——
+// 场景切换/换实例后，插件如果继续抓着旧 Animator 和旧骨骼变换，画面表现就是
+// "骨架钉在原地"（所有写入/读取都作用在死对象上）。
+static bool UnityObjAlive(void *obj) {
+  if (!obj)
+    return false;
+  __try {
+    return *(void **)((char *)obj + 0x10) != nullptr;
+  } __except (1) {
+    return false;
+  }
+}
+
+static bool CharAnimatorAlive() {
+  if (!UnityObjAlive(g_charAnimator))
+    return false;
+  return UnityObjAlive(GetCharRootTransform());
+}
+
 static Quat GetBoneLocalRot(void *t) {
   Quat q{0, 0, 0, 1};
   if (!t || !g_transform_get_localRotation)

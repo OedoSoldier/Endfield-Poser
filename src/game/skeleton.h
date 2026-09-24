@@ -407,6 +407,24 @@ static void CollectAllBonesRecursive(void *t, void *parent, int depth) {
 }
 
 // 判断某 transform 是否在 humanoid 列表里（skeleton.h 内自带，避免依赖后置头文件）
+// 抽检缓存里的骨骼变换是否还活着：换实例时旧 Animator 可能还没销毁，
+// 但列表里的骨 transform 已经死了 —— 画面表现同样是"骨架钉在原地"。
+static bool CachedBonesAlive() {
+  if (s_humanBoneCount > 0) {
+    if (!UnityObjAlive(s_humanBones[0].transform))
+      return false;
+    if (!UnityObjAlive(s_humanBones[s_humanBoneCount - 1].transform))
+      return false;
+  }
+  if (!s_allBones.empty()) {
+    if (!UnityObjAlive(s_allBones.front().transform))
+      return false;
+    if (!UnityObjAlive(s_allBones.back().transform))
+      return false;
+  }
+  return true;
+}
+
 static bool IsHumanBoneInList(void *t) {
   for (int i = 0; i < s_humanBoneCount; i++)
     if (s_humanBones[i].transform == t)

@@ -331,17 +331,9 @@ static void ReleaseLayerResources() {
 static bool EnsureBlitResources(int w, int h) {
   if (w <= 0 || h <= 0 || !g_pd3dDevice)
     return false;
-  if (g_pLayerStaging && g_layerBits && g_blitW == w && g_blitH == h)
+  if (g_pLayerStaging && g_blitW == w && g_blitH == h)
     return true;
   if (g_pLayerStaging) { g_pLayerStaging->Release(); g_pLayerStaging = nullptr; }
-  if (g_layerDC) {
-    if (g_layerOldBmp) SelectObject(g_layerDC, g_layerOldBmp);
-    DeleteDC(g_layerDC);
-    g_layerDC = nullptr;
-    g_layerOldBmp = nullptr;
-  }
-  if (g_layerBmp) { DeleteObject(g_layerBmp); g_layerBmp = nullptr; }
-  g_layerBits = nullptr;
   g_blitW = g_blitH = 0;
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = w;
@@ -356,22 +348,6 @@ static bool EnsureBlitResources(int w, int h) {
     Log("[GUI] layered: staging %dx%d failed", w, h);
     return false;
   }
-  BITMAPINFO bi = {};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = w;
-  bi.bmiHeader.biHeight = -h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  HDC screen = GetDC(nullptr);
-  g_layerDC = CreateCompatibleDC(screen);
-  g_layerBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &g_layerBits, nullptr, 0);
-  ReleaseDC(nullptr, screen);
-  if (!g_layerDC || !g_layerBmp || !g_layerBits) {
-    Log("[GUI] layered: DIB %dx%d failed", w, h);
-    return false;
-  }
-  g_layerOldBmp = SelectObject(g_layerDC, g_layerBmp);
   g_blitW = w;
   g_blitH = h;
   return true;
@@ -395,6 +371,22 @@ static bool CreateLayerResources(int w, int h) {
   if (FAILED(g_pd3dDevice->CreateRenderTargetView(g_pLayerTex, nullptr,
                                                    &g_pMainRenderTargetView)))
     return false;
+  // DIB 必须是**整窗大小**：分层窗口的位图源要覆盖整个窗口，
+  // 脏矩形只通过 UpdateLayeredWindowIndirect 的 prcDirty 指定
+  BITMAPINFO bi = {};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  HDC screen = GetDC(nullptr);
+  g_layerDC = CreateCompatibleDC(screen);
+  g_layerBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &g_layerBits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!g_layerDC || !g_layerBmp || !g_layerBits)
+    return false;
+  g_layerOldBmp = SelectObject(g_layerDC, g_layerBmp);
   g_layerW = w;
   g_layerH = h;
   return true;
@@ -511,8 +503,17 @@ static void LayeredLogTiming(double copyMs, double mapMs, double ulwMs, int w,
 }
 
 static void PresentLayered() {
-  if (!g_layerBits || !g_pLayerStaging || !g_pLayerTex)
+  // 注意：g_pLayerStaging 是"按脏矩形懒创建"的（见 EnsureBlitResources），
+  // 不能放在这里判空——否则它永远没机会被创建，表现为窗口显示了却什么都没有（面板看不见）。
+  if (!g_layerBits || !g_pLayerTex) {
+    static bool s_loggedNoRes = false;
+    if (!s_loggedNoRes) {
+      s_loggedNoRes = true;
+      Log("[GUI] layered: resources not ready (bits=%p tex=%p) -> nothing drawn",
+          g_layerBits, g_pLayerTex);
+    }
     return;
+  }
   int dx = 0, dy = 0, dw = 0, dh = 0;
   if (!LayeredDirtyRect(dx, dy, dw, dh)) {
     LayeredLogTiming(0, 0, 0, 0, 0, 1); // 没内容可画：不碰窗口
@@ -531,22 +532,32 @@ static void PresentLayered() {
     return;
   QueryPerformanceCounter(&t1);
   const size_t srcPitch = (size_t)map.RowPitch;
-  const size_t dstPitch = (size_t)g_blitW * 4;
+  const size_t dstPitch = (size_t)g_layerW * 4; // DIB 是整窗宽度
   const size_t rowBytes = (size_t)dw * 4;
   for (int y = 0; y < dh; y++)
-    memcpy((char *)g_layerBits + dstPitch * y,
+    memcpy((char *)g_layerBits + dstPitch * (dy + y) + (size_t)dx * 4,
            (const char *)map.pData + srcPitch * y, rowBytes);
   g_pd3dDeviceContext->Unmap(g_pLayerStaging, 0);
   QueryPerformanceCounter(&t2);
 
   RECT wr;
   GetWindowRect(g_guiHwnd, &wr);
-  POINT dst = {wr.left + dx, wr.top + dy};
-  SIZE sz = {dw, dh};
+  POINT dst = {wr.left, wr.top};
+  SIZE sz = {g_layerW, g_layerH}; // 必须是整窗尺寸：psize 语义是"窗口的新尺寸"
   POINT src = {0, 0};
   BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-  UpdateLayeredWindow(g_guiHwnd, nullptr, &dst, &sz, g_layerDC, &src, 0, &bf,
-                      ULW_ALPHA);
+  RECT dirty = {dx, dy, dx + dw, dy + dh};
+  UPDATELAYEREDWINDOWINFO info = {};
+  info.cbSize = sizeof(info);
+  info.pptDst = &dst;
+  info.psize = &sz;
+  info.hdcSrc = g_layerDC;
+  info.pptSrc = &src;
+  info.crKey = 0;
+  info.pblend = &bf;
+  info.dwFlags = ULW_ALPHA;
+  info.prcDirty = &dirty; // 只更新这块区域（位置/尺寸不受影响）
+  UpdateLayeredWindowIndirect(g_guiHwnd, &info);
   QueryPerformanceCounter(&t3);
   LayeredLogTiming(QpcMs(t0, t1), QpcMs(t1, t2), QpcMs(t2, t3), dw, dh, 0);
 }

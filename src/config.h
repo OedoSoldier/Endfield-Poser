@@ -264,8 +264,88 @@ static bool SaveHotkeyConfig(const char *keyName, int vk, bool ctrl) {
   return true;
 }
 
+// 往配置末尾追加一行（迁移标记用）
+static void AppendConfigLine(const char *line) {
+  FILE *f = fopen("plugin\\poser_config.txt", "ab");
+  if (!f)
+    return;
+  fwrite(line, 1, strlen(line), f);
+  fclose(f);
+}
+
+// 一次性迁移老默认热键：旧版本默认 gui_toggle_key=VK_F12 / freeze_key=VK_F11，
+// 而 F11/F12 会被 XXMI/3DMigoto、Steam 截图占用（撞键），0.3.3 起默认改成 L / P。
+// 但安装向导**不会覆盖已有配置**（那是为了防止重置用户自定的热键），于是老用户升级后
+// 拿到的还是 F12/F11 —— 反馈"按 L 呼不出面板"就是这个原因。
+// 这里只迁移"值正好等于旧默认"的那一项，且写一个标记行，之后不再重复迁移
+// （用户要是把键改回 F12，标记在，插件就不会再动它）。
+static void MigrateLegacyHotkeys() {
+  const char *path = "plugin\\poser_config.txt";
+  static char lines[80][256];
+  int count = 0;
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return;
+  while (count < 80 && fgets(lines[count], sizeof(lines[count]), f))
+    count++;
+  fclose(f);
+  bool hasMarker = false, legacyToggle = false, legacyFreeze = false;
+  for (int i = 0; i < count; i++) {
+    if (strstr(lines[i], "hotkey-migrated")) {
+      hasMarker = true;
+      continue;
+    }
+    char *eq = strchr(lines[i], '=');
+    if (!eq)
+      continue;
+    size_t klen = (size_t)(eq - lines[i]);
+    while (klen > 0 &&
+           (lines[i][klen - 1] == ' ' || lines[i][klen - 1] == '\t'))
+      klen--;
+    char val[64] = {};
+    snprintf(val, sizeof(val), "%s", eq + 1);
+    for (char *p = val; *p; p++) {
+      if (*p == '\r' || *p == '\n') {
+        *p = 0;
+        break;
+      }
+    }
+    while (val[0] == ' ')
+      memmove(val, val + 1, strlen(val));
+    int vk = 0;
+    bool ctrl = false;
+    if (klen == strlen("gui_toggle_key") &&
+        strncmp(lines[i], "gui_toggle_key", klen) == 0) {
+      ParseHotkey(val, &vk, &ctrl, VK_F12, false);
+      legacyToggle = (!ctrl && vk == VK_F12);
+    } else if (klen == strlen("freeze_key") &&
+               strncmp(lines[i], "freeze_key", klen) == 0) {
+      ParseHotkey(val, &vk, &ctrl, VK_F11, false);
+      legacyFreeze = (!ctrl && vk == VK_F11);
+    }
+  }
+  if (hasMarker || (!legacyToggle && !legacyFreeze))
+    return;
+  if (legacyToggle) {
+    g_guiToggleVK = 'L';
+    g_guiToggleCtrl = false;
+    SaveHotkeyConfig("gui_toggle_key", 'L', false);
+  }
+  if (legacyFreeze) {
+    g_freezeVK = 'P';
+    g_freezeCtrl = false;
+    SaveHotkeyConfig("freeze_key", 'P', false);
+  }
+  AppendConfigLine("# hotkey-migrated: F12/F11 -> L/P (XXMI/3DMigoto polls the bare "
+                   "F keys; put your own value back here if you prefer it)\n");
+  Log("[CFG] migrated legacy hotkeys -> toggle=%s freeze=%s (F11/F12 clash with "
+      "XXMI/3DMigoto)",
+      legacyToggle ? "L" : "kept", legacyFreeze ? "P" : "kept");
+}
+
 static bool LoadPoserConfig() {
   ResolveDefaultPoseDir();
+  MigrateLegacyHotkeys();
   FILE *f = fopen("plugin\\poser_config.txt", "r");
   if (!f) return false;
   char line[512];
@@ -320,5 +400,15 @@ static bool LoadPoserConfig() {
       "overlay_mode=%d",
       g_guiToggleCtrl ? "CTRL+" : "", g_guiToggleVK, g_guiToggleVK,
       g_freezeCtrl ? "CTRL+" : "", g_freezeVK, g_freezeVK, g_overlayMode);
+  // 配置是老版本留下的值时，用户容易以为"默认键没生效"（旧版默认 F12/F11），
+  // 这里把"实际生效的键"连同提示一起打出来
+  {
+    char hk1[32] = {}, hk2[32] = {};
+    Log("[CFG] effective hotkeys: toggle=%s%s  freeze=%s%s "
+        "(config file wins over built-in defaults; delete poser_config.txt to "
+        "get the new defaults L/P)",
+        g_guiToggleCtrl ? "CTRL+" : "", VkName(g_guiToggleVK, hk1, sizeof(hk1)),
+        g_freezeCtrl ? "CTRL+" : "", VkName(g_freezeVK, hk2, sizeof(hk2)));
+  }
   return true;
 }
