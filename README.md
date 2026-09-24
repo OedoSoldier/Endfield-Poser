@@ -164,6 +164,7 @@ endfield-poser/
 非官方粉丝项目与交流群，与 Hypergryph 无关。
 
 - QQ 群：**终末地影棚爱好者**（群号 1126684901）
+- 邮箱：**king_time@foxmail.com**（版权 / 内容下架等问题优先发邮件）
 - 扫码入群：
 
 ![QQ 群](docs/qq-group.jpg)
@@ -183,8 +184,8 @@ endfield-poser/
   姿态文件只应包含你自己摆出的骨骼数据。
 - 作者不对使用本工具造成的任何损失负责（包括但不限于账号封禁、数据丢失、设备异常）。
 - 如相关权利人、游戏官方或平台认为本仓库 / 发布包中的任何内容不妥，请通过
-  [issue](https://github.com/honxi1/Endfield-Poser/issues) 或文末交流群联系作者，
-  **收到通知后会第一时间处理（包括删除相关内容、停止分发）**。
+  **king_time@foxmail.com**（或 [issue](https://github.com/honxi1/Endfield-Poser/issues) /
+  文末交流群）联系作者，**收到通知后会第一时间处理（包括删除相关内容、停止分发）**。
 - **如果你不接受以上任何一条，请立即停止使用并删除本工具**：用包内 `安全安装.bat` 卸载，
   或手动删除 `plugin\poser.dll`、`plugin\poser_config.txt` 与游戏根目录的两个代理 DLL 并还原备份。
 
