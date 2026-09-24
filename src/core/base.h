@@ -1,6 +1,9 @@
 #pragma once
 
 #include <windows.h>
+#include <mutex>
+// Serialize GUI and HTTP pose access; recursive for shared control entrypoints.
+static std::recursive_mutex g_poseMutex;
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>

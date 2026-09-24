@@ -174,7 +174,7 @@ static void DrawBoneTreePanel() {
   if (!g_showBoneParams)
     return;
   // 默认放主面板右侧：主面板高度随状态变化（冻结后会多出 root 滑条），放左下会重叠
-  ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(380, 10), PanelPositionCondition());
   // AlwaysAutoResize 配 SetNextItemWidth(-1) 会让窗口宽度塌得很窄（标签被挤出可视区），
   // 所以给个最小宽度约束：高度自适应、宽度不低于 340。
   ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),

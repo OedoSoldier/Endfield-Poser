@@ -1,175 +1,133 @@
-> **AI Agent（Codex 等）请先读 [AGENT.md](AGENT.md)。**
-
 # Endfield Poser
 
-《明日方舟：终末地》的游戏内摆姿插件：把角色冻结在当前姿态，用 3D 旋转盘和参数面板直接摆姿势，
-保存 / 载入姿态预设，方便游戏内取景与后续参考。
+《明日方舟：终末地》的游戏内摄影摆姿与 MMD 动作播放器。支持角色冻结、骨骼编辑、姿态库、口型表情、VMD 动作和可选音乐同步，无需 Blender。
 
-> ⚠️ **免责声明**：本项目**仅供学习与技术交流**，请勿用于任何商业用途；使用前请先读文末
-> [免责声明](#免责声明)（含账号风险说明）。
+当前源码版本：**0.4.13（开发版）**。下载包的版本以 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 页面为准；源码更新不代表已发布同版本二进制包。
 
-- 下载：[Releases · v0.3.1](https://github.com/honxi1/Endfield-Poser/releases/tag/v0.3.1)
-- 依赖全部自包含在 `deps/`，不依赖 EIEM 的构建产物（注入链路的思路参考 EIEM，AGPL-3.0）
+> 本项目仅供学习与技术交流。使用前请阅读下方[免责声明](#免责声明)。插件与游戏版本相关，开发版仍需游戏内兼容性验证。
 
-## 下载与安装
+## 安装、更新与卸载
 
-从 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 下载 `EndfieldPoser-v0.3.1.zip`，解压后按目录对应放置（也可以直接双击包里的 `安全安装.bat` 走向导）：
+需要 Windows x64。先退出游戏，将下载包完整解压，再双击 **`安全安装.bat`**，选择包含 `Endfield.exe` 和 `GameAssembly.dll` 的游戏根目录。
 
-| 包内文件 | 放到 |
-|---|---|
-| `d3dcompiler_47.dll` | 游戏根目录（**先备份游戏自带的那份**） |
-| `vulkan-1.dll`（可选） | 游戏根目录——DX/Vulkan 代理放一个或都放均可 |
-| `plugin\poser.dll` | 游戏根目录的 `plugin\` |
-| `plugin\poser_config.txt` | 游戏根目录的 `plugin\` |
+- **安装 / 更新**：直接覆盖更新，无需先卸载。修改前备份 DLL，保留已有配置、窗口布局、校准和姿态；只补充缺少的适配预设。
+- **卸载**：移除 `poser.dll`，按安装记录恢复本工具管理的代理 DLL。用户数据和备份保留；发现其他插件时保留共用代理。旧版没有安装记录时，仅移除已识别的 `poser.dll`。
+- 游戏运行中脚本会拒绝操作。安装后必须经 **Hypergryph Launcher** 启动，不要直接运行 `Endfield.exe`。
 
-> 📁 **注意是 `plugin\`（单数，插件目录），不是游戏自带的 `plugins\`（复数）**。
-> 后者是游戏的 Qt 插件目录（里面是 `imageformats/`、`platforms/` 这些），放进去不会生效。
-> 如果游戏目录下没有 `plugin\` 文件夹，自己新建一个。
+仓库源码需要先运行 `build.bat` 生成 DLL，再运行安装向导。向导支持源码构建和发布包两种目录布局；不要只复制 `.bat` 文件，须保留 `tools/deploy.ps1`。
 
-> ⚠️ **必须用游戏启动器启动**（Hypergryph Launcher）。直接运行 `Endfield.exe` 会在 IL2CPP
-> 运行时初始化完成前 attach，触发 Unity GC 致命错误并卡死；判据是 `plugin\poser_log.txt`
-> 停在 `[POSER] Resolving IL2CPP...`，同时游戏根目录的 `Endfield.gc.log` 里会出现
-> `Threads explicit registering is not previously enabled` / `Collecting from unknown thread`。
-
-渲染 API 说明：插件与游戏用的 API 无关（面板是自建的 D3D11 + DirectComposition 透明窗口）。
-**DX11 与 Vulkan 两种模式都已实测可用**；用 Vulkan 时请确保 `vulkan-1.dll`（本包的代理）也在
-游戏根目录，并使用「窗口化 / 无边框全屏」——独占全屏会绕过 DWM 合成，面板会看不见。
-日志里会标明插件由哪个代理拉起：`[PROXY] plugins loaded via d3dcompiler_47.dll (DX path)`
-或 `[PROXY] plugins loaded via vulkan-1.dll (Vulkan path)`。
-
-## 使用
-
-> 完整图文流程见 **[docs/tutorial.md](docs/tutorial.md)**（安装 → 冻结 → 摆姿 → 表情 → 姿态库 → 排查）。
-
-| 操作 | 说明 |
-|---|---|
-| `L` | 呼出 / 隐藏面板（主面板 `快捷键（可改）` 一键改键，或改 `poser_config.txt`） |
-| `P` | 冻结 / 解冻 |
-| 按住 `Alt` | 光标归面板（游戏自己放开光标时——例如摄影模式——直接点即可） |
-
-> **为什么不用 F11/F12（连 Ctrl+F12 也不行）**：XXMI / 3DMigoto 是直接轮询 F11/F12 的
-> 按键状态，你按 `Ctrl+F12` 它们照样会触发自己的动作 —— 只有完全不碰 F 键才躲得掉，所以默认用 `L` / `P`。
-> 代价是游戏内文本框/聊天里打字可能误触发（插件自己面板的输入框已屏蔽）。想换键：点
-> `快捷键（可改）` → `改键` → 直接按（自动写回 `poser_config.txt`，`Esc` 取消）。
-> 单键（含字母）也允许绑，但游戏内打字会误触发——绑了单键主面板会提醒，建议用带 Ctrl 的组合。
-
-典型流程：进游戏 → `Ctrl+F11` 冻结 → 在 3D 视图里点选骨骼（勾「全量骨骼(微调)」可点到从骨与手指）→
-拖旋转盘或调参数 → 命名并保存姿态。
-
-- 姿态文件：`<游戏目录>\plugin\poses\*.poser.json`（含 humanoid 骨、从骨与面部形态键）
-- 日志：`<游戏目录>\plugin\poser_log.txt` —— **排查问题先看这里**
-- WebUI：插件启动后监听 `http://127.0.0.1:18923`
-
-## 功能
-
-- **角色冻结**：关闭 Animator 并抑制 FinalIK / 布料等写者，每帧维持；可选"冻结飘带/裙子/头发"（默认开），取消勾选则从骨保持实时演算。
-- **多角色**：冻结状态按角色记忆——切到没冻过的角色时它保持默认（正常动），切回冻过的角色会**恢复你离开时的姿势**；已经在后台的冻结角色不会被游戏重新启用。当前只有"当前角色"可编辑。
-- **摆姿编辑**：3D 点选骨骼 + ImGuizmo 旋转盘（点空白处取消选中）；
-  旋转 / 位置参数支持滑条、数值输入、± 步进与复位。
-- **人物位置**：Root XYZ 的滑条、精确输入，以及可调步长的 ± 步进。
-- **从骨控制**：头发、裙子、飘带等从骨随冻结钉住；手动编辑会同步冻结基线，不会被每帧回写打回。
-- **姿态预设**：命名保存 / 覆盖 / 加载 / 删除，格式含从骨与形态键，旧格式文件仍可读。
-- **形态键与表情**：面部 BlendShape 面板 + 游戏原生 SMC 表情。滑条值恒为**相对"中性默认脸"**的权重
-  （默认脸等价于面部 A-pose，自动采样，不是冻结那一刻的脸）；**冻结会保持当前表情**（把此刻的脸
-  反解成滑条值），`全部归零` 回到默认脸，`读入当前表情` 把游戏当前表情读进滑条。
-- **输入路由**：覆盖层常驻并真穿透（`click_through=1`），只有指针落在面板 / 关节上且光标可用时才接管；点击输入框可直接打字，失焦后键盘立刻还给游戏。
-
-## 配置（`plugin\poser_config.txt`）
-
-```
-gui_toggle_key=L          # 支持 L / CTRL+L / VK_F12 / 0x7B 这类写法
-freeze_key=P              # 冻结 / 解冻（写法同上）
-click_through=1           # 1=覆盖层常驻并真穿透（推荐）；0=按住 Alt 才显示面板
-overlay_mode=0            # 0=自动（检测到 XXMI/3DMigoto 时改用分层窗口）；1=强制 DComp；2=强制分层窗口
-overlay_fps=60            # 分层窗口路径的呈现帧率上限（0=不限；mod 多/机器吃紧可降到 30）
-default_pose_dir=plugin\poses
-```
-
-`default_pose_dir` 支持绝对路径，或相对游戏根目录的路径；面板底部会显示当前保存位置。
-
-## 构建
-
-### Windows（插件本体，MSVC）
+也可从 PowerShell 部署（将路径替换成实际游戏目录）：
 
 ```powershell
-# 本机（VS 18 Insiders、无 cmake、无系统 Windows SDK）：
-powershell -ExecutionPolicy Bypass -File tools\setup_winsdk.ps1   # 首次：拉取 Windows SDK 到 deps/（需联网）
-powershell -ExecutionPolicy Bypass -File tools\build_msvc.ps1     # 编译 plugin/ 并跑三个数学单测
+# 只显示计划，不修改文件
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/deploy.ps1 -GameDir "D:\Games\Arknights Endfield" -WhatIf
 
-# 有 cmake + VS 工具链时：
+# 安装或更新
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/deploy.ps1 -GameDir "D:\Games\Arknights Endfield"
+
+# 卸载，保留用户数据
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/deploy.ps1 -GameDir "D:\Games\Arknights Endfield" -Action Uninstall
+```
+
+手动安装时，先备份同名 DLL，再按下表放置；不要把整个本机构建输出或他人的配置复制进游戏。
+
+| 文件 | 游戏内位置 |
+|---|---|
+| `d3dcompiler_47.dll` | 游戏根目录 |
+| `vulkan-1.dll`（可选，Vulkan 模式需要） | 游戏根目录 |
+| `poser.dll` | `plugin/poser.dll` |
+| `presets/mmd/*.mmdrig.json` | `plugin/mmd/rig-presets/`，保留已有同名文件 |
+
+插件目录是 **`plugin`（单数）**；游戏自带的 `plugins` 不是安装位置。配置由插件首次启动生成。建议使用窗口化或无边框全屏，以便显示覆盖层面板。
+
+## 快速使用
+
+进入可操作角色的场景后按 **L** 打开面板。按 **P** 冻结，用骨骼面板或 3D 旋转盘摆姿，再在姿态库保存。拖动窗口标题栏调整位置；取消 **锁定窗口** 后可自由移动，**重排窗口** 恢复初始布局。
+
+| 默认快捷键 | 操作 |
+|---|---|
+| `L` | 显示 / 隐藏面板 |
+| `P` | 冻结 / 解冻；MMD 占用时先退出播放 |
+| 按住 `Alt` | 将光标交给面板；摄影模式通常可直接点击 |
+| `Ctrl+F5` | MMD 播放 / 继续 |
+| `Ctrl+F6` | 暂停并保持当前姿态 |
+| `Ctrl+F7` | 停止并恢复播放前状态 |
+| `Ctrl+F8` | 回到动作首帧并暂停 |
+
+快捷键可在主面板修改，MMD 面板显示当前绑定。已有配置优先于默认值。隐藏面板后，动作和音乐继续播放；避免绑定与其他插件冲突的 F11/F12。
+
+## MMD 播放器
+
+勾选 **MMD 播放器** → **打开 VMD** → 完成角色校准 → **播放**。完整操作见 [MMD 播放指南](docs/mmd-player.md)。
+
+- **动作与表情**：身体、手指、眼神、口型和表情；支持追加独立口型 / 表情 / 眼神文件，同名轨道由后追加文件替换。
+- **校准与参考骨架**：自动读取游戏绑定姿态，失败时提供手动 T 姿预览；可选 PMX 2.0/2.1 骨架参考，不导入模型或材质。
+- **播放控制**：暂停、逐帧、拖动、0.25–2 倍速、循环、原地模式、位移比例和高度修正；自然结束保持末帧。
+- **手动适配**：A/T 源姿态、IK 跟随 / 强制开 / 强制关、準標準骨补全、自定义骨和两层映射，可保存适配预设。不会读取动作说明或按文件名自动选择设置。
+- **动作幅度**：全身与各部位分别调节，支持左右联动和复位。全身系数与部位系数相乘，默认均为 100%。这不是自动碰撞检测。
+- **音乐同步**：手动选择系统可解码的 WAV、MP3、M4A 等音频，支持偏移和音量，跟随播放、暂停、拖动与循环。变速会改变音高。
+
+一次控制当前角色。校准和播放期间隐藏已识别的专用道具节点，停止后恢复；默认保留游戏头发、衣物物理，也可冻结。换人会结束当前播放，保留已打开的动作和各角色校准。
+
+## 姿态、表情与保存位置
+
+- 支持骨骼旋转 / 位移、从骨调整、角色根位置、姿态保存与载入。
+- 冻结姿态按角色在本次运行中记忆；切走释放旧实例控制，切回重新捕获并恢复。
+- 口型与表情映射到游戏已有 SMC 通道，未匹配轨道可手动绑定和调整强度。没有对应通道的材质类表情无法复现。
+- 姿态库默认不保存 / 套用面部骨骼，避免跨角色错脸；暂停 MMD 时可保存身体姿态。
+
+| 内容 | 相对于游戏目录的路径 |
+|---|---|
+| 设置 / 快捷键 | `plugin/poser_config.txt` |
+| 窗口布局 | `plugin/poser_layout.ini` |
+| 姿态库 | `plugin/poses/*.poser.json` |
+| 校准、表情映射、适配预设 | `plugin/mmd/` |
+| 日志 | `plugin/poser_log.txt` |
+| 安装记录 / 备份 | `plugin/poser-install.json` / `plugin/poser-backups/` |
+
+本机 WebUI：`http://127.0.0.1:18923`。MMD 播放 / 暂停期间，冲突的姿态写入接口返回 `409 Conflict`。
+
+## 构建源码
+
+安装 Visual Studio / Build Tools 的 **MSVC x64 C++ 工具链**和 **Windows SDK**，然后运行：
+
+```bat
 build.bat
 ```
 
-两种方式产物都落在 `plugin/`：`poser.dll`（插件）、`d3dcompiler_47.dll`、`vulkan-1.dll`（代理）。
+也可直接执行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_msvc.ps1`。脚本自动寻找 MSVC，优先使用系统 SDK；仅在没有系统 SDK 时可用 `tools/setup_winsdk.ps1` 下载 SDK 回退依赖。产物为 `plugin/poser.dll`、`plugin/d3dcompiler_47.dll`、`plugin/vulkan-1.dll`。
 
-### Linux / 沙箱（数学层单测）
+支持 CMake + MSVC，例如 VS 2022 x64：
 
-```bash
-cmake -S . -B build && cmake --build build && ctest --test-dir build
+```powershell
+cmake -S . -B build-cmake -G "Visual Studio 17 2022" -A x64
+cmake --build build-cmake --config Release
 ```
 
-测试覆盖 `math/` 层（`test_quat` / `test_ik` / `test_pose_file`）；插件本体只能在 Windows + 游戏内验证。
+公开源码构建不依赖本机测试、实验记录或媒体素材。`src/core/version.h` 是版本号来源；保留 `_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR`，以兼容游戏自带的旧 MSVC 运行库。
 
-## 目录结构
+## 当前限制与排查
 
-```
-endfield-poser/
-├── AGENT.md              # 开发手册（架构 / 调试 / 迭代流程，改代码前先读）
-├── CMakeLists.txt        # Windows: 插件 DLL + 代理 DLL；tests: 数学单测
-├── build.bat             # 有 cmake 时的一键构建（否则回退 build_msvc.ps1）
-├── deps/                 # 自包含第三方：imgui / imguizmo / minhook_lib / json
-├── tools/                # build_msvc.ps1、setup_winsdk.ps1、screenshot.ps1 等
-├── src/
-│   ├── poser.cpp         # DLL 入口 + Applepie 插件协议 + 每帧调度 + 主面板
-│   ├── config.h          # poser_config.txt 读写、热键解析
-│   ├── core/             # base / il2cpp_api / game_hooks / gui_overlay / web_server / 代理 DLL
-│   ├── math/             # quat_math / ik_two_bone / pose_file（纯 C++，可单测）
-│   ├── game/             # skeleton / accessory / freeze / cloth / morph / smc_morph
-│   └── editor/           # selection / rig_gizmo / panel_bones / panel_library / panel_morph
-├── tests/                # math 层单测（g++ 亦可跑）
-└── docs/                 # task-state.md（进度与已知问题）、构建环境、研究笔记
-```
+- 不包含 MMD 相机、灯光、模型导入、多角色同步或 MMD 物理模拟。特殊骨、道具和表情可能需要手动映射，未支持项显示在导入报告中。
+- 动作幅度不能保证消除穿模，也可能改变脚底接触；腿部表现需结合原始动作、源骨架和 IK 模式调整。
+- 动作更新与面板绘制已分离，但游戏帧回调可能不可用并回退到独立计时。面板显示实际驱动来源，当前不能保证所有渲染管线均与背景帧同步。
+- 0.4.13 调整了冻结换人的对象恢复与引用管理；复杂角色切换、连续播放及其他模组共存仍需游戏内验证。
+- 游戏更新可能改变骨架与运行时接口。捕获不到角色时先等待模型加载，再尝试 **刷新骨骼**；校准失效时重新校准。
+- 面板不出现时检查窗口模式、快捷键和日志。覆盖层卡顿可降低 `overlay_fps`；无法拖动先检查 **锁定窗口**。
 
-## 已知问题
+反馈请提供插件版本、复现步骤和必要日志片段，并先检查其中的个人路径等信息。
 
-- **必须经启动器启动**（原因见上）。
-- **表情不能跨角色通用**：本作面部由 SMC（骨骼变形）驱动，网格上没有 BlendShape 目标，
-  而 SMC 权重目前不写入姿态文件——所以保存下来的姿态只含骨骼与从骨，表情需要在新角色上重调；
-  强行套用其它角色的面部骨数据会得到错位或夸张的脸（姿态面板默认勾选「不保存/不套用表情」，
-  姿态文件里不再包含眼/下巴等表情骨；旧文件里若带这类数据，载入时也会被跳过）。
-- **表情滑条只覆盖游戏自带的那 5 个口型 + 19 个表情**：角色表情里用到的其它 morph 滑条表示不了，
-  但会被内部基准保住（脸不会跳变、不会错位）。若「读入当前表情」在面板上显示
-  `no usable source`，把日志里 `[SMC] weight source probe` 那几行发出来即可继续适配。
-- 相机参数不随姿态文件保存。
-- **装了很多 XXMI/3DMigoto mod 的机器上面板会卡顿**：分层窗口路径每帧要做一次
-  GPU→CPU 回读，而 `Map()` 会等 GPU 队列跑完，mod 越多等得越久。本版已做两项缓解：
-  面板内容没变时跳过整轮回读，以及 `overlay_fps` 限帧（默认 60，吃紧可降到 30）。
-- **冻结后骨架有轻微颤抖**（老机制遗留：逐帧钉姿势会和游戏侧仍在写的系统轻微打架，
-  表现为在静止姿态与当前摆姿之间来回）。不影响摆姿与保存，未修。
-- 撤销 / 重做、骨骼层级树、IK 控制器、骨骼镜像、外置姿态导出均未包含在本版（做过但实测有问题，代码保留在 git 历史）。
+## 参考与交流
 
-## 参考与致谢
+注入层参考 [Sasye/EIEM](https://github.com/Sasye/EIEM)，兼容 [ApplepieManager](https://github.com/Sasye/ApplepieManager) 插件协议；Poser 可由自带代理加载，无需另装管理器。依赖位于 `deps/`：Dear ImGui、ImGuizmo、MinHook、nlohmann/json，保留各自许可与来源声明。
 
-- **[Sasye/EIEM](https://github.com/Sasye/EIEM)**（AGPL-3.0）：本项目的注入链路脱胎于此——
-  Applepie 插件协议（`AP_*` 导出）、IL2CPP 运行时解析、MinHook 挂点、D3D11 + DirectComposition
-  透明覆盖层。`src/core/` 下的 `base.h`、`il2cpp_api.h`、`proxy_d3dcompiler.cpp`、
-  `gui_overlay.h`、`game_hooks.h` 都标注了"精简自 EIEM"，改这些文件时请保留来源声明。
-- **[Sasye/ApplepieManager](https://github.com/Sasye/ApplepieManager)**（AGPL-3.0）：插件宿主/管理器，
-  负责枚举拉起 `plugin\*.dll` 并提供控制面板。
-- **第三方依赖**（全部自包含在 `deps/`，不联网）：imgui（MIT）、ImGuizmo 1.83（MIT）、
-  MinHook（BSD-2-Clause）、nlohmann/json（MIT）；其中 imgui 与 MinHook 的源码/静态库取自 EIEM 仓库。
+非官方粉丝项目，与 Hypergryph 无关。
 
-## 交流 / 反馈
-
-非官方粉丝项目与交流群，与 Hypergryph 无关。
-
-- QQ 群：**终末地影棚爱好者**（群号 1126684901）
-- 邮箱：**king_time@foxmail.com**（版权 / 内容下架等问题优先发邮件）
-- 扫码入群：
+- [问题反馈](https://github.com/honxi1/Endfield-Poser/issues)
+- QQ 群：**终末地影棚爱好者**（1126684901）
+- 邮箱：**king_time@foxmail.com**（版权 / 内容下架等问题优先邮件）
 
 ![QQ 群](docs/qq-group.jpg)
-
-遇到问题欢迎带上 `plugin\poser_log.txt` 与复现步骤，在 issue 或群里反馈。
 
 ## 免责声明
 
@@ -187,7 +145,7 @@ endfield-poser/
   **king_time@foxmail.com**（或 [issue](https://github.com/honxi1/Endfield-Poser/issues) /
   文末交流群）联系作者，**收到通知后会第一时间处理（包括删除相关内容、停止分发）**。
 - **如果你不接受以上任何一条，请立即停止使用并删除本工具**：用包内 `安全安装.bat` 卸载，
-  或手动删除 `plugin\poser.dll`、`plugin\poser_config.txt` 与游戏根目录的两个代理 DLL 并还原备份。
+  卸载保留配置和姿态；手动处理代理 DLL 前请确认归属并备份，避免影响其他插件。
 
 ### 内容合规与行为约束
 

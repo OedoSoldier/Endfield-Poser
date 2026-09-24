@@ -1,6 +1,7 @@
 #pragma once
 #include "math/quat_math.h"
 #include <cmath>
+#include <algorithm>
 
 // 绕轴旋转（Rodrigues）。axis 需为单位向量，rad 为旋转角。
 inline Vec3 RotateAxis(Vec3 axis, Vec3 v, float rad){
@@ -14,15 +15,15 @@ inline Vec3 RotateAxis(Vec3 axis, Vec3 v, float rad){
 // 数学：在 a-target-pole 确定的平面内，根角 θ1 / 肘角 θ2 由余弦定理给出；
 // 上臂方向 = 绕 bendAxis 旋转 at 方向 θ1，由余弦定理可证 |c'-target|=lbc，末端精确命中。
 inline void SolveTwoBone(Vec3& a, Vec3& b, Vec3& c, Vec3 target, Vec3 pole, bool enforcePole){
-    Vec3 at = Norm(target - a);
     float lab = Len(b - a), lbc = Len(c - b);
     float d = Len(target - a);
-    if (d > lab + lbc - 1e-4f) d = lab + lbc - 1e-4f;  // 不可达 → 完全伸直
-    if (d < 1e-6f) {                                    // 目标在根上 → 保持伸直
-        c = a + at * (lab + lbc);
-        b = a + at * lab;
-        return;
-    }
+    Vec3 at = d>1e-6f ? Norm(target-a) : Norm(c-a);
+    if(Len(at)<1e-6f)at=Norm(b-a);
+    if(Len(at)<1e-6f)at={0,-1,0};
+    if(lab<1e-6f||lbc<1e-6f){b=a+at*lab;c=b+at*lbc;return;}
+    const float epsilon=(std::min)(1e-4f,(std::min)(lab,lbc)*.01f);
+    d=(std::max)(std::fabs(lab-lbc)+epsilon,(std::min)(lab+lbc-epsilon,d));
+    Vec3 reachable=a+at*d;
     // 根关节弯折角（余弦定理）
     float cos1 = (lab*lab + d*d - lbc*lbc) / (2.0f*lab*d);
     cos1 = cos1 > 1.0f ? 1.0f : (cos1 < -1.0f ? -1.0f : cos1);
@@ -37,6 +38,6 @@ inline void SolveTwoBone(Vec3& a, Vec3& b, Vec3& c, Vec3 target, Vec3 pole, bool
     Vec3 upperDir = RotateAxis(axis, at, ang1);   // 上臂方向：at 绕轴弯 ang1（朝 pole 一侧）
     b = a + upperDir * lab;
 
-    Vec3 foreDir = Norm(target - b);              // 前臂指向目标，长度必为 lbc（余弦定理保证）
+    Vec3 foreDir = Norm(reachable - b);
     c = b + foreDir * lbc;
 }

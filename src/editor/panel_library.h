@@ -79,6 +79,7 @@ static void SavePoseToFile(const char *name) {
 }
 
 static void LoadPoseFromFile(int idx) {
+  if(MmdOwnsPose()) { snprintf(g_poseStatus,sizeof(g_poseStatus),"Stop MMD playback before loading a pose"); return; }
   if (idx < 0 || idx >= (int)g_poseFiles.size())
     return;
   FILE *f = nullptr;
@@ -134,8 +135,10 @@ static void DrawLibraryPanel() {
     ImGui::EndChild();
 
     ImGui::Spacing();
+    ImGui::BeginDisabled(MmdOwnsPose());
     if (ImGui::SmallButton(u8"\u52a0\u8f7d") && g_selectedPose >= 0)
       LoadPoseFromFile(g_selectedPose);
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::SmallButton(u8"\u8986\u76d6\u4fdd\u5b58") && g_selectedPose >= 0) {
       std::string fn = g_poseFiles[g_selectedPose];

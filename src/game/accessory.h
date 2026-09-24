@@ -324,17 +324,10 @@ static void SetPhysicsEnabled(int chainId, bool enabled, bool quiet = false) {
   c.physicsEnabled = enabled;
   for (int bidx : c.bones) {
     AccessoryBone &b = s_accessoryBones[bidx];
-    for (void *comp : b.physicsComps) {
-      if (!g_animator_set_enabled)
-        continue;
-      __try {
-        int v = enabled ? 1 : 0;
-        void *params[] = {&v};
-        Invoke(g_animator_set_enabled, comp, params);
-      } __except (1) {
-      }
-    }
+    for (void *comp : b.physicsComps)
+      WriteBehaviourEnabled(comp, enabled);
   }
+
   if (!quiet)
     Log("[POSER] Chain '%s' physics=%s", c.name, enabled ? "ON" : "OFF");
 }
@@ -353,16 +346,8 @@ static void MaintainAccessoryPhysicsFreeze() {
     AccessoryChain &c = s_accessoryChains[i];
     for (int bidx : c.bones) {
       AccessoryBone &b = s_accessoryBones[bidx];
-      for (void *comp : b.physicsComps) {
-        if (!comp)
-          continue;
-        __try {
-          int v = 0;
-          void *params[] = {&v};
-          Invoke(g_animator_set_enabled, comp, params);
-        } __except (1) {
-        }
-      }
+      for (void *comp : b.physicsComps)
+        WriteBehaviourEnabled(comp, false);
     }
   }
 }

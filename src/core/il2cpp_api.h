@@ -12,6 +12,8 @@ void Log(const char *fmt, ...);
   static t_##name name = nullptr
 D(void *, il2cpp_domain_get);
 D(void *, il2cpp_thread_attach, void *);
+D(void *, il2cpp_thread_current);
+D(void, il2cpp_thread_detach, void *);
 D(void **, il2cpp_domain_get_assemblies, void *, size_t *);
 D(void *, il2cpp_assembly_get_image, void *);
 D(const char *, il2cpp_image_get_name, void *);
@@ -103,6 +105,8 @@ static bool Resolve() {
 #define R(n) n = (t_##n)GetProcAddress(hGA, #n)
   R(il2cpp_domain_get);
   R(il2cpp_thread_attach);
+  R(il2cpp_thread_current);
+  R(il2cpp_thread_detach);
   R(il2cpp_domain_get_assemblies);
   R(il2cpp_assembly_get_image);
   R(il2cpp_image_get_name);
@@ -200,6 +204,33 @@ static bool Hook(void *mi, const char *l, void *d, void **o) {
   Log("[OK] %s hooked", l);
   return true;
 }
+
+static void *CurrentRuntimeThread() {
+  __try { return il2cpp_thread_current ? il2cpp_thread_current() : nullptr; }
+  __except (1) { return nullptr; }
+}
+static void *AttachRuntimeThread() {
+  __try {
+    if (!il2cpp_domain_get || !il2cpp_thread_attach || !il2cpp_thread_detach) return nullptr;
+    void *domain = il2cpp_domain_get();
+    return domain ? il2cpp_thread_attach(domain) : nullptr;
+  } __except (1) { return nullptr; }
+}
+static void DetachRuntimeThread(void *thread) {
+  __try { if (thread && il2cpp_thread_detach) il2cpp_thread_detach(thread); }
+  __except (1) {}
+}
+struct RuntimeThreadScope {
+  void *owned = nullptr;
+  bool ready = false;
+  RuntimeThreadScope() {
+    ready = CurrentRuntimeThread() != nullptr;
+    if (!ready) { owned = AttachRuntimeThread(); ready = owned != nullptr; }
+  }
+  ~RuntimeThreadScope() { DetachRuntimeThread(owned); }
+  RuntimeThreadScope(const RuntimeThreadScope &) = delete;
+  RuntimeThreadScope &operator=(const RuntimeThreadScope &) = delete;
+};
 
 static void *Invoke(void *method, void *obj, void **params = nullptr) {
   if (!method)

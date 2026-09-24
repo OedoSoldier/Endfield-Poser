@@ -35,7 +35,7 @@ static void HttpReply(SOCKET c, const char *ctype, const std::string &body) {
 }
 
 static void HttpJson(SOCKET c, const nlohmann::json &j) {
-  HttpReply(c, "application/json", j.dump());
+  HttpReply(c, "application/json; charset=utf-8", j.dump());
 }
 
 // ---- API：骨骼列表 ----
@@ -69,6 +69,14 @@ static nlohmann::json ApiBones() {
 // ---- 处理一个请求 ----
 static void HandleRequest(SOCKET c, const std::string &path,
                           const std::string &body) {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  const bool readOnly = path=="/" || path=="/index.html" || path=="/api/status" || path=="/api/mmd/status" || path=="/api/bones" || path=="/api/allbones" || (path=="/api/pose" && body.empty());
+  if(MmdOwnsPose() && !readOnly) {
+    const char* payload="{\"ok\":false,\"err\":\"MMD playback owns the pose; stop playback before editing\"}";
+    char head[256];int n=snprintf(head,sizeof(head),"HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",strlen(payload));
+    send(c,head,n,0);send(c,payload,(int)strlen(payload),0);return;
+  }
+
   if (path == "/" || path == "/index.html") {
     // 内嵌网页：画布骨骼小人 + 滑条 + 按钮
     extern const char *g_poserHtml;
@@ -85,6 +93,38 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if (path == "/api/bones") {
     HttpJson(c, {{"ok", true}, {"bones", ApiBones()}});
+    return;
+  }
+  if (path == "/api/mmd/status") {
+    auto &m=g_mmd;
+    HttpJson(c, {{"active",MmdOwnsPose()},{"loading",m.loading},{"preview",m.preview},
+      {"state",int(m.timeline.state)},{"frame",m.timeline.seconds*30.},
+      {"last_frame",m.clip.lastFrame},{"speed",m.timeline.speed},{"loop",m.timeline.loop},
+      {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
+      {"calibration",m.calibrationStatus},
+      {"character_ready",MmdCharacterReady()},
+      {"source_rig",m.rig.name},{"source_preset",m.sourcePreset},
+        {"ik_mode",int(m.ikMode)},{"pmx_reference",m.reference},
+        {"motion_amplitude",mmd::AmplitudeJson(m.amplitude)},
+      {"leg_ik_left",m.session.active && !m.preview && m.mapper.output.legIkActive[0]},
+      {"leg_ik_right",m.session.active && !m.preview && m.mapper.output.legIkActive[1]},
+      {"rig_bones",m.rig.bones.size()},
+      {"adaptation",mmd::AdaptationJson(m.adaptation,m.sourcePreset,m.ikMode)},
+      {"adaptation_file",m.adaptationFile},
+      {"music_file",m.musicFile},{"music_enabled",m.musicEnabled},
+      {"music_playing",m.audio.running()},{"music_offset",m.musicOffset},
+      {"music_volume",m.musicVolume},{"music_error",m.musicError},
+      {"music_duration",m.audio.clip() ? m.audio.clip()->duration() : 0},
+      {"game_frame_sync",g_frameDiagnostics.gameDriven},
+      {"frame_source",g_frameDiagnostics.source},
+      {"update_hz",g_frameDiagnostics.hz},{"max_gap_ms",g_frameDiagnostics.maxGapMs},
+      {"max_update_ms",g_frameDiagnostics.maxCostMs},{"busy_skips",g_frameDiagnostics.busy},
+      {"calibrated",m.profileAnimator == g_charAnimator &&
+                       m.profileRevision == s_bonesRev && m.profile.valid()},
+      {"model",CurrentCharModelKey()},{"file",m.file},{"report",m.report},
+      {"hidden_props",m.session.active ? m.session.props.size() : 0},
+      {"smc_ready",SMCSectionReady()},{"bone_tracks",m.clip.bones.size()},
+      {"morph_tracks",m.clip.morphs.size()}});
     return;
   }
   if (path == "/api/allbones") {
@@ -397,6 +437,17 @@ static void HandleRequest(SOCKET c, const std::string &path,
   HttpJson(c, {{"ok", false}, {"err", "unknown api"}});
 }
 
+static void HandleAttachedRequest(SOCKET c, const std::string &path, const std::string &body) {
+  // Do not remain registered with IL2CPP while waiting on a socket or the pose
+  // lock. Runtime abort APCs previously escaped from Winsock select on this thread.
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) {
+    HttpJson(c, {{"ok", false}, {"err", "Game runtime is unavailable"}});
+    return;
+  }
+  HandleRequest(c, path, body);
+}
 static void HandleClient(SOCKET c) {
   try {
     char buf[8192];
@@ -420,7 +471,7 @@ static void HandleClient(SOCKET c) {
       body = req.substr(hb + 4);
     if (path.empty())
       path = "/";
-    HandleRequest(c, path, body);
+    HandleAttachedRequest(c, path, body);
   } catch (...) {
     Log("[WEB] C++ exception in handler");
   }
@@ -430,14 +481,7 @@ static void HandleClient(SOCKET c) {
 static DWORD WINAPI WebServerThread(LPVOID) {
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);
-  // 附加到 IL2CPP 域：本线程会调游戏对象（冻结/骨骼读写），不附加会触发运行时终止
-  if (il2cpp_domain_get && il2cpp_thread_attach) {
-    void *domain = il2cpp_domain_get();
-    if (domain) {
-      il2cpp_thread_attach(domain);
-      Log("[WEB] attached to IL2CPP domain");
-    }
-  }
+  // Attach only for HandleAttachedRequest, never during network waits.
   SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (s == INVALID_SOCKET) {
     Log("[WEB] socket failed");
@@ -469,6 +513,9 @@ static DWORD WINAPI WebServerThread(LPVOID) {
     SOCKET c = accept(s, nullptr, nullptr);
     if (c == INVALID_SOCKET)
       break;
+    DWORD timeoutMs = 3000;
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeoutMs), sizeof(timeoutMs));
+    setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&timeoutMs), sizeof(timeoutMs));
     // 简单串行处理（够用）
     HandleClient(c);
   }

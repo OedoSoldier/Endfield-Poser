@@ -2,6 +2,7 @@
 
 // 按角色记住「冻结 + 姿态」。
 //   * 切走：把当前角色的姿态存进内存表（用骨名，不存 Transform 指针）；
+//     释放旧实例的冻结写者，避免继续访问被销毁或回收的组件；
 //   * 切到没冻过的角色：保持游戏默认表现（不冻结）——这是期望的"新角色是默认状态"；
 //   * 切回冻过的角色：重新采集并压制它的写者，再把存下的姿态按骨名应用回去。
 // 姿态取自内存中的快照值（s_humanBones/s_accessoryBones 的 localPos/localRot），
@@ -34,7 +35,7 @@ static void ReadAnimatorGoName(char *buf, int sz) {
     void *go = Invoke(g_component_get_gameObject, g_charAnimator);
     void *ns = go ? Invoke(g_object_get_name, go) : nullptr;
     if (ns)
-      ReadStr(ns, buf, sizeof(buf));
+      ReadStrUtf8(ns, buf, sz);
   } __except (1) {
   }
 }
@@ -106,8 +107,7 @@ static void RestoreCharStateOnSwitch() {
     return;
   }
   Log("[CHAR] restoring frozen state for '%s'", g_curCharKey.c_str());
-  SuppressPoseWriters();  // 新角色的写者重新采集 + 禁用
-  RegisterCurrentGrip();  // 登记把手（切走后继续压制）
+  FreezeCharacter(); // Capture this instance before suppressing its writers.
   ApplyPoseDoc(it->second.pose); // 按骨名恢复（表情骨按策略跳过）
   PinCurrentPose();       // 以恢复后的姿态作为新的冻结基线
   if (g_freezeAccessories) {

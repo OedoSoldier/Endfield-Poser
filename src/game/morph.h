@@ -32,7 +32,7 @@ static void SetBlendShapeWeight(BlendShapeSlot &s, float v) {
   if (v > 100.0f)
     v = 100.0f;
   s.value = v;
-  if (!s.smr || !g_smr_SetBlendShapeWeight)
+  if (CharacterSwitchInProgress() || !UnityObjAlive(s.smr) || !g_smr_SetBlendShapeWeight)
     return;
   __try {
     void *params[] = {&s.index, &v};

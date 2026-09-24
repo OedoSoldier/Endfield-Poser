@@ -1,0 +1,287 @@
+﻿[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+    [string]$GameDir,
+    [ValidateSet('Install', 'Uninstall')][string]$Action = 'Install',
+    [string]$SourceRoot
+)
+
+# This script never starts/stops the game or copies a developer's runtime data.
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function Get-Sha([string]$Path) {
+    # PowerShell 5.1 Get-FileHash inherits WhatIf into its internal pipeline.
+    # Hashing is read-only and must also work while planning an installation.
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+
+function Assert-NoLink([string]$Path) {
+    $node = $Path
+    while ($node) {
+        if (Test-Path -LiteralPath $node) {
+            if ((Get-Item -LiteralPath $node -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Symbolic links / junctions are not supported: $node"
+            }
+        }
+        $node = Split-Path -Path $node -Parent
+    }
+}
+
+function Get-Target([string]$Relative) {
+    if ([IO.Path]::IsPathRooted($Relative)) { throw 'Expected a relative installation path.' }
+    $path = [IO.Path]::GetFullPath((Join-Path $script:GameRoot $Relative))
+    if (-not $path.StartsWith($script:GameRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path escapes the game directory: $Relative"
+    }
+    Assert-NoLink $path
+    return $path
+}
+
+function Assert-GameStopped {
+    if (Get-Process -Name Endfield -ErrorAction SilentlyContinue) {
+        throw 'Endfield is running. Exit the game before installing, updating or uninstalling.'
+    }
+}
+
+function Assert-Dll([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing DLL: $Path" }
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 256 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "Invalid DLL: $Path" }
+    $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($pe -lt 64 -or $pe -gt ($bytes.Length - 26) -or
+        [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or
+        [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664 -or
+        -not ([BitConverter]::ToUInt16($bytes, $pe + 22) -band 0x2000)) {
+        throw "Expected a Windows x64 DLL: $Path"
+    }
+}
+
+function Test-OurProxy([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    return [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path)).Contains('[PROXY] plugins loaded via ')
+}
+
+function Set-FileAtomically([string]$Source, [string]$Destination) {
+    $parent = Split-Path -Path $Destination -Parent
+    [IO.Directory]::CreateDirectory($parent) | Out-Null
+    $staged = $Destination + '.poser-stage-' + [Guid]::NewGuid().ToString('N')
+    try {
+        [IO.File]::Copy($Source, $staged, $false)
+        if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+            [IO.File]::Replace($staged, $Destination, [NullString]::Value)
+        } else {
+            [IO.File]::Move($staged, $Destination)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force }
+    }
+}
+
+try {
+    if (-not $SourceRoot) { $SourceRoot = Join-Path $PSScriptRoot '..' }
+    if (-not $GameDir) {
+        Write-Host 'Endfield Poser - 安装 / 更新 / 卸载'
+        $GameDir = (Read-Host '输入含 Endfield.exe 的游戏目录（可拖入文件夹）').Trim().Trim('"')
+        $choice = Read-Host '1 = 安装或更新（默认）；2 = 卸载并保留配置与姿态'
+        if ($choice -eq '2') { $Action = 'Uninstall' }
+        elseif ($choice -and $choice -ne '1') { throw 'Invalid choice.' }
+    }
+    if (-not $GameDir) { throw 'Game directory is required.' }
+    $script:GameRoot = (Resolve-Path -LiteralPath $GameDir).ProviderPath.TrimEnd('\')
+    Assert-NoLink $script:GameRoot
+    foreach ($name in @('Endfield.exe', 'GameAssembly.dll')) {
+        if (-not (Test-Path -LiteralPath (Get-Target $name) -PathType Leaf)) {
+            throw "Not an Endfield game directory (missing $name): $script:GameRoot"
+        }
+    }
+    Assert-GameStopped
+
+    $ownedNames = @('plugin\poser.dll', 'd3dcompiler_47.dll', 'vulkan-1.dll')
+    $manifestRel = 'plugin\poser-install.json'
+    $manifestPath = Get-Target $manifestRel
+    $oldFiles = @{}
+    if (Test-Path -LiteralPath $manifestPath) {
+        $oldManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($oldManifest.product -ne 'Endfield Poser' -or $oldManifest.schema -ne 1) { throw 'Unrecognized installation record.' }
+        foreach ($entry in $oldManifest.files) {
+            if ($entry.path -notin $ownedNames -or $oldFiles.ContainsKey($entry.path)) { throw 'Invalid installation record paths.' }
+            if ($entry.installed_sha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw 'Invalid installed hash.' }
+            if ($entry.original) {
+                if ($entry.original -notmatch '^plugin\\poser-backups\\[a-zA-Z0-9-]+\\(plugin\\poser\.dll|d3dcompiler_47\.dll|vulkan-1\.dll)$' -and
+                    $entry.original -notin @('d3dcompiler_47.dll.backup', 'vulkan-1.dll.backup')) {
+                    throw 'Invalid original backup path.'
+                }
+                $originalPath = Get-Target $entry.original
+                if (-not (Test-Path -LiteralPath $originalPath -PathType Leaf) -or
+                    (Get-Sha $originalPath) -ne $entry.original_sha256) { throw "Missing or modified original backup: $originalPath" }
+            }
+            $oldFiles[$entry.path] = $entry
+        }
+    }
+
+    $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+    $backupRel = 'plugin\poser-backups\' + $stamp
+    $operations = [Collections.Generic.List[object]]::new()
+    $newFiles = [Collections.Generic.List[object]]::new()
+    $payload = [Collections.Generic.List[object]]::new()
+
+    if ($Action -eq 'Install') {
+        $sourceDir = (Resolve-Path -LiteralPath $SourceRoot).ProviderPath
+        foreach ($relative in $ownedNames) {
+            $source = Join-Path $sourceDir $relative
+            if ($relative -ne 'plugin\poser.dll' -and -not (Test-Path -LiteralPath $source)) {
+                $source = Join-Path $sourceDir ('plugin\' + $relative)
+            }
+            if ($relative -eq 'vulkan-1.dll' -and -not (Test-Path -LiteralPath $source)) { continue }
+            Assert-Dll $source
+            if ($relative -eq 'plugin\poser.dll') {
+                if ((Get-Item -LiteralPath $source).VersionInfo.ProductName -ne 'Endfield Poser') { throw 'Unexpected poser.dll product.' }
+            } elseif (-not (Test-OurProxy $source)) { throw "Unexpected proxy DLL: $source" }
+            if ([IO.Path]::GetFullPath($source) -eq (Get-Target $relative)) { throw 'Source and destination DLL must differ.' }
+            $payload.Add(@{ path = $relative; source = $source; hash = (Get-Sha $source) })
+        }
+        foreach ($item in $payload) {
+            $destination = Get-Target $item.path
+            $exists = Test-Path -LiteralPath $destination -PathType Leaf
+            $original = $null
+            $originalHash = $null
+            if ($oldFiles.ContainsKey($item.path)) {
+                $prior = $oldFiles[$item.path]
+                if ($exists -and (Get-Sha $destination) -ne $prior.installed_sha256) {
+                    throw "Installed file changed outside this installer; preserved: $destination"
+                }
+                $original = $prior.original
+                $originalHash = $prior.original_sha256
+            } elseif ($exists) {
+                if ($item.path -ne 'plugin\poser.dll' -and (Test-OurProxy $destination)) {
+                    $legacy = $item.path + '.backup'
+                    if (Test-Path -LiteralPath (Get-Target $legacy) -PathType Leaf) {
+                        if (Test-OurProxy (Get-Target $legacy)) { throw "Legacy backup contains another proxy: $legacy" }
+                        $original = $legacy
+                        $originalHash = Get-Sha (Get-Target $legacy)
+                    }
+                } else {
+                    $original = $backupRel + '\' + $item.path
+                    $originalHash = Get-Sha $destination
+                }
+            }
+            $newFiles.Add(@{ path = $item.path; installed_sha256 = $item.hash; original = $original; original_sha256 = $originalHash })
+            # Back up even an identical old DLL if it is the recorded original.
+            if (-not $exists -or (Get-Sha $destination) -ne $item.hash -or ($original -and $original.StartsWith($backupRel))) {
+                $operations.Add(@{ path = $item.path; source = $item.source; hash = $item.hash })
+            }
+        }
+        # A package without the optional Vulkan proxy must retain its old record.
+        foreach ($relative in $oldFiles.Keys) {
+            if ($relative -notin @($newFiles | ForEach-Object { $_.path })) { $newFiles.Add($oldFiles[$relative]) }
+        }
+        $presetDir = Join-Path $sourceDir 'presets\mmd'
+        if (-not (Test-Path -LiteralPath $presetDir -PathType Container)) { $presetDir = Join-Path $sourceDir 'plugin\mmd\rig-presets' }
+        if (Test-Path -LiteralPath $presetDir -PathType Container) {
+            foreach ($preset in Get-ChildItem -LiteralPath $presetDir -Filter '*.mmdrig.json' -File) {
+                $relative = 'plugin\mmd\rig-presets\' + $preset.Name
+                if (-not (Test-Path -LiteralPath (Get-Target $relative))) {
+                    $null = Get-Content -LiteralPath $preset.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $operations.Add(@{ path = $relative; source = $preset.FullName; hash = (Get-Sha $preset.FullName) })
+                }
+            }
+        }
+        $operations.Add(@{ path = $manifestRel; source = $null; manifest = $true })
+    } else {
+        if ($oldFiles.Count -eq 0) {
+            # Legacy installs did not record proxy ownership. Do not guess which
+            # other mods still need those loaders; disabling poser.dll is enough.
+            $poserPath = Get-Target 'plugin\poser.dll'
+            if (Test-Path -LiteralPath $poserPath -PathType Leaf) {
+                if ((Get-Item -LiteralPath $poserPath).VersionInfo.ProductName -ne 'Endfield Poser') { throw 'Unrecognized poser.dll; preserved.' }
+                $operations.Add(@{ path = 'plugin\poser.dll'; source = $null })
+            }
+            Write-Warning '旧安装没有归属记录：仅移除 poser.dll，保留代理 DLL 和所有用户数据。'
+        } else {
+            # Proxies load all plugin DLLs. Keep them when another plugin needs them.
+            $otherPlugins = @(Get-ChildItem -LiteralPath (Get-Target 'plugin') -Filter '*.dll' -File | Where-Object { $_.Name -ne 'poser.dll' })
+            foreach ($relative in $oldFiles.Keys) {
+                $prior = $oldFiles[$relative]
+                $destination = Get-Target $relative
+                if ($relative -ne 'plugin\poser.dll' -and $otherPlugins.Count -gt 0) {
+                    Write-Warning "Other plugin DLLs exist; keeping loader: $relative"
+                    continue
+                }
+                if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                    if ((Get-Sha $destination) -ne $prior.installed_sha256) { throw "File changed outside this installer; preserved: $destination" }
+                }
+                $restore = $null
+                # Uninstall must not resurrect a backed-up older poser.dll.
+                if ($relative -ne 'plugin\poser.dll' -and $prior.original) { $restore = Get-Target $prior.original }
+                $operations.Add(@{ path = $relative; source = $restore })
+            }
+            if ($otherPlugins.Count -eq 0) { $operations.Add(@{ path = $manifestRel; source = $null }) }
+        }
+    }
+
+    foreach ($op in $operations) { Write-Host ("{0}: {1}" -f $(if ($op.source -or $op.ContainsKey('manifest')) { 'Write' } else { 'Remove' }), (Get-Target $op.path)) }
+    if ($operations.Count -eq 0) { Write-Host 'Nothing to change.'; return }
+    if (-not $PSCmdlet.ShouldProcess($script:GameRoot, "$Action Endfield Poser; preserve user configuration and poses")) { return }
+    Assert-GameStopped
+
+    # Copy all previous files before modifying any destination. Keep backups even
+    # after success/rollback; each run uses a unique directory.
+    $snapshots = @{}
+    foreach ($op in $operations) {
+        $destination = Get-Target $op.path
+        if (Test-Path -LiteralPath $destination) {
+            if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { throw "Destination is not a file: $destination" }
+            $backup = Get-Target ($backupRel + '\' + $op.path)
+            [IO.Directory]::CreateDirectory((Split-Path -Path $backup -Parent)) | Out-Null
+            [IO.File]::Copy($destination, $backup, $false)
+            if ((Get-Sha $destination) -ne (Get-Sha $backup)) { throw "Backup verification failed: $destination" }
+            $snapshots[$op.path] = $backup
+        } else { $snapshots[$op.path] = $null }
+    }
+    if ($Action -eq 'Install') {
+        $record = @{ product = 'Endfield Poser'; schema = 1; files = @($newFiles.ToArray()); installed_at = (Get-Date -Format o) }
+        $recordPath = Get-Target ($backupRel + '\new-install.json')
+        [IO.Directory]::CreateDirectory((Split-Path -Path $recordPath -Parent)) | Out-Null
+        $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordPath -Encoding UTF8
+        $operations[$operations.Count - 1].source = $recordPath
+    }
+    $written = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($op in $operations) {
+            Assert-GameStopped
+            $destination = Get-Target $op.path
+            if ($op.source) {
+                if ($op.ContainsKey('hash') -and (Get-Sha $op.source) -ne $op.hash) { throw 'Source changed during installation.' }
+                Set-FileAtomically $op.source $destination
+                $written.Add($op)
+                if ((Get-Sha $op.source) -ne (Get-Sha $destination)) { throw "Write verification failed: $destination" }
+            } elseif (Test-Path -LiteralPath $destination) {
+                Remove-Item -LiteralPath $destination -Force
+                $written.Add($op)
+            }
+        }
+    } catch {
+        $failure = $_
+        for ($i = $written.Count - 1; $i -ge 0; --$i) {
+            $relative = $written[$i].path
+            try {
+                $destination = Get-Target $relative
+                if ($snapshots[$relative]) { Set-FileAtomically $snapshots[$relative] $destination }
+                elseif (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
+            } catch { Write-Warning "Rollback incomplete for $relative. Recover from $backupRel. $($_.Exception.Message)" }
+        }
+        throw $failure
+    }
+    Write-Host "完成：$Action。配置、布局、校准、预设和姿态均保留。"
+    Write-Host "备份目录：$(Get-Target $backupRel)"
+    if ($Action -eq 'Install') {
+        Write-Host '请通过 Hypergryph Launcher 启动游戏。L 面板；P 冻结；Ctrl+F5/F6/F7/F8 播放/暂停/停止/重置。'
+    }
+} catch {
+    Write-Verbose $_.ScriptStackTrace
+    Write-Error -ErrorAction Continue $_.Exception.Message
+    exit 1
+}

@@ -1,0 +1,1154 @@
+#pragma once
+#include "game/char_state.h"
+#include "game/mmd_io.h"
+#include "game/mmd_audio.h"
+#include "game/smc_morph.h"
+#include "math/mmd_props.h"
+#include "math/mmd_retarget.h"
+#include "math/mmd_adaptation.h"
+#include "nlohmann/json.hpp"
+#include <atomic>
+#include <chrono>
+#include <commdlg.h>
+#include <future>
+#include <iomanip>
+#include <sstream>
+#pragma comment(lib, "comdlg32.lib")
+
+static double MmdNow() {
+  return std::chrono::duration<double>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+// SEH leaves: keep C++ containers/destructors out of SEH functions (MSVC
+// C2712).
+static bool MmdReadMatrix(void *method, void *object, mmd::Matrix *out) {
+  __try {
+    if (!method || !UnityObjAlive(object))
+      return false;
+    void *boxed = Invoke(method, object);
+    if (!boxed)
+      return false;
+    memcpy(out, static_cast<char *>(boxed) + 16, 64);
+    for (float f : out->m)
+      if (!std::isfinite(f))
+        return false;
+    return true;
+  } __except (1) {
+    return false;
+  }
+}
+static void *MmdComponent(void *transform, void *klass) {
+  __try {
+    if (!UnityObjAlive(transform) || !klass)
+      return nullptr;
+    void *go = Invoke(g_component_get_gameObject, transform);
+    void *type = il2cpp_class_get_type(klass);
+    void *obj = type ? il2cpp_type_get_object(type) : nullptr;
+    void *p[] = {obj};
+    return go && obj ? Invoke(g_gameObject_GetComponent, go, p) : nullptr;
+  } __except (1) {
+    return nullptr;
+  }
+}
+static int MmdArrayLength(void *a) {
+  __try {
+    if (!a)
+      return 0;
+    int n = *(int *)(static_cast<char *>(a) + IL2CPP_ARRAY_LEN);
+    return n >= 0 && n <= 16384 ? n : 0;
+  } __except (1) {
+    return 0;
+  }
+}
+static void *MmdArrayObject(void *a, int i) {
+  __try {
+    return *((void **)(static_cast<char *>(a) + IL2CPP_ARRAY_DATA) + i);
+  } __except (1) {
+    return nullptr;
+  }
+}
+static bool MmdArrayMatrix(void *a, int i, mmd::Matrix *out) {
+  __try {
+    memcpy(out, static_cast<char *>(a) + IL2CPP_ARRAY_DATA + 64 * i, 64);
+    for (float f : out->m)
+      if (!std::isfinite(f))
+        return false;
+    return true;
+  } __except (1) {
+    return false;
+  }
+}
+static void MmdRawPose(void *t, Vec3 p, Quat q) {
+  __try {
+    if (!UnityObjAlive(t))
+      return;
+    void *pp[] = {&p};
+    void *qp[] = {&q};
+    Invoke(g_transform_set_localPosition, t, pp);
+    Invoke(g_transform_set_localRotation, t, qp);
+  } __except (1) {
+  }
+}
+static bool MmdEnabled(void *c) {
+  bool enabled = false;
+  ReadBehaviourEnabled(c, enabled);
+  return enabled;
+}
+static void MmdEnable(void *c, bool value) {
+  WriteBehaviourEnabled(c, value);
+}
+static Vec3 MmdLocalScale(void *transform) {
+  __try {
+    if (g_transform_get_localScale && UnityObjAlive(transform)) {
+      void *v = Invoke(g_transform_get_localScale, transform);
+      if (v)
+        return *(Vec3 *)(static_cast<char *>(v) + 16);
+    }
+  } __except (1) {
+  }
+  return {1, 1, 1};
+}
+static std::string MmdFingerprint() {
+  uint64_t h = 14695981039346656037ull;
+  auto hash = [&](const void *data, size_t length) {
+    auto p = static_cast<const unsigned char *>(data);
+    for (size_t j = 0; j < length; j++) {
+      h ^= p[j];
+      h *= 1099511628211ull;
+    }
+  };
+  for (size_t i = 0; i < s_allBones.size(); i++) {
+    std::string n = i ? s_allBones[i].name : CurrentCharModelKey();
+    n += "/" + std::to_string(s_allBones[i].parentIdx);
+    hash(n.data(), n.size());
+    // Binding matrices change when a replacement mesh changes bone lengths,
+    // even if it preserves every transform name and parent.
+    void *smr =
+        MmdComponent(s_allBones[i].transform, g_skinnedMeshRendererClass);
+    if (smr && g_smr_get_sharedMesh && g_mesh_get_bindposes) {
+      void *mesh = Invoke(g_smr_get_sharedMesh, smr);
+      void *poses = mesh ? Invoke(g_mesh_get_bindposes, mesh) : nullptr;
+      for (int j = 0; j < MmdArrayLength(poses); ++j) {
+        mmd::Matrix matrix;
+        if (MmdArrayMatrix(poses, j, &matrix))
+          hash(matrix.m, sizeof(matrix.m));
+      }
+    }
+  }
+  std::ostringstream s;
+  s << std::hex << h;
+  return s.str();
+}
+static std::filesystem::path MmdConfigDirectory() {
+  wchar_t p[32768] = {};
+  GetModuleFileNameW(GetModuleHandleW(L"poser.dll"), p, 32768);
+  return std::filesystem::path(p).parent_path() / L"mmd";
+}
+static mmd::RetargetProfile MmdCurrentProfile() {
+  mmd::RetargetProfile p;
+  p.model = CurrentCharModelKey();
+  p.fingerprint = MmdFingerprint();
+  p.bones.reserve(s_allBones.size());
+  for (const auto &b : s_allBones) {
+    mmd::TargetBone n;
+    n.name = b.parentIdx < 0 ? p.model : b.name;
+    n.parent = b.parentIdx;
+    n.localPos = b.parentIdx < 0 ? Vec3{} : GetBoneLocalPos(b.transform);
+    n.localRot = b.parentIdx < 0 ? Quat{} : GetBoneLocalRot(b.transform);
+    n.localScale = b.parentIdx < 0 ? Vec3{1, 1, 1} : MmdLocalScale(b.transform);
+    for (int j = 0; j < s_humanBoneCount; j++)
+      if (s_humanBones[j].transform == b.transform)
+        n.role = int(s_humanBones[j].humanBone);
+    p.bones.push_back(n);
+  }
+  p.globals();
+  return p;
+}
+static std::string s_mmdCalibrationDetail;
+static bool MmdBindCalibration(mmd::RetargetProfile &profile) {
+  s_mmdCalibrationDetail.clear();
+  if (!g_smr_get_bones || !g_mesh_get_bindposes ||
+      !g_transform_get_localToWorldMatrix) {
+    s_mmdCalibrationDetail =
+        u8"游戏未提供 bones / bindposes / localToWorldMatrix 方法";
+    Log("[MMD] calibration API unavailable: bones=%p bindposes=%p matrix=%p",
+        g_smr_get_bones, g_mesh_get_bindposes,
+        g_transform_get_localToWorldMatrix);
+    return false;
+  }
+  mmd::Matrix root, rootInv;
+  if (!MmdReadMatrix(g_transform_get_localToWorldMatrix, GetCharRootTransform(),
+                     &root) ||
+      !mmd::Inverse(root, rootInv)) {
+    s_mmdCalibrationDetail = u8"无法读取角色根矩阵";
+    return false;
+  }
+  int renderers = 0, meshes = 0, pairs = 0;
+  std::vector<mmd::Matrix> bind(profile.bones.size());
+  std::vector<bool> found(profile.bones.size());
+  std::map<void *, size_t> lookup;
+  for (size_t i = 0; i < s_allBones.size(); i++)
+    lookup[s_allBones[i].transform] = i;
+  for (const auto &node : s_allBones) {
+    void *smr = MmdComponent(node.transform, g_skinnedMeshRendererClass);
+    if (!smr)
+      continue;
+    ++renderers;
+    void *mesh = Invoke(g_smr_get_sharedMesh, smr);
+    if (!mesh)
+      continue;
+    ++meshes;
+    void *bones = Invoke(g_smr_get_bones, smr),
+         *poses = Invoke(g_mesh_get_bindposes, mesh);
+    int count = MmdArrayLength(bones);
+    if (!count || count != MmdArrayLength(poses))
+      continue;
+    ++pairs;
+    mmd::Matrix meshWorld;
+    if (!MmdReadMatrix(g_transform_get_localToWorldMatrix, node.transform,
+                       &meshWorld))
+      continue;
+    for (int j = 0; j < count; j++) {
+      auto it = lookup.find(MmdArrayObject(bones, j));
+      if (it == lookup.end() || found[it->second])
+        continue;
+      mmd::Matrix b, inv;
+      if (!MmdArrayMatrix(poses, j, &b) || !mmd::Inverse(b, inv))
+        continue;
+      bind[it->second] = rootInv * meshWorld * inv;
+      found[it->second] = true;
+    }
+  }
+  // Non-skinned intermediate nodes retain their local transforms; each skinned
+  // bone's binding matrix is converted relative to its actual parent, not a
+  // guessed humanoid parent chain.
+  std::vector<mmd::Matrix> world(profile.bones.size());
+  for (size_t i = 0; i < profile.bones.size(); i++) {
+    auto &b = profile.bones[i];
+    mmd::Matrix parent = b.parent >= 0 ? world[b.parent] : mmd::Matrix{};
+    if (found[i]) {
+      mmd::Matrix inverse;
+      if (!mmd::Inverse(parent, inverse))
+        return false;
+      auto local = inverse * bind[i];
+      b.localPos = local.position();
+      b.localRot = mmd::Rotation(local);
+      b.calibrated = true;
+    }
+    world[i] = parent * mmd::TRS(b.localPos, b.localRot, b.localScale);
+  }
+  profile.globals();
+  int calibrated = 0;
+  std::string missing;
+  for (const auto &bone : profile.bones) {
+    if (bone.calibrated)
+      ++calibrated;
+    else if (bone.role >= 0)
+      missing += std::string(HumanBoneName(bone.role)) + " ";
+  }
+  s_mmdCalibrationDetail = meshes == 0
+                               ? u8"当前模型未提供可读取的网格绑定数据。"
+                               : u8"已读取 " + std::to_string(calibrated) +
+                                     u8" 根绑定骨，但必要人体骨不完整。";
+  Log("[MMD] bind calibration: renderers=%d meshes=%d paired=%d bones=%d/%zu "
+      "missing=%s",
+      renderers, meshes, pairs, calibrated, profile.bones.size(),
+      missing.c_str());
+  return profile.valid();
+}
+static void MmdSaveCalibration(const mmd::RetargetProfile &p) {
+  using nlohmann::json;
+  json j = {{"version", 3},
+            {"model", p.model},
+            {"fingerprint", p.fingerprint},
+            {"bones", json::array()}};
+  for (const auto &b : p.bones)
+    j["bones"].push_back(
+        {{"name", b.name},
+         {"parent", b.parent},
+         {"role", b.role},
+         {"pos", {b.localPos.x, b.localPos.y, b.localPos.z}},
+         {"scale", {b.localScale.x, b.localScale.y, b.localScale.z}},
+         {"rot", {b.localRot.x, b.localRot.y, b.localRot.z, b.localRot.w}},
+         {"calibrated", b.calibrated}});
+  auto dir = MmdConfigDirectory();
+  std::filesystem::create_directories(dir);
+  auto dest = dir / (p.fingerprint + ".rig.json"), temp = dest;
+  // Version 2 manual previews could save a distorted pose. Retain the file for
+  // recovery, but never silently reuse it as a valid calibration.
+  if (std::filesystem::exists(dest)) {
+    std::ifstream old(dest);
+    auto previous = json::parse(old, nullptr, false);
+    if (previous.is_object() && previous.value("version", 0) < 3) {
+      auto backup = dest;
+      backup += L".before-tpose-fix.bak";
+      std::filesystem::copy_file(dest, backup,
+                                 std::filesystem::copy_options::skip_existing);
+    }
+  }
+  temp += L".tmp";
+  {
+    std::ofstream f(temp);
+    if (!f || !(f << j.dump(2)))
+      throw std::runtime_error("Cannot save calibration");
+  }
+  if (!MoveFileExW(temp.c_str(), dest.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    throw std::runtime_error("Cannot replace calibration");
+}
+static bool MmdLoadCalibration(mmd::RetargetProfile &p) {
+  try {
+    std::ifstream f(MmdConfigDirectory() / (p.fingerprint + ".rig.json"));
+    if (!f)
+      return false;
+    nlohmann::json j;
+    f >> j;
+    if (j.value("version", 0) != 3 || j.value("model", "") != p.model ||
+        j.value("fingerprint", "") != p.fingerprint ||
+        j["bones"].size() != p.bones.size())
+      return false;
+    auto copy = p;
+    for (size_t i = 0; i < p.bones.size(); i++) {
+      auto &b = copy.bones[i];
+      const auto &v = j["bones"][i];
+      if (v["name"] != b.name || v["parent"] != b.parent || v["role"] != b.role)
+        return false;
+      auto a = v["pos"], q = v["rot"];
+      b.localPos = {a.at(0), a.at(1), a.at(2)};
+      b.localRot = {q.at(0), q.at(1), q.at(2), q.at(3)};
+      auto scale = v["scale"];
+      Vec3 savedScale{scale.at(0), scale.at(1), scale.at(2)};
+      if (Len(savedScale - b.localScale) > 1e-5f)
+        return false;
+      b.calibrated = v.value("calibrated", false);
+      for (float x : {b.localPos.x, b.localPos.y, b.localPos.z, b.localRot.x,
+                      b.localRot.y, b.localRot.z, b.localRot.w})
+        if (!std::isfinite(x))
+          return false;
+      b.localRot = NormQ(b.localRot);
+    }
+    copy.globals();
+    if (!copy.valid())
+      return false;
+    p = std::move(copy);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+struct MmdSavedTransform {
+  void *transform;
+  Vec3 pos;
+  Quat rot;
+};
+struct MmdSavedComponent {
+  void *component;
+  bool enabled;
+};
+struct MmdSavedProp {
+  void *object = nullptr;
+  bool active = false;
+};
+static bool MmdActiveSelf(void *object, bool *active) {
+  __try {
+    if (!g_gameObject_get_activeSelf || !UnityObjAlive(object))
+      return false;
+    void *boxed = Invoke(g_gameObject_get_activeSelf, object);
+    if (!boxed)
+      return false;
+    *active = *reinterpret_cast<bool *>(static_cast<char *>(boxed) + 16);
+    return true;
+  } __except (1) {
+    return false;
+  }
+}
+static void MmdSetActive(void *object, bool active) {
+  __try {
+    if (!g_gameObject_setActive || !UnityObjAlive(object))
+      return;
+    int value = active ? 1 : 0;
+    void *args[] = {&value};
+    Invoke(g_gameObject_setActive, object, args);
+  } __except (1) {
+  }
+}
+static int MmdChildCount(void *transform) {
+  __try {
+    if (!UnityObjAlive(transform))
+      return 0;
+    void *boxed = Invoke(g_transform_get_childCount, transform);
+    int n =
+        boxed ? *reinterpret_cast<int *>(static_cast<char *>(boxed) + 16) : 0;
+    return n >= 0 && n < 8192 ? n : 0;
+  } __except (1) {
+    return 0;
+  }
+}
+struct MmdSession {
+  bool active = false, wasFrozen = false, freezeAccessories = false,
+       animatorWasEnabled = false;
+  void *animator = nullptr;
+  void *root = nullptr;
+  int revision = 0;
+  Vec3 rootPos;
+  Quat rootRot;
+  std::vector<MmdSavedTransform> transforms;
+  std::shared_ptr<GripReferences> references;
+  std::vector<MmdSavedComponent> components;
+  std::vector<MmdSavedProp> props;
+  double nextPropScan = 0;
+  std::vector<AccessoryBone> accessories;
+  std::vector<AccessoryChain> chains;
+};
+struct MmdMorphMapping {
+  int slider = -1;
+  float gain = 1;
+};
+struct MmdLoadResult {
+  int kind = 0;
+  bool cancelled = false;
+  std::string file, error;
+  mmd::MotionClip clip;
+  mmd::RigDefinition rig;
+  nlohmann::json adaptation;
+  std::shared_ptr<const mmd::AudioClip> music;
+};
+struct MmdPlayer {
+  mmd::MotionClip clip;
+  mmd::RigDefinition rig = mmd::StandardRig();
+  mmd::RigDefinition baseRig = mmd::StandardRig();
+  mmd::RigAdaptation adaptation;
+  int adaptationRevision = 0;
+  std::string adaptationFile;
+  int sourcePreset = 0; // 0: A-pose, 1: extracted T-pose; manual selection
+  mmd::IkMode ikMode = mmd::IkMode::FollowMotion;
+  mmd::MotionAmplitude amplitude;
+  mmd::RetargetProfile profile;
+  mmd::Retargeter mapper;
+  mmd::Timeline timeline;
+  mmd::AudioPlayer audio;
+  bool musicEnabled = true;
+  float musicVolume = .7f, musicOffset = 0;
+  std::string musicFile, musicError;
+  MmdSession session;
+  bool reference = false, inPlace = false, freezeCloth = false, preview = false,
+       show = true, autoScale = true;
+  float scale = .08f, height = 0;
+  std::string file, referenceFile, status = u8"选择 VMD 动作文件",
+                                   calibrationStatus;
+  std::map<std::string, MmdMorphMapping> morphMap;
+  std::vector<std::string> report;
+  std::future<MmdLoadResult> loader;
+  bool loading = false;
+  int profileRevision = -1;
+  void *profileAnimator = nullptr;
+};
+static MmdPlayer g_mmd;
+static void MmdSyncAudio() {
+  auto &m = g_mmd;
+  try {
+    m.audio.sync(m.timeline, m.session.active && !m.preview,
+                 m.musicEnabled, m.musicOffset, m.musicVolume);
+  } catch (const std::exception &e) {
+    m.audio.close();
+    m.musicEnabled = false;
+    m.musicError = e.what();
+    Log("[MMD] music disabled, body continues: %s", e.what());
+  }
+}
+static void MmdSeek(double seconds) {
+  g_mmd.timeline.seek(seconds, MmdNow());
+  MmdSyncAudio();
+}
+static const char *MmdSourceRigLabel() {
+  return g_mmd.rig.name == "Extracted T-pose" ? u8"提取动作 T 姿（中心骨在原点）"
+                                              : u8"标准 MMD（A 姿）";
+}
+static void MmdHideProps(bool force = false) {
+  auto &s = g_mmd.session;
+  if (!s.active || !UnityObjAlive(s.root) || !g_gameObject_setActive)
+    return;
+  double now = MmdNow();
+  if (!force && now < s.nextPropScan)
+    return;
+  s.nextPropScan = now + .2;
+  // Reassert hidden state if an independent idle/weapon controller enables it.
+  for (const auto &prop : s.props) {
+    bool active = false;
+    if (MmdActiveSelf(prop.object, &active) && active)
+      MmdSetActive(prop.object, false);
+  }
+  std::vector<void *> pending{s.root};
+  size_t visited = 0;
+  while (!pending.empty() && ++visited <= 8192) {
+    void *t = pending.back();
+    pending.pop_back();
+    if (!UnityObjAlive(t))
+      continue;
+    char name[256] = {};
+    GetBoneName(t, name, sizeof(name));
+    if (t != s.root && mmd::IsPlaybackPropNode(name)) {
+      void *object = Invoke(g_component_get_gameObject, t);
+      bool active = false;
+      if (MmdActiveSelf(object, &active)) {
+        auto found = std::find_if(
+            s.props.begin(), s.props.end(),
+            [&](const MmdSavedProp &p) { return p.object == object; });
+        if (found == s.props.end()) {
+          s.props.push_back({object, active});
+          Log("[MMD] prop hidden: %s (was active=%d)", name, int(active));
+        }
+        if (active)
+          MmdSetActive(object, false);
+      }
+      continue;
+    }
+    int count = MmdChildCount(t);
+    for (int child = 0; child < count; ++child) {
+      void *args[] = {&child};
+      if (void *next = Invoke(g_transform_GetChild, t, args))
+        pending.push_back(next);
+    }
+  }
+}
+static std::atomic<HWND> s_mmdDialog{nullptr};
+static std::atomic<bool> s_mmdClosing{false};
+static UINT_PTR CALLBACK MmdDialogHook(HWND window, UINT message, WPARAM,
+                                       LPARAM) {
+  if (message == WM_INITDIALOG) {
+    HWND dialog = GetParent(window);
+    s_mmdDialog.store(dialog);
+    if (s_mmdClosing.load())
+      PostMessageW(dialog, WM_CLOSE, 0, 0);
+  }
+  return 0;
+}
+static void MmdStop();
+static void MmdSaveMappings() {
+  try {
+    nlohmann::json j = nlohmann::json::object();
+    for (auto &kv : g_mmd.morphMap)
+      j[kv.first] = {{"slider", kv.second.slider}, {"gain", kv.second.gain}};
+    auto dir = MmdConfigDirectory();
+    std::filesystem::create_directories(dir);
+    std::ofstream f(dir / L"morph-mapping.json");
+    f << j.dump(2);
+  } catch (const std::exception &e) {
+    g_mmd.status = e.what();
+  }
+}
+static void MmdMapMorphs() {
+  auto &m = g_mmd;
+  m.morphMap.clear();
+  nlohmann::json saved;
+  try {
+    std::ifstream f(MmdConfigDirectory() / L"morph-mapping.json");
+    if (f)
+      f >> saved;
+  } catch (...) {
+  }
+  const char *vowels[] = {u8"あ", u8"い", u8"う", u8"え", u8"お"};
+  for (auto &kv : m.clip.morphs) {
+    MmdMorphMapping map;
+    for (int i = 0; i < 5; i++)
+      if (kv.first == vowels[i])
+        map.slider = i;
+    for (int i = 0; i < s_extraMorphCount; i++)
+      if (kv.first == mmd::Name(s_extraMorphs[i].vmdNameUtf8))
+        map.slider = 5 + i;
+    try {
+      if (saved.contains(kv.first)) {
+        map.slider = saved[kv.first].value("slider", map.slider);
+        map.gain = mmd::Clamp(saved[kv.first].value("gain", 1.f), 0, 2);
+      }
+    } catch (...) {
+    }
+    if (map.slider < -1 || map.slider >= SMCSliderCount())
+      map.slider = -1;
+    m.morphMap[kv.first] = map;
+  }
+}
+static void MmdReport() {
+  auto &m = g_mmd;
+  m.report = m.clip.warnings;
+  m.report.insert(m.report.end(), m.rig.warnings.begin(), m.rig.warnings.end());
+  mmd::RigEvaluator evaluation;
+  auto roles = mmd::AdaptedRoles(m.adaptation);
+  std::vector<int> outputs;
+  for (int i = 0; i < 55; ++i) {
+    auto it = roles.find(i);
+    outputs.push_back(m.rig.find(it == roles.end() ? mmd::RoleNames()[i] : it->second));
+  }
+  evaluation.bind(m.rig, m.clip, m.adaptation.tracks, outputs);
+  for (const auto &kv : m.adaptation.tracks)
+    if (!kv.second.empty() && !m.clip.bones.count(kv.second))
+      m.report.push_back(u8"映射的动作轨道不存在：" + kv.second + u8" → " + kv.first);
+  for (const auto &name : evaluation.unmapped)
+    m.report.push_back(u8"未映射或不影响人体的骨骼: " + name);
+  for (auto &kv : m.morphMap)
+    if (kv.second.slider < 0) {
+      auto type = m.rig.morphTypes.find(kv.first);
+      m.report.push_back((type != m.rig.morphTypes.end() && type->second == 8
+                              ? u8"不支持材质表情: "
+                              : u8"未映射表情: ") +
+                         kv.first);
+    }
+}
+static bool MmdApplyAdaptation(const mmd::RigAdaptation &next, int sourcePreset) {
+  auto &m = g_mmd;
+  if (m.session.active || m.loading) return false;
+  try {
+    auto base = m.reference ? m.baseRig : mmd::StandardRig(
+        sourcePreset == 1 ? mmd::BuiltinRigPreset::ExtractedTPose : mmd::BuiltinRigPreset::StandardMmd);
+    auto rig = mmd::AdaptRig(base, next);
+    m.baseRig = std::move(base); m.rig = std::move(rig);
+    m.adaptation = next; m.sourcePreset = sourcePreset;
+    ++m.adaptationRevision;
+    MmdReport();
+    m.status = u8"骨架适配已应用；下次播放使用新设置";
+    return true;
+  } catch (const std::exception &e) {
+    m.status = std::string(u8"未应用，保留原适配：") + e.what();
+    return false;
+  }
+}
+static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
+  auto &m = g_mmd;
+  if (m.loading || m.session.active)
+    return;
+  s_mmdClosing.store(false);
+  HWND owner = g_gameHwnd;
+  nlohmann::json saved;
+  if (kind == 4) {
+    saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
+    saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
+    saved["requires_pmx"] = m.reference;
+    // Portable source structure check, never store a required local PMX path.
+    if (m.reference) {
+      saved["pmx_bones"] = nlohmann::json::array();
+      for (const auto &b : m.baseRig.bones) saved["pmx_bones"].push_back(b.name);
+    }
+  }
+  auto presetDir = MmdConfigDirectory() / L"rig-presets";
+  m.loader = std::async(std::launch::async, [kind, owner, path, saved, presetDir]() {
+    MmdLoadResult result;
+    result.kind = kind;
+    try {
+      auto selected = path;
+      if (selected.empty()) {
+        wchar_t name[32768] = {};
+        OPENFILENAMEW ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = owner;
+        ofn.lpstrFile = name;
+        ofn.nMaxFile = 32768;
+        ofn.lpstrFilter =
+            kind == 5 ? L"Music (WAV/MP3/M4A/AAC/WMA/FLAC)\0*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac\0All files\0*.*\0\0" :
+            kind >= 3 ? L"MMD rig preset\0*.mmdrig.json;*.json\0\0" :
+            kind == 2 ? L"PMX skeleton\0*.pmx\0\0" : L"VMD motion\0*.vmd\0\0";
+        ofn.Flags = (kind == 4 ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST) | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                    OFN_EXPLORER | OFN_ENABLEHOOK;
+        if (kind == 3 || kind == 4) {
+          std::filesystem::create_directories(presetDir);
+          ofn.lpstrInitialDir = presetDir.c_str();
+          ofn.lpstrDefExt = L"mmdrig.json";
+        }
+        ofn.lpfnHook = MmdDialogHook;
+        if (!(kind == 4 ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn))) {
+          s_mmdDialog.store(nullptr);
+          DWORD error = CommDlgExtendedError();
+          if (error)
+            throw std::runtime_error("File dialog failed: " +
+                                     std::to_string(error));
+          result.cancelled = true;
+          return result;
+        }
+        s_mmdDialog.store(nullptr);
+        selected = name;
+      }
+      result.file = mmd::Utf8(selected.wstring());
+      if (kind == 5) {
+        result.music = mmd::DecodeAudio(selected, s_mmdClosing);
+        return result;
+      }
+      if (kind == 4) {
+        auto temporary = selected; temporary += L".tmp";
+        auto text = saved.dump(2);
+        if (text.size() > 1024 * 1024) throw std::runtime_error(u8"适配预设超过 1 MiB");
+        {
+          std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
+          f.write(text.data(), std::streamsize(text.size()));
+          f.flush();
+          if (!f) throw std::runtime_error(u8"无法写入适配预设");
+        }
+        if (!MoveFileExW(temporary.c_str(), selected.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+          throw std::runtime_error(u8"无法替换适配预设文件");
+        return result;
+      }
+      if (kind == 3 && std::filesystem::file_size(selected) > 1024 * 1024)
+        throw std::runtime_error(u8"适配预设超过 1 MiB");
+      auto bytes = mmd::ReadFile(selected);
+      if (kind == 3) {
+        result.adaptation = nlohmann::json::parse(bytes.begin(), bytes.end());
+        int pose; mmd::IkMode ik;
+        mmd::ReadAdaptation(result.adaptation, pose, ik);
+        mmd::ReadAmplitude(result.adaptation);
+      } else if (kind == 2)
+        result.rig = mmd::ReadPmx(bytes, mmd::Decode);
+      else {
+        result.clip = mmd::ReadVmd(bytes, mmd::Decode);
+        if (result.clip.empty())
+          throw std::runtime_error("VMD contains no bone or face motion");
+        if (kind == 1) {
+          bool eyes = false;
+          for (auto &kv : result.clip.bones)
+            eyes = eyes || mmd::EyeBone(kv.first);
+          if (result.clip.morphs.empty() && !eyes)
+            throw std::runtime_error("No facial/eye tracks to append");
+        }
+      }
+    } catch (const std::exception &e) {
+      result.error = e.what();
+    }
+    return result;
+  });
+  m.loading = true;
+}
+static void MmdPollLoad() {
+  auto &m = g_mmd;
+  if (!m.loading ||
+      m.loader.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+    return;
+  auto r = m.loader.get();
+  m.loading = false;
+  if (r.cancelled)
+    return;
+  if (!r.error.empty()) {
+    m.status = r.error;
+    Log("[MMD] load error: %s", r.error.c_str());
+    return;
+  }
+  if (r.kind == 5) {
+    m.audio.setClip(std::move(r.music));
+    m.musicFile = r.file;
+    m.musicError.clear();
+    m.musicEnabled = true;
+    m.status = u8"音乐已就绪，随动作播放";
+    return;
+  }
+  if (r.kind == 4) {
+    m.adaptationFile = r.file;
+    m.status = u8"适配预设已保存：" + r.file;
+    return;
+  }
+  if (r.kind == 3) {
+    try {
+      const auto &j = r.adaptation;
+      if (j.value("requires_pmx", false)) {
+        std::vector<std::string> names;
+        for (const auto &b : m.baseRig.bones) names.push_back(b.name);
+        if (!m.reference || names != j.at("pmx_bones").get<std::vector<std::string>>())
+          throw std::runtime_error(u8"此预设需要先选择对应 PMX 骨架参考");
+      } else if (m.reference) {
+        throw std::runtime_error(u8"此预设用于内置骨架，请先点击使用内置骨架");
+      }
+      int pose; mmd::IkMode ik;
+      auto a = mmd::ReadAdaptation(j, pose, ik);
+      auto amplitude = mmd::ReadAmplitude(j);
+      if (MmdApplyAdaptation(a, pose)) {
+        m.amplitude = amplitude;
+        m.ikMode = ik; m.adaptationFile = r.file;
+        m.status = u8"适配预设已载入：" + r.file;
+      }
+    } catch (const std::exception &e) {
+      m.status = std::string(u8"保留原适配：") + e.what();
+    }
+    return;
+  }
+  if (r.kind == 2) {
+    try {
+      auto adapted = mmd::AdaptRig(r.rig, m.adaptation);
+      m.baseRig = std::move(r.rig); m.rig = std::move(adapted);
+    } catch (const std::exception &e) {
+      m.status = std::string(u8"PMX 与当前适配不兼容，保留原骨架：") + e.what();
+      return;
+    }
+    ++m.adaptationRevision;
+    m.reference = true;
+    m.autoScale = true;
+    m.referenceFile = r.file;
+  } else if (r.kind == 1)
+    mmd::AppendFace(m.clip, r.clip);
+  else {
+    m.clip = std::move(r.clip);
+    m.file = r.file;
+    m.timeline.stop();
+  }
+  m.timeline.duration = m.clip.duration();
+  MmdMapMorphs();
+  MmdReport();
+  m.profileRevision = -1;
+  m.status = u8"导入完成";
+  Log("[MMD] imported %s: bone_keys=%zu morph_keys=%zu frames=%u",
+      r.file.c_str(), m.clip.boneKeys, m.clip.morphKeys, m.clip.lastFrame);
+}
+static bool MmdCharacterReady() {
+  return g_charAnimator && g_mainCharEntity == g_captureEntity &&
+         !g_charChanged && CharAnimatorAlive() && s_humanBoneCount > 0;
+}
+static bool MmdPrepareProfile() {
+  auto &m = g_mmd;
+  if (!MmdCharacterReady()) {
+    m.status = u8"正在等待当前角色骨架，请稍后重试或点击刷新骨骼";
+    return false;
+  }
+  if (m.profileAnimator == g_charAnimator &&
+      m.profileRevision == s_bonesRev && m.profile.valid())
+    return true;
+  m.profile = MmdCurrentProfile();
+  if (MmdLoadCalibration(m.profile)) {
+    m.calibrationStatus = u8"已读取保存的校准";
+  } else if (MmdBindCalibration(m.profile)) {
+    m.calibrationStatus = u8"绑定姿态自动校准完成";
+    try {
+      MmdSaveCalibration(m.profile);
+    } catch (const std::exception &e) {
+      Log("[MMD] calibration cache: %s", e.what());
+    }
+  } else {
+    m.calibrationStatus =
+        u8"无法取得完整绑定姿态，请使用 T 姿校准。" + s_mmdCalibrationDetail;
+    m.status = m.calibrationStatus;
+    return false;
+  }
+  m.profileRevision = s_bonesRev;
+  m.profileAnimator = g_charAnimator;
+  return true;
+}
+static void MmdCaptureSession() {
+  auto &m = g_mmd;
+  auto &s = m.session;
+  s = MmdSession{};
+  s.active = true;
+  s.animator = g_charAnimator;
+  s.root = GetCharRootTransform();
+  s.revision = s_bonesRev;
+  s.wasFrozen = g_frozen;
+  s.freezeAccessories = g_freezeAccessories;
+  s.animatorWasEnabled = g_animatorWasEnabled;
+  s.references = std::make_shared<GripReferences>();
+  auto retain = [&](void *object) {
+    if (object && il2cpp_gchandle_new && il2cpp_gchandle_free) {
+      uint32_t handle = il2cpp_gchandle_new(object, false);
+      if (handle) s.references->handles.push_back(handle);
+    }
+  };
+  retain(s.animator);
+  retain(s.root);
+  s.rootPos = GetBoneLocalPos(s.root);
+  s.rootRot = GetBoneLocalRot(s.root);
+  for (auto &b : s_allBones) {
+    retain(b.transform);
+    s.transforms.push_back({b.transform, GetBoneLocalPos(b.transform),
+                            GetBoneLocalRot(b.transform)});
+  }
+  s.accessories = s_accessoryBones;
+  s.chains = s_accessoryChains;
+  CollectIKComponents();
+  std::set<void *> components;
+  components.insert(g_charAnimator);
+  components.insert(g_charAnimComp);
+  components.insert(s_animatorMono);
+  for (int i = 0; i < s_ikBipedCount; i++)
+    components.insert(s_ikBiped[i]);
+  for (int i = 0; i < s_ikGrounderCount; i++)
+    components.insert(s_ikGrounder[i]);
+  for (int i = 0; i < s_ikLookAtCount; i++)
+    components.insert(s_ikLookAt[i]);
+  for (int i = 0; i < s_ikDamperCount; i++)
+    components.insert(s_ikDamper[i]);
+  for (auto &b : s_accessoryBones)
+    for (void *c : b.physicsComps)
+      components.insert(c);
+  for (void *c : components)
+    if (LiveBehaviour(c)) {
+      retain(c);
+      s.components.push_back({c, MmdEnabled(c)});
+    }
+  g_freezeAccessories = m.freezeCloth;
+  if (g_frozen && !m.freezeCloth)
+    SetAllPhysicsEnabled(true, true);
+  if (!g_frozen)
+    FreezeCharacter();
+  if (m.freezeCloth) {
+    CaptureAccessorySnapshot();
+    SetAllPhysicsEnabled(false, true);
+  }
+  MmdHideProps(true);
+}
+static void MmdStop() {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  auto &m = g_mmd;
+  auto &s = m.session;
+  m.timeline.stop();
+  m.audio.close();
+  SMCMotionPublish({});
+  InterlockedExchange(&g_mmdOwnsPose, 0);
+  m.preview = false;
+  if (!s.active)
+    return;
+  bool ownerAlive = UnityObjAlive(s.animator) && UnityObjAlive(s.root);
+  // Handles belong to the recorded actor, never implicitly to the new actor.
+  if (ownerAlive)
+    for (auto &b : s.transforms)
+      MmdRawPose(b.transform, b.pos, b.rot);
+  if (!s.wasFrozen) {
+    for (size_t i = 0; i < g_frozenGrips.size(); i++)
+      if (g_frozenGrips[i].animator == s.animator) {
+        g_frozenGrips.erase(g_frozenGrips.begin() + i);
+        break;
+      }
+  }
+  if (ownerAlive) {
+    for (auto &c : s.components) MmdEnable(c.component, c.enabled);
+    for (const auto &prop : s.props) MmdSetActive(prop.object, prop.active);
+  }
+  if (g_charAnimator == s.animator) {
+    g_frozen = s.wasFrozen;
+    g_freezeAccessories = s.freezeAccessories;
+    g_animatorWasEnabled = s.animatorWasEnabled;
+    if (ownerAlive && !s.wasFrozen)
+      RestoreSkirtColliders();
+    s_accessoryBones = s.accessories;
+    s_accessoryChains = s.chains;
+    if (ownerAlive) CapturePoseSnapshot();
+    else {
+      // Preserve the pre-playback body pose in memory even if Unity has
+      // already destroyed the original actor during the switch.
+      for (int i = 0; i < s_humanBoneCount; ++i)
+        for (const auto &saved : s.transforms)
+          if (s_humanBones[i].transform == saved.transform) {
+            s_humanBones[i].localPos = saved.pos;
+            s_humanBones[i].localRot = saved.rot;
+            break;
+          }
+    }
+  }
+  s.active = false;
+  s.references.reset();
+  m.preview = false;
+  m.status = u8"已停止并恢复播放前状态";
+  Log("[MMD] stopped/restored actor=%p", s.animator);
+}
+static void MmdCharacterChanging() {
+  MmdStop();
+  auto &m = g_mmd;
+  m.profileRevision = -1;
+  m.profileAnimator = nullptr;
+  m.profile = mmd::RetargetProfile{};
+  m.calibrationStatus = u8"角色已切换，等待新角色骨架；原角色校准仍保存在文件中";
+  m.status = u8"切换角色已停止动作，等待新角色骨架";
+}
+static void MmdApplyFrame() {
+  auto &m = g_mmd;
+  auto &s = m.session;
+  if (!s.active || m.preview)
+    return;
+  if (s.animator != g_charAnimator || s.revision != s_bonesRev ||
+      !UnityObjAlive(s.animator) || !UnityObjAlive(s.root)) {
+    MmdStop();
+    return;
+  }
+  double frame = m.timeline.seconds * 30.;
+  m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude);
+  const auto &p = m.mapper.output;
+  MmdRawPose(s.root, s.rootPos + s.rootRot * p.rootOffset, s.rootRot);
+  for (size_t i = 0; i < p.write.size(); i++) {
+    if (!p.write[i] || i >= s_allBones.size())
+      continue;
+    int role = m.profile.bones[i].role;
+    bool locked = false;
+    for (int h = 0; h < s_humanBoneCount; h++)
+      if (s_humanBones[h].humanBone == role)
+        locked = s_humanBones[h].locked;
+    if (locked)
+      continue;
+    void *t = s_allBones[i].transform;
+    MmdRawPose(t, m.profile.bones[i].localPos, p.localRot[i]);
+    for (int h = 0; h < s_humanBoneCount; h++)
+      if (s_humanBones[h].transform == t) {
+        s_humanBones[h].localPos = m.profile.bones[i].localPos;
+        s_humanBones[h].localRot = p.localRot[i];
+      }
+  }
+  SMCMotionFrame face;
+  face.active = !m.clip.morphs.empty();
+  face.animator = s.animator;
+  for (auto &kv : m.morphMap)
+    if (kv.second.slider >= 0)
+      face.weights[kv.second.slider] =
+          mmd::Clamp(face.weights[kv.second.slider] +
+                         mmd::SampleMorph(m.clip.morphs.at(kv.first), frame) *
+                             kv.second.gain,
+                     0, 1);
+  for (int e = 0; e < 2; e++) {
+    int idx = m.profile.roles[21 + e];
+    if (idx >= 0 && p.write[idx]) {
+      face.active = true;
+      face.eyeDriven[e] = true;
+      face.eyes[e] = s_allBones[idx].transform;
+      face.eyeRotation[e] = p.localRot[idx];
+    }
+  }
+  SMCMotionPublish(face);
+}
+static bool MmdStart() {
+  auto &m = g_mmd;
+  if (m.loading || m.preview || m.clip.empty())
+    return false;
+  if (!MmdCharacterReady()) {
+    MmdStop();
+    m.status = u8"正在等待当前角色骨架，请稍后重试或点击刷新骨骼";
+    return false;
+  }
+  if (m.session.active) {
+    m.timeline.play(MmdNow());
+    return true;
+  }
+  if (m.clip.bones.empty()) {
+    if (!g_charAnimator || !UnityObjAlive(g_charAnimator))
+      return false;
+    m.profile = MmdCurrentProfile();
+    m.profileRevision = -1;
+  } else if (!MmdPrepareProfile())
+    return false;
+  m.mapper.bind(m.rig, m.clip, m.profile, mmd::AdaptedRoles(m.adaptation), m.adaptation.tracks);
+  if (m.reference && m.autoScale)
+    m.scale = m.mapper.suggestedScale;
+  MmdCaptureSession();
+  InterlockedExchange(&g_mmdOwnsPose, 1);
+  m.timeline.duration = m.clip.duration();
+  m.timeline.play(MmdNow());
+  m.status = u8"播放中";
+  MmdApplyFrame();
+  Log("[MMD] playing %s, actor=%p scale=%.5f", m.file.c_str(), g_charAnimator,
+      m.scale);
+  return true;
+}
+static void MmdTick() {
+  try {
+    auto &m = g_mmd;
+    MmdPollLoad();
+    if (m.session.active && (!MmdCharacterReady() ||
+                             m.session.animator != g_charAnimator ||
+                             m.session.revision != s_bonesRev ||
+                             !UnityObjAlive(m.session.animator))) {
+      MmdStop();
+      return;
+    }
+    if (MmdOwnsPose()) {
+      m.timeline.tick(MmdNow());
+      MmdApplyFrame();
+    }
+    MmdSyncAudio();
+    if (m.session.active)
+      MmdHideProps();
+  } catch (const std::exception &e) {
+    MmdStop();
+    g_mmd.status = e.what();
+    Log("[MMD] playback failed: %s", e.what());
+  }
+}
+// Reset keeps the playback anchor and holds frame zero; Stop restores the pose
+// captured before playback. Pausing never captures or replaces that session.
+static void MmdPlaybackCommand(int command) {
+  try {
+    auto &m = g_mmd;
+    Log("[MMD] command begin=%d state=%d frame=%.2f actor=%p", command,
+        int(m.timeline.state), m.timeline.seconds * 30, m.session.animator);
+    if (command == 2) {
+      MmdStop();
+      return;
+    }
+    if (m.preview || m.loading)
+      return;
+    if (command == 0) {
+      MmdStart();
+    } else if (command == 1 && MmdOwnsPose()) {
+      m.timeline.pause(MmdNow());
+      m.status = u8"已暂停，保持当前姿态";
+    } else if (command == 3) {
+      if (!m.session.active && !MmdStart())
+        return;
+      MmdSeek(0);
+      MmdApplyFrame();
+      m.status = u8"已回到动作首帧，暂停中";
+    }
+    MmdSyncAudio();
+    Log("[MMD] command=%d state=%d frame=%.2f actor=%p", command,
+        int(m.timeline.state), m.timeline.seconds * 30, m.session.animator);
+  } catch (const std::exception &e) {
+    MmdStop();
+    g_mmd.status = e.what();
+    Log("[MMD] command failed: %s", e.what());
+  }
+}
+static void MmdBeginCalibration() {
+  auto &m = g_mmd;
+  if (m.session.active || m.loading)
+    return;
+  if (!MmdCharacterReady()) {
+    m.status = u8"正在等待当前角色骨架，请稍后重试或点击刷新骨骼";
+    return;
+  }
+  MmdCaptureSession();
+  m.preview = true;
+  auto p = MmdCurrentProfile();
+  Vec3 up = Conj(GetBoneWorldRot(m.session.root)) * Vec3{0, 1, 0};
+  if (!mmd::MakeCalibrationTPose(p, up)) {
+    MmdStop();
+    m.calibrationStatus =
+        u8"必要骨骼缺失或方向退化，无法生成 T 姿；已恢复原姿态";
+    return;
+  }
+  for (size_t i = 0; i < p.bones.size(); ++i)
+    if (p.bones[i].role >= 0 && p.bones[i].role != LeftEye &&
+        p.bones[i].role != RightEye && p.bones[i].role != Jaw)
+      MmdRawPose(s_allBones[i].transform, p.bones[i].localPos,
+                 p.bones[i].localRot);
+  CapturePoseSnapshot();
+  if (m.freezeCloth)
+    CaptureAccessorySnapshot();
+  m.status = u8"正在预览 T 姿";
+  m.calibrationStatus = u8"校准预览：可用骨骼面板调整 T 姿，再确认保存或取消";
+}
+static void MmdConfirmCalibration() {
+  auto &m = g_mmd;
+  if (!m.preview)
+    return;
+  if (!MmdCharacterReady() || m.session.animator != g_charAnimator ||
+      m.session.revision != s_bonesRev) {
+    MmdCharacterChanging();
+    return;
+  }
+  auto p = MmdCurrentProfile();
+  for (auto &b : p.bones)
+    b.calibrated = true;
+  p.globals();
+  Vec3 up = Conj(GetBoneWorldRot(m.session.root)) * Vec3{0, 1, 0};
+  if (!mmd::CalibrationTPoseValid(p, up)) {
+    m.status = u8"校准姿态无效：请保持躯干直立、双臂水平、双腿伸直，再确认保存";
+    return;
+  }
+  try {
+    MmdSaveCalibration(p);
+    MmdStop();
+    m.profile = std::move(p);
+    m.profileRevision = s_bonesRev;
+    m.profileAnimator = g_charAnimator;
+    m.calibrationStatus = u8"手动校准已保存";
+  } catch (const std::exception &e) {
+    m.status = e.what();
+  }
+}

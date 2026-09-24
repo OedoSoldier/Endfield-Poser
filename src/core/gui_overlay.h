@@ -22,6 +22,7 @@
 
 #include "base.h"
 #include "il2cpp_api.h"
+#include "frame_driver.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -48,7 +49,11 @@ static HWND g_guiHwnd = nullptr;
 
 // 图钉：锁定所有面板窗口位置（拖火柴人/滑块时窗口不会跟着动）。
 // 放在这里是因为 poser.cpp 与 editor/panel_*.h 都要用它。
-static bool g_pinPanels = true;
+static bool g_pinPanels = false;
+static int g_resetPanelLayoutFrames = 0;
+static ImGuiCond PanelPositionCondition() {
+  return g_resetPanelLayoutFrames > 0 ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+}
 
 // ---- 输入路由状态 ----
 // 鼠标只在「指针落在面板/旋转盘上 且 游戏光标已呼出」时由覆盖层吃掉，其余一律穿透给
@@ -87,7 +92,7 @@ static void SetOverlayClickThrough(bool on) {
   Log("[INPUT] overlay click-through=%d", (int)on);
 }
 static volatile bool g_guiVisible = false;
-static volatile bool g_guiRunning = false;
+static std::atomic<bool> g_guiRunning{false};
 static bool g_xxmiDetected = false; // 进程里发现第三方 d3d11.dll（XXMI/3DMigoto）
 
 // ---- 热键轮询线程 ----
@@ -98,6 +103,7 @@ static bool g_xxmiDetected = false; // 进程里发现第三方 d3d11.dll（XXMI
 // 也不怕 GUI 循环被分层回读/游戏卡顿拖慢而漏掉短按。
 static volatile LONG g_hotkeyToggleReq = 0;
 static volatile LONG g_hotkeyFreezeReq = 0;
+static volatile LONG g_mmdHotkeyRequests = 0;
 // 左键"短按"（不含拖动）计数：给"点空白处取消选中"用。因为覆盖层是可穿透的，
 // 点在远处空白处时这次点击根本不会进我们的窗口，只能靠轮询知道它发生过。
 static volatile LONG g_leftClickReq = 0;
@@ -109,6 +115,7 @@ static volatile LONG g_hotkeyCaptureCtrl = 0;
 
 static DWORD WINAPI HotkeyPollThread(LPVOID) {
   bool prevToggle = false, prevFreeze = false;
+  bool prevMmd[4] = {};
   bool prevLBtn = false;
   static bool prevAll[256] = {};
   int lastCapture = 0;
@@ -171,6 +178,7 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
       // 捕获期间不触发正常热键
       prevToggle = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
       prevFreeze = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
+      for(int i=0;i<4;++i) prevMmd[i]=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0;
       Sleep(5);
       continue;
     }
@@ -179,6 +187,7 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
     if (g_inputWantsText) {
       prevToggle = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
       prevFreeze = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
+      for(int i=0;i<4;++i) prevMmd[i]=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0;
       Sleep(5);
       continue;
     }
@@ -187,6 +196,11 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
     HWND fg = GetForegroundWindow();
     bool ourFocus = (fg != nullptr) && (fg == g_gameHwnd || fg == g_guiHwnd);
     bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    for(int i=0;i<4;++i) {
+      bool pressed=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0 && (!g_mmdHotkeyCtrl[i] || ctrl);
+      if(ourFocus && pressed && !prevMmd[i]) InterlockedOr(&g_mmdHotkeyRequests,1<<i);
+      prevMmd[i]=pressed;
+    }
     bool t = ourFocus && (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0 &&
              (!g_guiToggleCtrl || ctrl);
     bool f = ourFocus && (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0 &&
@@ -837,16 +851,19 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
   return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-static DWORD WINAPI GuiThread(LPVOID) {
+static const ImWchar *PoserGlyphRanges(ImFontAtlas *atlas) {
+  static ImVector<ImWchar> glyphRanges;
+  ImFontGlyphRangesBuilder ranges;
+  ranges.AddRanges(atlas->GetGlyphRangesChineseSimplifiedCommon());
+  ranges.AddRanges(atlas->GetGlyphRangesJapanese());
+  ranges.BuildRanges(&glyphRanges);
+  return glyphRanges.Data;
+}
+
+static DWORD GuiThreadBody(LPVOID) {
   // 附加到 IL2CPP 域：GUI 线程每帧会经 DrawPoserGui->GameFrameTick 触碰游戏对象，
   // 不附加会让 GC 从"未知线程"收集托管对象，触发 fatal error 崩溃。
-  if (il2cpp_domain_get && il2cpp_thread_attach) {
-    void *domain = il2cpp_domain_get();
-    if (domain) {
-      il2cpp_thread_attach(domain);
-      Log("[GUI] attached to IL2CPP domain");
-    }
-  }
+  // RuntimeThreadScope in the entry point releases registration on every exit.
   // 游戏启动较慢：先轮询等 Unity 主窗口出现（最多 60 秒），再回退任意窗口
   g_gameHwnd = nullptr;
   for (int i = 0; i < 60 && !g_gameHwnd; i++) {
@@ -935,7 +952,12 @@ static DWORD WINAPI GuiThread(LPVOID) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
-  io.IniFilename = nullptr;
+  static char layoutPath[MAX_PATH] = {};
+  GetModuleFileNameA(GetModuleHandleA("poser.dll"), layoutPath, MAX_PATH);
+  char *layoutSlash = strrchr(layoutPath, '\\');
+  if (layoutSlash) strcpy_s(layoutSlash + 1, size_t(layoutPath + MAX_PATH - layoutSlash - 1), "poser_layout.ini");
+  io.IniFilename = layoutSlash ? layoutPath : "plugin/poser_layout.ini";
+  io.ConfigWindowsMoveFromTitleBarOnly = true;
   io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // 关键盘导航，避免输入框被自动聚焦
   io.MouseDrawCursor = false;
   ImGui::StyleColorsDark();
@@ -957,8 +979,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
     bool loaded = false;
     if (GetFileAttributesA(fontPath) != INVALID_FILE_ATTRIBUTES) {
       ImFont *f = io.Fonts->AddFontFromFileTTF(
-          fontPath, 18.0f, &fontCfg,
-          io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+          fontPath, 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
       loaded = (f != nullptr);
     }
     if (!loaded) {
@@ -973,10 +994,12 @@ static DWORD WINAPI GuiThread(LPVOID) {
   g_guiVisible = false;
   ShowWindow(g_guiHwnd, SW_HIDE);
   Log("[GUI] ImGui initialized, panel ready");
+  StartGameFrameDriver();
 
   MSG msg;
   ZeroMemory(&msg, sizeof(msg));
   bool s_panelShown = false;
+  ULONGLONG nextDrawTick=0;
   while (g_guiRunning) {
     if (g_extPollFn)
       g_extPollFn(); // 控制文件轮询（面板隐藏时也执行）
@@ -991,6 +1014,8 @@ static DWORD WINAPI GuiThread(LPVOID) {
       g_guiRunning = false;
       break;
     }
+
+    ULONGLONG tickNow=GetTickCount64();
 
     // 快捷键：切换面板显示（由 HotkeyPollThread 边沿检测，见上方注释）
     if (TakeHotkeyToggle()) {
@@ -1054,12 +1079,12 @@ static DWORD WINAPI GuiThread(LPVOID) {
     }
     if (!s_panelShown) {
       // 隐藏覆盖层时仍跑游戏逻辑（冻结维持/IK写回/控制文件）
-      __try { GameFrameTick(); } __except (1) {
-        Log("[GUI] hidden GameFrameTick exception");
-      }
-      Sleep(30);
+      Sleep(1);
       continue;
     }
+
+    if(tickNow<nextDrawTick) { Sleep(1); continue; }
+    nextDrawTick=tickNow + (g_layeredOverlay && g_overlayFps>0 ? (ULONGLONG)(std::max)(1,1000/g_overlayFps) : 16);
 
     // 覆盖层是 NOACTIVATE，ImGui 的 Win32 后端只在"窗口获得焦点"时才轮询
     // GetCursorPos；而我们把非面板区域的鼠标消息让给了游戏，WM_MOUSEMOVE 不会
@@ -1121,20 +1146,14 @@ static DWORD WINAPI GuiThread(LPVOID) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     if (g_layeredOverlay) {
       PresentLayered();
-      // 分层路径没有垂直同步：按 overlay_fps 限帧（0=不限）。
-      // mod 多的机器上，回读等待本来就长，帧率越低对游戏干扰越小。
-      DWORD waitMs = 8;
-      if (g_overlayFps > 0) {
-        int ms = 1000 / g_overlayFps;
-        waitMs = (DWORD)(ms < 1 ? 1 : ms);
-      }
-      Sleep(waitMs);
+      // Pose updates run on the game callback / independent fallback.
     } else {
       g_pSwapChain->Present(0, 0);
     }
   }
 
   Log("[GUI] Shutting down...");
+  StopGameFrameDriver();
   if (g_guiShutdownFn) {
     __try {
       g_guiShutdownFn(); // 解冻 + 恢复物理/表情，避免禁用插件后布料一直僵着
@@ -1148,6 +1167,26 @@ static DWORD WINAPI GuiThread(LPVOID) {
   CleanupDeviceD3D();
   DestroyWindow(g_guiHwnd);
   return 0;
+}
+
+static DWORD WINAPI GuiThread(LPVOID arg) {
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) {
+    Log("[GUI] game runtime attachment failed");
+    g_guiRunning = false;
+    return 0;
+  }
+  try {
+    Log("[GUI] attached to IL2CPP domain");
+    return GuiThreadBody(arg);
+  } catch (...) {
+    Log("[GUI] native thread interrupted; releasing runtime registration");
+    g_guiRunning = false;
+    g_hotkeyPollRun = 0;
+    StopGameFrameDriver();
+    if (g_guiShutdownFn) g_guiShutdownFn();
+    return 0;
+  }
 }
 
 static void StartGuiThread() {

@@ -17,6 +17,11 @@ static int g_screenshotVK = VK_F8;      // 截图
 // 冻结 / 解冻：默认 P
 static int g_freezeVK = 'P';
 static bool g_freezeCtrl = false;
+// MMD controls remain available when the overlay is hidden.
+static const int k_mmdHotkeyDefaults[4] = {VK_F5, VK_F6, VK_F7, VK_F8};
+static int g_mmdHotkeyVK[4] = {VK_F5, VK_F6, VK_F7, VK_F8};
+static bool g_mmdHotkeyCtrl[4] = {true, true, true, true};
+static const char *k_mmdHotkeyKeys[4] = {"mmd_play_key", "mmd_pause_key", "mmd_stop_key", "mmd_reset_key"};
 static bool g_hotkeyConflict = false;   // 配置里还留着易冲突的 F10~F12 → 面板给提示
 static char g_hotkeyConflictMsg[192] = "";
 static char g_hotkeyRiskyMsg[192] = ""; // 绑成单键（字母/数字…）→ 打字会误触发，提示
@@ -371,6 +376,11 @@ static bool LoadPoserConfig() {
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
     else if (strcmp(key, "freeze_key") == 0)
       ParseHotkey(val, &g_freezeVK, &g_freezeCtrl, 'P', false);
+    else if (strncmp(key, "mmd_", 4) == 0) {
+      for (int i=0;i<4;++i)
+        if (strcmp(key,k_mmdHotkeyKeys[i])==0)
+          ParseHotkey(val,&g_mmdHotkeyVK[i],&g_mmdHotkeyCtrl[i],k_mmdHotkeyDefaults[i],true);
+    }
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "overlay_mode") == 0)    g_overlayMode = (int)strtoul(val, nullptr, 0);
     else if (strcmp(key, "overlay_fps") == 0) {

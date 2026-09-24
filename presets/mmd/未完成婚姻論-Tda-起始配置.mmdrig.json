@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "source_pose": 0,
+  "ik_mode": 0,
+  "requires_pmx": false,
+  "control_root": false,
+  "upper_body_1": false,
+  "waist_cancel": false,
+  "leg_d_toe_ex": true,
+  "parent_root": false,
+  "groove": false,
+  "upper_body_2": false,
+  "shoulder_cancel": false,
+  "twists": false,
+  "ik_parents": false,
+  "tracks": {},
+  "roles": [],
+  "extra_bones": []
+}

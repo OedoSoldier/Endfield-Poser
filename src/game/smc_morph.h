@@ -230,6 +230,8 @@ static SMCExtraMorph s_extraMorphs[] = {
 };
 static const int s_extraMorphCount =
     (int)(sizeof(s_extraMorphs) / sizeof(s_extraMorphs[0]));
+static_assert(SMC_NUM_MOUTH + s_extraMorphCount <= SMC_MAX_SLIDERS,
+              "SMC weight buffers must cover every declared expression");
 static bool s_extraMorphsResolved = false;
 
 // ---- hook 类型 ----
@@ -1253,7 +1255,7 @@ static void ResolveSMCMouthShapes(void *smcBase) {
 }
 
 // DoEvaluateMorphToBoneJob：确认 SMC 实例、抓大列表、驱动时清零游戏自身增量
-static void __fastcall HookedSMCMorphJob(void *__this, void *param1,
+static void __fastcall SMCMorphJobBody(void *__this, void *param1,
                                          void *param2, void *methodInfo) {
   if (!s_confirmedSMC && param1) {
     // 归属未确认前只登记候选，EyeLookAtIK 等副作用等主线程校验通过再做
@@ -1332,6 +1334,53 @@ static void __fastcall HookedSMCSpecialMorphJob(void *__this, void *param1,
 // 注意：写的是"全部"面部骨，而不是只写被 morph 命中的那些——因为 s_faceBones 每帧
 // 都以静息位姿为底再叠加增量，没被命中的骨就是静息位姿。只写"命中"的骨会导致：
 // 权重调回 0 时没有任何骨被标记 → 上一帧的表情被留在骨上（"重置无效"的根因）。
+// The GUI publishes one complete frame. Only the SMC owner thread changes weights.
+struct SMCMotionFrame {
+  bool active=false; void* animator=nullptr; float weights[SMC_MAX_SLIDERS]={};
+  void* eyes[2]={}; Quat eyeRotation[2]; bool eyeDriven[2]={};
+};
+static SRWLOCK s_motionFaceLock = SRWLOCK_INIT;
+static SMCMotionFrame s_motionFaceMailbox, s_motionFaceCurrent;
+static bool s_motionFaceSaved=false, s_motionSavedDriving=false, s_motionSavedBaseReady=false;
+static void* s_motionSavedCore=nullptr;
+static float s_motionSavedWeights[SMC_MAX_SLIDERS]={};
+static SMCFaceBone s_motionSavedBase[SMC_MAX_FACE_BONES];
+static void SMCMotionPublish(const SMCMotionFrame& f) {
+  AcquireSRWLockExclusive(&s_motionFaceLock); s_motionFaceMailbox=f; ReleaseSRWLockExclusive(&s_motionFaceLock);
+}
+
+static void __fastcall HookedSMCMorphJob(void *self, void *a, void *b, void *method) {
+  std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
+  if (!lock.owns_lock() || CharacterSwitchInProgress()) {
+    if (s_origMorphJob) s_origMorphJob(self, a, b, method);
+    return;
+  }
+  SMCMorphJobBody(self, a, b, method);
+}
+static void SMCMotionConsume() {
+  AcquireSRWLockShared(&s_motionFaceLock); s_motionFaceCurrent=s_motionFaceMailbox; ReleaseSRWLockShared(&s_motionFaceLock);
+  bool active=s_motionFaceCurrent.active && s_motionFaceCurrent.animator==g_charAnimator;
+  if(s_motionFaceSaved && (!active || s_motionSavedCore!=s_smcCore)) {
+    if(s_motionSavedCore==s_smcCore) {
+      s_driving=s_motionSavedDriving; s_driveBaseReady=s_motionSavedBaseReady;
+      memcpy(s_driveBase,s_motionSavedBase,sizeof(s_driveBase));
+      for(int i=0;i<SMC_NUM_MOUTH;i++)s_mouthWeights[i]=s_motionSavedWeights[i];
+      for(int i=0;i<s_extraMorphCount;i++)s_extraMorphs[i].weight=s_extraMorphs[i].prevWeight=s_motionSavedWeights[i+SMC_NUM_MOUTH];
+    }
+    s_motionFaceSaved=false;
+  }
+  if(!active || !s_faceBonesCaptured || !s_driveBaseReady || s_captureNeutral)return;
+  if(!s_motionFaceSaved) {
+    s_motionFaceSaved=true;s_motionSavedCore=s_smcCore;s_motionSavedDriving=s_driving;s_motionSavedBaseReady=s_driveBaseReady;
+    memcpy(s_motionSavedBase,s_driveBase,sizeof(s_driveBase));
+    for(int i=0;i<SMC_NUM_MOUTH;i++)s_motionSavedWeights[i]=s_mouthWeights[i];
+    for(int i=0;i<s_extraMorphCount;i++)s_motionSavedWeights[i+SMC_NUM_MOUTH]=s_extraMorphs[i].weight;
+  }
+  // Evaluate motion weights against the neutral face, not the frozen expression.
+  memcpy(s_driveBase,s_faceRestPose,sizeof(s_driveBase));s_driving=true;
+  for(int i=0;i<SMC_NUM_MOUTH;i++)s_mouthWeights[i]=s_motionFaceCurrent.weights[i];
+  for(int i=0;i<s_extraMorphCount;i++)s_extraMorphs[i].weight=s_extraMorphs[i].prevWeight=s_motionFaceCurrent.weights[i+SMC_NUM_MOUTH];
+}
 static void SMCWriteTouchedBones() {
   if (!s_faceBoneEvalOk)
     return; // 本帧没成功重算，别写回陈旧值
@@ -1339,12 +1388,25 @@ static void SMCWriteTouchedBones() {
     for (int i = 0; i < s_faceBoneCount; i++) {
       if (!s_faceBones[i].transform)
         continue;
-      SetBoneLocalPos(s_faceBones[i].transform,
-                      Vec3(s_faceBones[i].px, s_faceBones[i].py,
-                           s_faceBones[i].pz));
-      SetBoneLocalRot(s_faceBones[i].transform,
-                      Quat(s_faceBones[i].rx, s_faceBones[i].ry,
-                           s_faceBones[i].rz, s_faceBones[i].rw));
+      bool motionEye=false;
+      if(s_motionFaceCurrent.active && s_motionFaceCurrent.animator==g_charAnimator)
+        for(int e=0;e<2;e++) if(s_motionFaceCurrent.eyeDriven[e] && s_motionFaceCurrent.eyes[e]==s_faceBones[i].transform) {
+          void *args[] = {&s_motionFaceCurrent.eyeRotation[e]};
+          if(UnityObjAlive(s_faceBones[i].transform))
+            Invoke(g_transform_set_localRotation,s_faceBones[i].transform,args);
+          motionEye=true;break;
+        }
+      if(motionEye)continue;
+      // This hook runs on the game's SMC thread. Automatic facial writes must
+      // not invoke the editor's manual-write observers: those traverse and edit
+      // the GUI-owned humanoid/accessory vectors while Stop can replace them.
+      if (!UnityObjAlive(s_faceBones[i].transform)) continue;
+      Vec3 p{s_faceBones[i].px,s_faceBones[i].py,s_faceBones[i].pz};
+      Quat q{s_faceBones[i].rx,s_faceBones[i].ry,s_faceBones[i].rz,s_faceBones[i].rw};
+      void *pp[] = {&p};
+      void *qp[] = {&q};
+      Invoke(g_transform_set_localPosition,s_faceBones[i].transform,pp);
+      Invoke(g_transform_set_localRotation,s_faceBones[i].transform,qp);
     }
   } __except (1) {
   }
@@ -1352,7 +1414,7 @@ static void SMCWriteTouchedBones() {
 
 // SkeletalMorphCore.Update：初始化（偏移/口型/大列表/骨骼静息位姿/骨映射），
 // 之后每帧按面板权重累加增量，在原始 Update 之后覆盖写回
-static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
+static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
                                        void *methodInfo) {
   if (!s_smcCore) {
     if (s_confirmedSMC && __this == s_confirmedSMC) {
@@ -1515,6 +1577,7 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     }
   }
 
+  SMCMotionConsume();
   // 按面板权重累加 morph 增量到静息位姿
   if (s_driving && s_boneMapReady && s_boneIDMapCount > 0 &&
       s_capturedLen > 0 && s_mouthResolved) {
@@ -1640,7 +1703,7 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
         wsum += s_mouthWeights[s];
       for (int em = 0; em < s_extraMorphCount; em++)
         wsum += s_extraMorphs[em].weight;
-      if (fabsf(wsum - s_lastWeightSum) > 0.001f) {
+      if (!s_motionFaceCurrent.active && fabsf(wsum - s_lastWeightSum) > 0.001f) {
         s_lastWeightSum = wsum;
         Log("[SMC] weights sum=%.3f -> applied=%d bones (face=%d)", wsum,
             applied, s_faceBoneCount);
@@ -1705,6 +1768,17 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
   }
 }
 
+// Reset/capture uses the pose lock too. Never block a Unity callback waiting
+// for a worker's IL2CPP invocation; busy callbacks run the original game code.
+static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
+  std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
+  if (!lock.owns_lock() || CharacterSwitchInProgress()) {
+    if (s_origSMCUpdate) s_origSMCUpdate(self, dt, method);
+    return;
+  }
+  SMCUpdateBody(self, dt, method);
+}
+
 // 安装 SMC hook（IL2CPP Resolve 成功后调用一次）
 static void InstallSMCFaceHooks() {
   __try {
@@ -1755,8 +1829,8 @@ static void InstallSMCFaceHooks() {
 }
 
 // 角色切换 / 停止驱动时重置（把大列表还回游戏）
-static void ResetSMCState() {
-  SMCRestoreBigList();
+static void ResetSMCState(bool restoreOriginal = true) {
+  if (restoreOriginal) SMCRestoreBigList();
   s_smcCore = nullptr;
   s_confirmedSMC = nullptr;
   s_frame = 0;
@@ -1765,6 +1839,8 @@ static void ResetSMCState() {
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
   s_faceBonesCaptured = false;
+  s_charBoneXformCount = 0;
+  s_charBoneXformRev = -1;
   s_captureNeutral = false;
   s_neutralFrames = 0;
   s_driveBaseReady = false;

@@ -141,7 +141,7 @@ static void CollectSkirtCloth() {
 static void ApplySkirtColliderScale() {
   if (g_skirtBBCIndex < 0 || g_skirtBBCIndex >= g_bbcCount)
     return;
-  if (!g_bbcInstances[g_skirtBBCIndex])
+  if (!UnityObjAlive(g_bbcInstances[g_skirtBBCIndex]))
     return;
   if (!g_skirtDirty)
     return;

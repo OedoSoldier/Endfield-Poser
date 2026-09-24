@@ -21,6 +21,7 @@
 #include "editor/ik_control.h"
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
+#include "editor/panel_mmd.h"
 #include "config.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
@@ -87,10 +88,12 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
   // （改完由管理器调用 AP_ReloadConfig 生效）。
   // 截图热键不声明：插件内没有实现（截图走 tools/screenshot.ps1），
   // 免得管理器里出现一个按了没反应的键；实现好了再加回来。
-  const int n = 2;
+  const int n = 6;
   if (max < n) return n;
   out[0] = {"Toggle Poser GUI", "gui_toggle_key", g_guiToggleVK};
   out[1] = {"Freeze / Unfreeze", "freeze_key", g_freezeVK};
+  const char *labels[] = {"MMD Play", "MMD Pause", "MMD Stop", "MMD Reset"};
+  for(int i=0;i<4;++i) out[2+i]={labels[i],k_mmdHotkeyKeys[i],g_mmdHotkeyVK[i]};
   return n;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
@@ -120,8 +123,52 @@ static bool CursorVisible() {
 }
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
-void GameFrameTick() {
-  __try {
+static void PrepareCharacterHandoff() {
+  // Called before replacing any current actor handle, including delayed
+  // captures. Save cached values; never query the outgoing skeleton for them.
+  void *oldAnimator = g_charAnimator;
+  bool oldAlive = CharAnimatorAlive();
+  MmdCharacterChanging();
+  SaveCharStateOnSwitch();
+  UnfreezeCharacter();
+  ReleaseGripFor(oldAnimator);
+  ResetFreezeWriters();
+  ResetSkirtState();
+  ResetSMCState(oldAlive);
+  g_curCharKey.clear();
+  s_humanBoneCount = 0;
+  s_allBones.clear();
+  s_accessoryBones.clear();
+  s_accessoryChains.clear();
+  s_blendShapes.clear();
+  s_restCaptured = false;
+  ++s_bonesRev;
+  SelectTransform(nullptr, nullptr);
+  Log("[CHAR] outgoing actor released: %p", oldAnimator);
+}
+static void RebuildCapturedCharacter() {
+  if (CharacterSwitchInProgress() || g_captureEntity != g_mainCharEntity) return;
+  const bool changed = g_charChanged;
+  g_charChanged = false;
+  s_restCaptured = false;
+  g_mmd.profileRevision = -1;
+  g_mmd.profileAnimator = nullptr;
+  SelectTransform(nullptr, nullptr);
+  RebuildAllBones();
+  RebuildHumanBones();
+  RebuildAccessories();
+  RebuildBlendShapes();
+  ResetSMCState();
+  ResetSkirtState();
+  if (s_humanBoneCount > 0) {
+    CaptureRestPose();
+    if (changed)
+      RestoreCharStateOnSwitch();
+    g_mmd.status = u8"角色骨架已就绪，可校准或播放已导入的动作";
+    g_mmd.calibrationStatus = u8"当前角色待校准；播放时优先读取该角色保存的校准";
+  }
+}
+static void UpdateOverlayCursor() {
     // 光标完全交给游戏自己管：按 Alt 显示光标是游戏自带行为，插件不改它的
     // lockState/visible（强行改写会和系统按线程计数的 ShowCursor 状态打架，
     // 表现为"光标没了"）。我们只读取状态：lockState==None 视为光标可用，
@@ -142,18 +189,25 @@ void GameFrameTick() {
       }
       ImGui::GetIO().MouseDrawCursor = g_cursorFreeNow && !osShown;
     }
+}
+static void GameFrameTickBody() {
+  __try {
+    if (CharacterSwitchInProgress()) return;
+    ConsumeCapturedCharacter();
+    if (g_charChanged)
+      RebuildCapturedCharacter();
     // 角色捕获自愈：SetMainCharacter hook 漏触发/时机错过时，
-    // 周期性从 PlayerController 补捞当前角色（约每 2 秒一次）。
+    // 周期性从 PlayerController 补捞当前角色（每 250ms 一次）。
     // 骨骼数为 0 也要补捞：角色切换/场景变化后 g_charAnimator 可能残留
     // 失效指针（非空），此时重建出来是 0 根骨，必须强制重新捕获。
-    static int s_captureRetry = 0;
+    static ULONGLONG s_nextCapture = 0;
     // 周期确认当前 Animator 还活着：场景切换/换实例后旧对象会被 Destroy，
     // 此时指针非空但已失效，骨骼列表里全是死变换 —— 画面就是"骨架钉在原地"。
     // 侦测到就丢掉捕获，交给下面的补捞逻辑重新抓当前角色。
-    static int s_aliveCheck = 0;
+    static ULONGLONG s_nextAliveCheck = 0;
     static int s_deadStrikes = 0;
-    if (++s_aliveCheck >= 60) { // 约 1 秒（隐藏时循环 30ms 一次）
-      s_aliveCheck = 0;
+    if (GetTickCount64() >= s_nextAliveCheck) {
+      s_nextAliveCheck = GetTickCount64() + 1000;
       bool animatorDead = g_charAnimator && !CharAnimatorAlive();
       bool bonesDead = !animatorDead && !CachedBonesAlive();
       if (animatorDead || bonesDead) {
@@ -164,42 +218,40 @@ void GameFrameTick() {
               animatorDead ? "animator destroyed" : "bone transforms destroyed");
           // 关键：**先解冻**。否则冻结时关掉的 Animator/IK/物理不会被还原，
           // 游戏侧的角色会一直僵在原地（而插件又已经抓不到它，无法自救）。
-          if (g_frozen) {
-            UnfreezeCharacter();
-            RestoreBlendShapes();
-          }
+          PrepareCharacterHandoff();
           ReleaseAllGrips(); // 死实例的冻结 grip 也一起清掉，避免每帧去写死对象
           g_charAnimator = nullptr;
           g_mainCharEntity = nullptr;
+          g_charAnimComp = nullptr;
           g_charChanged = false; // 死实例不需要保存状态，也别触发重建双消费
           s_humanBoneCount = 0;
           s_allBones.clear();
-          s_captureRetry = 60; // 下一次循环立刻补捞
+          ++s_bonesRev; // Invalidate dependent caches even without a new root.
+          s_restCaptured = false;
+          SelectTransform(nullptr, nullptr);
+          s_nextCapture = 0;
         }
       } else {
         s_deadStrikes = 0;
       }
     }
-    if (!g_charAnimator || s_humanBoneCount == 0) {
-      if (++s_captureRetry >= 60) {
-        s_captureRetry = 0;
-        TryCaptureFromPlayerController();
-        // 实体/动画器未变化但骨骼仍为 0：强制重建一次，等角色恢复后接上
-        if (s_humanBoneCount == 0) {
-          RebuildAllBones();   // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
-          RebuildHumanBones();
-          Log("[POSER] Re-capture retry: animator=%p bones=%d",
-              g_charAnimator, s_humanBoneCount);
-        }
-      }
-    } else {
-      s_captureRetry = 0;
+    // Poll even when the previous actor is alive: a missed hook must not leave
+    // us editing a background character. Retry delayed Animator construction.
+    ULONGLONG captureNow = GetTickCount64();
+    if (captureNow >= s_nextCapture) {
+      s_nextCapture = captureNow + 250;
+      TryCaptureFromPlayerController();
+      if (!g_charChanged && s_humanBoneCount == 0 && CharAnimatorAlive())
+        g_charChanged = true;
     }
-    // 冻结热键（默认 F11）：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）。
+    if (g_charChanged)
+      RebuildCapturedCharacter();
+    // 冻结热键（默认 P）：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）。
     // 边沿检测在 HotkeyPollThread 里做——直接用 GetAsyncKeyState 的 bit0 会被
     // 游戏/XXMI 的同键轮询抢掉锁存位（"有时有用有时没用"的根因）。
     if (TakeHotkeyFreeze()) {
       Log("[CTRL] freeze hotkey -> toggle freeze");
+      if (g_mmd.session.active) { MmdStop(); UnfreezeCharacter(); RestoreBlendShapes(); return; }
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();
@@ -207,23 +259,14 @@ void GameFrameTick() {
         FreezeCharacter();
       }
     }
-    // 角色切换 → 统一重建 Humanoid + 从骨列表（单一消费点，避免双消费）
-    if (g_charChanged) {
-    g_charChanged = false;
-    SaveCharStateOnSwitch(); // 先把旧角色的冻结状态存进内存表（必须在重建之前）
-    s_restCaptured = false; // 新角色：A-pose 基线作废，下次重建时重捕
-    RebuildAllBones();   // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
-    RebuildHumanBones();
-    RebuildAccessories();
-      RebuildBlendShapes(); // Task 4.1：形态键列表随角色重建
-      ResetSMCState();      // Task 4.2：SMC 表情状态随角色重置
-      ResetSkirtState();    // 裙子碰撞：清空旧角色布料采集
-      if (!s_restCaptured)
-        CaptureRestPose();  // 角色最初姿态 = A-pose 基线
-      RestoreCharStateOnSwitch(); // 冻过的角色：恢复姿态并重新压制写者；没冻过：保持默认
-    }
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
+    LONG mmdKeys = InterlockedExchange(&g_mmdHotkeyRequests, 0);
+    if (mmdKeys & (1 << 2)) MmdPlaybackCommand(2);
+    else if (mmdKeys & (1 << 3)) MmdPlaybackCommand(3);
+    else if (mmdKeys & (1 << 1)) MmdPlaybackCommand(1);
+    else if (mmdKeys & 1) MmdPlaybackCommand(0);
+    MmdTick();
   } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
@@ -231,28 +274,16 @@ void GameFrameTick() {
 
 // 手动刷新：重跑角色骨骼/从骨/形态键重建链（某些场景无法切换角色时用）
 static void RefreshCharacterBones() {
-  if (!g_charAnimator || s_humanBoneCount == 0)
-    TryCaptureFromPlayerController();
-  bool newChar = g_charChanged;
-  g_charChanged = false;
-  if (newChar)
-    s_restCaptured = false; // 新角色：重捕 A-pose 基线
-  RebuildAllBones(); // 先刷全骨列表：humanoid 缺失骨按名回退依赖它
-  RebuildHumanBones();
-  RebuildAccessories();
-  RebuildBlendShapes();
-  ResetSMCState();
-  ResetSkirtState();
-  if (!s_restCaptured)
-    CaptureRestPose();
+  MmdStop();
+  ConsumeCapturedCharacter();
+  TryCaptureFromPlayerController();
+  RebuildCapturedCharacter();
   Log("[POSER] Manual bone refresh: human=%d", s_humanBoneCount);
 }
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
-void DrawPoserGui() {
-  __try { GameFrameTick(); } __except (1) {
-    Log("[POSER] GameFrameTick exception code=0x%X", GetExceptionCode());
-  }
+static void DrawPoserGuiBody() {
+  UpdateOverlayCursor();
   ImGuizmo::BeginFrame(); // ImGuizmo 每帧初始化（draw list / 内部窗口），否则轮盘不绘制
   __try {
     DrawSkeletonOverlay();
@@ -265,12 +296,12 @@ void DrawPoserGui() {
     Log("[POSER] HandleRigClick exception code=0x%X", GetExceptionCode());
   }
   __try {
-    IkSolveAll();        // 冻结态解算四肢 IK（启用中的控制器）
-    DrawIkControllers(); // 目标点渲染 + 选中 + 命中标记
+    if (!MmdOwnsPose()) IkSolveAll();        // 冻结态解算四肢 IK（启用中的控制器）
+    if (!MmdOwnsPose()) DrawIkControllers(); // 目标点渲染 + 选中 + 命中标记
   } __except (1) {
     Log("[POSER] IK controllers exception code=0x%X", GetExceptionCode());
   }
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(10, 10), PanelPositionCondition());
   // 见 panel_bones.h：AlwaysAutoResize 与 SetNextItemWidth(-1) 并用时需要最小宽度，
   // 否则窗口宽度塌陷、右侧标签（步长等）被挤出可视区。
   ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),
@@ -302,6 +333,9 @@ void DrawPoserGui() {
                         "gui_toggle_key", &g_guiToggleVK, &g_guiToggleCtrl, 1);
       DrawHotkeySetting(u8"\u51bb\u7ed3 / \u89e3\u51bb", "freeze_key",
                         &g_freezeVK, &g_freezeCtrl, 2);
+      const char *mmdLabels[] = {u8"MMD 播放", u8"MMD 暂停", u8"MMD 停止并恢复", u8"MMD 重置到首帧"};
+      for (int i=0;i<4;++i)
+        DrawHotkeySetting(mmdLabels[i],k_mmdHotkeyKeys[i],&g_mmdHotkeyVK[i],&g_mmdHotkeyCtrl[i],3+i);
       if (g_hotkeyRiskyMsg[0])
         ImGui::TextDisabled("\u26a0 %s", g_hotkeyRiskyMsg);
       ImGui::TextDisabled(u8"\u70b9\u201c\u6539\u952e\u201d\u540e\u6309\u4e0b"
@@ -309,9 +343,15 @@ void DrawPoserGui() {
                           u8"\u5199\u56de poser_config.txt\uff09");
     }
     ImGui::SameLine();
-    ImGui::Checkbox(u8"\u56fe\u9489", &g_pinPanels);
+    ImGui::Checkbox(u8"锁定窗口", &g_pinPanels);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u9501\u5b9a\u9762\u677f\u4f4d\u7f6e\uff1a\u62d6\u706b\u67f4\u4eba\u65f6\u7a97\u53e3\u4e0d\u8ddf\u7740\u52a8\uff1b\u53d6\u6d88\u540e\u53ef\u62d6\u6807\u9898\u79fb\u52a8");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(u8"重排窗口")) {
+      g_pinPanels = false;
+      g_resetPanelLayoutFrames = 2;
+    }
+    ImGui::TextDisabled(u8"拖动标题栏移动窗口；布局会自动保存");
     ImGui::Separator();
     ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
     ImGui::Separator();
@@ -332,10 +372,13 @@ void DrawPoserGui() {
     if (!g_fullBones && FindTransformIndex(g_selectedTransform) < 0)
       SelectTransform(nullptr, nullptr);
     ImGui::Separator();
+    ImGui::Checkbox(u8"MMD 播放器", &g_mmd.show);
     if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
+      bool wasPlaying = g_mmd.session.active;
+      if (wasPlaying) MmdStop();
       Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",
           (int)g_frozen, g_charAnimator, s_humanBoneCount);
-      if (g_frozen) {
+      if (g_frozen || wasPlaying) {
         UnfreezeCharacter();
         RestoreBlendShapes();     // 形态键恢复冻结前原始值
       } else {
@@ -345,6 +388,7 @@ void DrawPoserGui() {
     ImGui::SameLine();
     if (ImGui::Button(u8"\u5237\u65b0\u9aa8\u9abc")) // 刷新骨骼
       RefreshCharacterBones();
+    ImGui::BeginDisabled(MmdOwnsPose());
     if (ImGui::Button(u8"\u5168\u90e8\u91cd\u7f6e")) // 所有骨回到冻结瞬间
       PoseOpResetToFreeze();
     if (ImGui::IsItemHovered())
@@ -363,16 +407,20 @@ void DrawPoserGui() {
         SetAllPhysicsEnabled(true);
       }
     }
+    ImGui::EndDisabled();
     // 快捷键一览（默认展开，可折叠）
     ImGui::Separator();
     if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e",
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-      char vkbuf[16];
+      char vkbuf[48];
+      HotkeyDisplay(g_guiToggleVK, g_guiToggleCtrl, vkbuf, sizeof(vkbuf));
       ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
-                  VkName(g_guiToggleVK, vkbuf, sizeof(vkbuf)));
-      char fbuf[16];
+                  vkbuf);
+      char fbuf[48];
+      HotkeyDisplay(g_freezeVK, g_freezeCtrl, fbuf, sizeof(fbuf));
       ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1a%s",
-                  VkName(g_freezeVK, fbuf, sizeof(fbuf)));
+                  fbuf);
+      DrawMmdHotkeyHints();
       ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
     }
     // 根骨骼位置微调（整体位移；冻结态直接写回）
@@ -384,7 +432,7 @@ void DrawPoserGui() {
       }
     if (!rootT && s_humanBoneCount > 0)
       rootT = s_humanBones[0].transform; // 回退：Hips
-    if (g_frozen && rootT) {
+    if (g_frozen && rootT && !MmdOwnsPose()) {
       Vec3 lp = GetBoneLocalPos(rootT);
       // 必须用连续数组：SliderFloat3/InputFloat3 是按 &v[0] 连续写 3 个 float，
       // 之前用三个独立局部变量（&vx/&vy/&vz）不保证在栈上相邻 → 显示与写回错位。
@@ -430,13 +478,13 @@ void DrawPoserGui() {
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoInputs)) {
       __try {
-        DrawBoneRotationGizmo();
+        if (!MmdOwnsPose()) DrawBoneRotationGizmo();
       } __except (1) {
         Log("[POSER] DrawBoneRotationGizmo exception code=0x%X",
             GetExceptionCode());
       }
       __try {
-        DrawIkGizmo(); // 控制器目标点的平移手柄
+        if (!MmdOwnsPose()) DrawIkGizmo(); // 控制器目标点的平移手柄
       } __except (1) {
         Log("[POSER] DrawIkGizmo exception code=0x%X", GetExceptionCode());
       }
@@ -446,7 +494,7 @@ void DrawPoserGui() {
   }
 
   // 姿态预设库（独立窗口）
-  ImGui::SetNextWindowPos(ImVec2(340, 500), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(380, 500), PanelPositionCondition());
   // 与主面板一致：宽度有下限、高度自适应，避免内容被截断
   ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 120.0f),
                                       ImVec2(FLT_MAX, FLT_MAX));
@@ -459,25 +507,35 @@ void DrawPoserGui() {
   ImGui::End();
 
   // 形态键面板（面部 BlendShape，Task 4.1）
-  ImGui::SetNextWindowPos(ImVec2(680, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(750, 10), PanelPositionCondition());
   // 形态键面板内部用 BeginChild(size=(0,0)) 填满可用空间，和 AlwaysAutoResize 冲突
   // （子区域会塌成 0 → 内容看不见），所以这里保持固定初始尺寸、允许手动调整。
   ImGui::SetNextWindowSize(ImVec2(360, 320), ImGuiCond_FirstUseEver);
   if (ImGui::Begin(u8"\u5f62\u6001\u952e", nullptr,
                    ImGuiWindowFlags_NoCollapse |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
+    ImGui::BeginDisabled(MmdOwnsPose());
     DrawMorphPanel();
+    ImGui::EndDisabled();
   }
   ImGui::End();
 
   // 骨骼层级面板（Blender 风格：树 + 搜索 + 选中骨参数）
+  ImGui::BeginDisabled(MmdOwnsPose());
   DrawBoneTreePanel();
-
+  ImGui::EndDisabled();
+  DrawMmdPanel();
+  if (g_resetPanelLayoutFrames > 0) --g_resetPanelLayoutFrames;
 }
+
+void GameFrameTick() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); GameFrameTickBody(); }
+void DrawPoserGui() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); DrawPoserGuiBody(); }
 
 // 外部控制（PostMessage WM_APP+90 触发，绕过反作弊输入拦截）：
 // 1=冻结/解冻 2=T-pose
 static void ExtControl(int code) {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if(g_mmd.session.active) { if(code==1){MmdStop();UnfreezeCharacter();} return; }
   switch (code) {
   case 1:
     if (g_frozen) {
@@ -499,11 +557,16 @@ static void ExtControl(int code) {
 // 冻结状态下禁用插件/卸载时，把 Animator、IK、布料物理、形态键都还原回去，
 // 否则头发布料会一直僵在冻结姿态。
 static void OnGuiShutdownRestore() {
-  if (!g_frozen)
-    return;
-  Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
-  UnfreezeCharacter();
-  RestoreBlendShapes();
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  MmdStop();
+  s_mmdClosing.store(true);
+  if(HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
+  if(g_mmd.loading) { g_mmd.loader.wait(); g_mmd.loading=false; }
+  if (g_frozen) {
+    Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
+    UnfreezeCharacter();
+    RestoreBlendShapes();
+  }
   ReleaseAllGrips(); // 后台还冻结着的角色也要把写者还回去
 }
 
@@ -538,21 +601,57 @@ static void PoseApplyExtras(const PoseDoc &doc) {
 
 // 控制文件通道：外部（Codex）往 plugin\poser_control.txt 写命令，每帧执行后清空。
 // 命令：toggle / freeze / tpose / reset
-static void ProcessControlFile() {
+static void ProcessControlFileBody() {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
   FILE *f = fopen("plugin\\poser_control.txt", "r");
   if (!f)
     return;
-  char line[64];
+  char line[32768];
   while (fgets(line, sizeof(line), f)) {
+    if(strlen(line)>=3 && memcmp(line,"\xef\xbb\xbf",3)==0)
+      memmove(line,line+3,strlen(line+3)+1);
     char *e = line + strlen(line) - 1;
     while (e > line && (*e == '\n' || *e == '\r' || *e == ' '))
       *e-- = 0;
     if (!*line)
       continue;
-    if (strcmp(line, "toggle") == 0) {
+    if (strncmp(line, "mmd_load ", 9) == 0) {
+      MmdBeginLoad(0, std::filesystem::u8path(line + 9));
+    } else if (strncmp(line, "mmd_append ", 11) == 0) {
+      MmdBeginLoad(1, std::filesystem::u8path(line + 11));
+    } else if (strncmp(line, "mmd_pmx ", 8) == 0) {
+      MmdBeginLoad(2, std::filesystem::u8path(line + 8));
+    } else if (strncmp(line, "mmd_rig_load ", 13) == 0) {
+      MmdBeginLoad(3, std::filesystem::u8path(line + 13));
+    } else if (strncmp(line, "mmd_rig_save ", 13) == 0) {
+      MmdBeginLoad(4, std::filesystem::u8path(line + 13));
+    } else if (strncmp(line, "mmd_music ", 10) == 0) {
+      MmdBeginLoad(5, std::filesystem::u8path(line + 10));
+    } else if (strcmp(line, "mmd_play") == 0) {
+      MmdPlaybackCommand(0);
+    } else if (strcmp(line, "mmd_pause") == 0) {
+      MmdPlaybackCommand(1);
+    } else if (strcmp(line, "mmd_stop") == 0) {
+      MmdPlaybackCommand(2);
+    } else if (strcmp(line, "mmd_reset") == 0) {
+      MmdPlaybackCommand(3);
+    } else if (strcmp(line, "mmd_calibrate_preview") == 0) {
+      MmdBeginCalibration();
+    } else if (strcmp(line, "mmd_calibrate_confirm") == 0) {
+      MmdConfirmCalibration();
+    } else if (strcmp(line, "mmd_calibrate_auto") == 0) {
+      if (!g_mmd.session.active && !g_mmd.loading) {
+        g_mmd.profileRevision = -1;
+        MmdPrepareProfile();
+      }
+    } else if (strncmp(line, "mmd_seek ", 9) == 0) {
+      if(!g_mmd.session.active) MmdStart();
+      if(MmdOwnsPose()) {MmdSeek(atof(line+9)/30.);MmdApplyFrame();}
+    } else if (strcmp(line, "toggle") == 0) {
       g_guiVisible = !g_guiVisible;
       Log("[CTRL] file toggle -> %d", (int)g_guiVisible);
     } else if (strcmp(line, "freeze") == 0) {
+      if(g_mmd.session.active) {MmdStop();UnfreezeCharacter();RestoreBlendShapes();continue;}
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();
@@ -560,9 +659,9 @@ static void ProcessControlFile() {
         FreezeCharacter();
       }
     } else if (strcmp(line, "tpose") == 0) {
-      ApplyTPose();
+      if(!MmdOwnsPose()) ApplyTPose();
     } else if (strcmp(line, "reset") == 0) {
-      ApplyPoseSnapshot();
+      if(!MmdOwnsPose()) ApplyPoseSnapshot();
     } else if (strncmp(line, "select ", 7) == 0) {
       const char *boneName = line + 7;
       if (SelectBoneByName(boneName))
@@ -582,8 +681,14 @@ static void ProcessControlFile() {
   remove("plugin\\poser_control.txt");
 }
 
+static void ProcessControlFile() {
+  try { ProcessControlFileBody(); }
+  catch(const std::exception &e) { MmdStop();g_mmd.status=e.what();Log("[CTRL] command failed: %s",e.what()); }
+}
+
 static DWORD WINAPI InitThread(LPVOID) {
   LoadPoserConfig();
+  g_beforeCharacterChange = PrepareCharacterHandoff;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
   SetExtControl(ExtControl);
   SetExtPollFn(ProcessControlFile);
@@ -600,15 +705,18 @@ static DWORD WINAPI InitThread(LPVOID) {
     return 0;
   }
   // 附加到 IL2CPP 域（域内方法/对象操作必需）
-  void *domain = il2cpp_domain_get();
-  if (domain)
-    il2cpp_thread_attach(domain);
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) {
+    Log("[POSER] ERROR: cannot attach initialization thread");
+    return 0;
+  }
   // MinHook 初始化（MH_CreateHook 前置）
   if (MH_Initialize() != MH_OK)
     Log("[POSER] WARN: MH_Initialize failed");
   Log("[POSER] IL2CPP resolved. Initializing game hooks.");
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
+  InstallFrameHook();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）
   Log("[POSER] Starting GUI thread.");
   StartGuiThread();
