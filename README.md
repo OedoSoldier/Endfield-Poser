@@ -2,7 +2,7 @@
 
 《明日方舟：终末地》的游戏内摄影摆姿与 MMD 动作播放器。支持角色冻结、骨骼编辑、姿态库、口型表情、VMD 动作和可选音乐同步，无需 Blender。
 
-当前源码版本：**0.4.13（开发版）**。下载包的版本以 [Releases](https://github.com/honxi1/Endfield-Poser/releases) 页面为准；源码更新不代表已发布同版本二进制包。
+本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前源码版本：**0.4.13（开发版）**。本次更新提供源码，请按下文构建安装；已有二进制包可查看[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases)，其版本和功能可能与本分支不同。
 
 > 本项目仅供学习与技术交流。使用前请阅读下方[免责声明](#免责声明)。插件与游戏版本相关，开发版仍需游戏内兼容性验证。
 
@@ -123,7 +123,7 @@ cmake --build build-cmake --config Release
 
 非官方粉丝项目，与 Hypergryph 无关。
 
-- [问题反馈](https://github.com/honxi1/Endfield-Poser/issues)
+- [上游问题反馈](https://github.com/honxi1/Endfield-Poser/issues)；本分支新增功能的问题请在本分支提交页面讨论。
 - QQ 群：**终末地影棚爱好者**（1126684901）
 - 邮箱：**king_time@foxmail.com**（版权 / 内容下架等问题优先邮件）
 
