@@ -2,6 +2,69 @@
 
 > 目的：阶段性存档，方便后续（或换会话）直接接续开发。
 
+## 〇·一、2026-09-24 v0.3.4 / v0.3.5：分层窗口与输入路由的坑（**已发布**）
+
+> 这一节全是"踩过才知道"的东西，改 `core/gui_overlay.h` / `editor/rig_gizmo.h` 前先看。
+
+**分层窗口（XXMI/3DMigoto 用户走的路径，`overlay_mode=0` 自动判定）**
+
+- `UpdateLayeredWindow` 的 **`psize` 语义是"窗口的新尺寸"**，不是"这次要更新的区域"。
+  传脏矩形尺寸进去 → 每帧把覆盖层窗口缩小 + 挪位 → 面板看不见/点不到。
+  要部分更新必须用 **`UpdateLayeredWindowIndirect` + `prcDirty`**，`psize` 保持整窗。
+- **懒创建的资源不能留在入口判空里**：`g_pLayerStaging` 改成"按脏矩形懒创建"后，
+  `PresentLayered()` 开头的 `if (!g_pLayerStaging) return;` 让它永远没机会被创建 →
+  每帧在最开头返回 → **窗口显示了但一个像素都没画**（面板全透明，看起来像"呼不出来"）。
+  排查口诀：日志里**没有** `[GUI] layered present ...` 就说明呈现函数提前 return 了。
+- 分层路径的开销大头是 **`Map()` 等 GPU 队列**：mod 越多等得越久（曾整屏回读 4K ≈33MB/帧）。
+  现做法：只回读脏矩形 + **内容指纹不变就整轮跳过** + `overlay_fps` 限帧（默认 60）。
+- 分层模式下**没有 swap chain**：`WM_SIZE` 里不能碰 `g_pSwapChain`（否则改分辨率/全屏切换崩），
+  走 `LayeredSyncSize()`。
+
+**输入路由（`click_through=1`：覆盖层常驻 + 真穿透）**
+
+- **判定必须用"本帧"的 hover 状态**：路由原来在 ImGui 帧之前决定，用的是上一帧的 hover，
+  于是"环已经变色、但这一下点击还是被判给游戏"（表现为要非常精准才点得动）。
+  现在这步在 `DrawPoserGui()` 之后。
+- **真穿透 = 我们的窗口收不到事件**：鼠标落在纯 3D 区域时，点击直接给游戏。
+  所以"点空白处取消选中"这类**全局手势不能靠事件**，得靠**轮询**（`HotkeyPollThread` 里
+  检测左键"短按"：300ms 内松开 + 位移 <6px；拖动不算，避免转镜头/拖旋转盘误判）。
+- 热键同理：`GetAsyncKeyState(vk) & 1` 的按下锁存位会被游戏/XXMI 抢走，必须自己轮询边沿。
+
+**角色实例失效（"骨架钉在原地"）**
+
+- 场景切换后 Unity 会 Destroy 旧 Animator，但**托管指针仍非空**：`m_CachedPtr`
+  （对象偏移 `0x10`）会被清 0，用它判活（`UnityObjAlive`）；光查 Animator 不够，
+  **缓存的骨 transform 也要抽检**（`CachedBonesAlive`）。命中后**必须先解冻**再丢捕获 ——
+  否则冻结时关掉的 Animator/IK/物理不会还原，游戏侧角色会僵住，而插件又已经放弃了这个
+  角色，用户无法自救。
+
+**配置与热键**
+
+- **安装向导不覆盖已存在的 `poser_config.txt`**（PR #2 的决定），所以"改默认键"对老用户无效 ——
+  这就是"按 L 呼不出面板、P 却能用"的原因。现在插件启动时**一次性迁移**旧默认（F12/F11 → L/P），
+  写 `# hotkey-migrated` 标记，之后不再动。
+- 默认键为什么是 `L`/`P`：XXMI/3DMigoto **直接轮询 F11/F12 的按键状态**，
+  连 `Ctrl+F12` 都会触发它们的动作 —— 只能完全不碰 F 键。
+- `ParseVK` 与 `VkName` 必须**互为逆运算**：`VkName` 会输出字母（如 `L`），
+  而 `ParseVK` 早期不认单字母 → 面板改键写盘后重载变 `0`（等于没绑键）。
+
+**发版流程的坑**
+
+- `build\obj\poser.res` 被删后，**第一次**跑 `tools\build_msvc.ps1` 的 rc 步骤会失败
+  （`rc reported success but ... is missing`），再跑一次或手动 `rc.exe` 即可；
+  发版前务必确认 `(Get-Item plugin\poser.dll).VersionInfo.FileVersion` 是新版本号。
+- 建 Release 上传资产时，URL 里拼接要用 `${up}?name=...`：PowerShell 会把 `$up?name`
+  当成变量名 `up?name`（结果 URI 变成 `=...`，报 "hostname could not be parsed"）。
+- 查资产别用 `/releases/tags/<tag>`（那里 `assets` 是空的），用 `/releases/<id>/assets`。
+
+**暂缓：更新检查（2026-09-24 讨论结论）**
+
+只做"检查 + 提示"，**不做自动下载替换**（进程内 DLL 运行时被锁，自动替换必须等退出后
+由脚本做；且自动替换 DLL = 把任意代码执行权交给下载源）。要做时：后台线程 WinHTTP（走系统
+代理）→ 比数字版本（`0.3.10 > 0.3.9`）→ 面板顶部一行"有新版本（点我打开下载页）" →
+节流 6 小时/次 + `update_check=0` 可关；更稳的版本源是仓库里一个静态小文件（绕开 GitHub
+API 每 IP 60 次/小时的限流）。参考 EIEM 的 `src/update_check.h`。
+
 ## 〇、2026-09-24 v0.3.3：XXMI 兼容与输入修复（**已发布**）
 
 - **热键"有时有用有时没用"**：根因是 `GetAsyncKeyState(vk) & 1` 的按下锁存位会被

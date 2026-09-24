@@ -4,7 +4,12 @@
 
 ## 0. 项目是什么（一句话）
 
-《明日方舟：终末地》的**游戏内摄影摆姿插件**：注入游戏进程，冻结角色动画，让用户用 FK / 2-bone IK 摆姿势、调面部形态键（BlendShape）、切双模式（摆姿/镜头）自由取景并截图。仓库独立、依赖自包含、不依赖 EIEM 的构建产物。
+《明日方舟：终末地》的**游戏内摄影摆姿插件**：注入游戏进程，冻结角色动画，让用户在 3D 视图里
+点选骨骼、拖 ImGuizmo 旋转盘（或调滑条/数值）摆姿势，另有从骨钉住、SMC 表情面板、
+姿态预设保存/载入、WebUI、多角色分别摆姿。仓库独立、依赖自包含、不依赖 EIEM 的构建产物。
+
+**动手前请先读 `docs/task-state.md` 开头的两节（v0.3.4/0.3.5 与 v0.3.3）** —— 那里记录了
+分层窗口、输入路由、热键、发版流程的坑，踩过一次的都写在里面。
 
 ## 1. 目录结构
 
@@ -68,7 +73,11 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 1. 把整个 `plugin/` 文件夹复制到游戏可执行文件**同级目录**（与 `GameAssembly.dll` 同级）。
 2. 启动游戏：代理 `d3dcompiler_47.dll` 被游戏加载链拉起，进而加载 `poser.dll`。
 3. 由宿主 Applepie 插件系统启用 `Endfield Poser`（或自动加载），`DllMain` 启动初始化线程。
-4. 默认热键：`VK_INSERT` 呼出/隐藏 GUI，`VK_F8` 截图（可在 `plugin/poser_config.txt` 改）。
+4. 默认热键：`L` 呼出/隐藏 GUI、`P` 冻结/解冻（可在 `plugin/poser_config.txt` 改，
+   或直接在主面板 `快捷键（可改）` 里点改键）。**不要用 F11/F12**：XXMI/3DMigoto 直接轮询
+   这两个键的按键状态，连 `Ctrl+F12` 都会触发它们的动作。
+   注意**配置文件的优先级高于代码默认值**：老用户配置里若还写着 `VK_F12`/`VK_F11`，
+   插件启动时会一次性迁移到 `L`/`P` 并写 `# hotkey-migrated` 标记（不会重复覆盖）。
 
 > **必须经启动器启动，不要直接运行 `Endfield.exe`**（2026-09-20 本机实测）：
 > 直启会绕过 Hypergryph 启动器 / ACE 的初始化，插件会在 IL2CPP 运行时尚未初始化完成时
@@ -83,6 +92,41 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 - 游戏根目录 `E:\Hypergryph Launcher\games\Arknights Endfield\`（启动器 `E:\Hypergryph Launcher\Launcher.exe`）
 - `d3dcompiler_47.dll`、`vulkan-1.dll` 放游戏根目录（覆盖游戏自带的需要先备份）
 - `poser.dll`、`poser_config.txt` 放 `<游戏根目录>\plugin\`
+
+## 3.5 硬规则速查（改这些文件前必看，细节见 `docs/task-state.md`）
+
+**`src/core/gui_overlay.h`（覆盖层/输入）**
+
+- `UpdateLayeredWindow` 的 `psize` 是"窗口新尺寸"，要部分更新请用
+  `UpdateLayeredWindowIndirect` + `prcDirty`；DIB 必须整窗大小。
+- 懒创建的资源（如 `g_pLayerStaging`）**不能**留在 `PresentLayered()` 入口判空里，
+  否则它永远创建不出来、每帧提前 return，表现是"窗口显示了但没画东西"。
+- 分层路径没有 swap chain：`WM_SIZE` 里别碰 `g_pSwapChain`。
+- 分层路径的开销在 `Map()` 等 GPU：只在"内容变了"时回读上传，并用 `overlay_fps` 限帧。
+- 输入路由（`SetOverlayClickThrough`）必须用**本帧** hover 状态（放在 `DrawPoserGui()` 之后）；
+  真穿透下我们的窗口收不到事件，**全局手势只能靠轮询**（见 `HotkeyPollThread`）。
+- 热键不要用 `GetAsyncKeyState & 1`（锁存位会被游戏/XXMI 抢）；用自己维护的上升沿。
+
+**`src/core/game_hooks.h` / `src/poser.cpp`（角色捕获）**
+
+- 判"实例是否还活着"用 `m_CachedPtr`（对象偏移 `0x10`）`UnityObjAlive()`；
+  缓存里的骨 transform 也要抽检（`CachedBonesAlive`）。
+- 判定失效后**先 `UnfreezeCharacter()` 再丢捕获**，否则会把游戏侧角色留在冻结态。
+
+**发版流程**
+
+- 建 Release 上传资产时 URL 要写 `${up}?name=...`：PowerShell 会把 `$up?name` 当成
+  变量名 `up?name`，拼出来的 URI 直接报 "hostname could not be parsed"。
+- 查资产用 `/releases/<id>/assets`（`/releases/tags/<tag>` 返回的 `assets` 是空的）。
+- `build\obj\poser.res` 被删后第一次 build 的 rc 步骤会失败，重跑一次；
+  发版前确认 `(Get-Item plugin\poser.dll).VersionInfo.FileVersion`。
+
+**调试入口（日志里搜这些）**
+
+- `[GUI] layered present N fps: rect WxH copy/map/ulw | skipped=` —— 分层呈现的开销与跳过情况
+- `[CFG] effective hotkeys: ...` —— 实际生效的热键（配置优先于代码默认）
+- `[POSER] capture invalid (...)` —— 旧实例失效被回收；`Re-capture retry: animator=0` —— 抓不到角色
+- 面板顶部 `打开日志` 按钮 —— 一键选中 `plugin\poser_log.txt`
 
 ## 4. 运行时产物（排查的第一现场）
 
