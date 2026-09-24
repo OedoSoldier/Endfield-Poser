@@ -98,6 +98,9 @@ static bool g_xxmiDetected = false; // 进程里发现第三方 d3d11.dll（XXMI
 // 也不怕 GUI 循环被分层回读/游戏卡顿拖慢而漏掉短按。
 static volatile LONG g_hotkeyToggleReq = 0;
 static volatile LONG g_hotkeyFreezeReq = 0;
+// 左键"短按"（不含拖动）计数：给"点空白处取消选中"用。因为覆盖层是可穿透的，
+// 点在远处空白处时这次点击根本不会进我们的窗口，只能靠轮询知道它发生过。
+static volatile LONG g_leftClickReq = 0;
 static volatile LONG g_hotkeyPollRun = 0;
 // 面板内改键：captureReq 0=未捕获 1=呼出键 2=冻结键；captureVK 0=还没按 -1=取消
 static volatile LONG g_hotkeyCaptureReq = 0;
@@ -106,9 +109,29 @@ static volatile LONG g_hotkeyCaptureCtrl = 0;
 
 static DWORD WINAPI HotkeyPollThread(LPVOID) {
   bool prevToggle = false, prevFreeze = false;
+  bool prevLBtn = false;
   static bool prevAll[256] = {};
   int lastCapture = 0;
   while (g_hotkeyPollRun) {
+    // 左键短按检测：按下→300ms 内松开且位移 < 6px 才算"点击"（拖拽不算，
+    // 免得转镜头/拖旋转盘被当成点空白）。
+    {
+      bool lbtn = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+      static DWORD s_lDownTick = 0;
+      static POINT s_lDownPos = {};
+      if (lbtn && !prevLBtn) {
+        s_lDownTick = GetTickCount();
+        GetCursorPos(&s_lDownPos);
+      } else if (!lbtn && prevLBtn) {
+        POINT p = {};
+        GetCursorPos(&p);
+        DWORD dt = GetTickCount() - s_lDownTick;
+        int dx = p.x - s_lDownPos.x, dy = p.y - s_lDownPos.y;
+        if (dt <= 300 && (dx * dx + dy * dy) <= 36)
+          InterlockedIncrement(&g_leftClickReq);
+      }
+      prevLBtn = lbtn;
+    }
     int cap = (int)g_hotkeyCaptureReq;
     if (cap) {
       if (lastCapture == 0) {
@@ -187,6 +210,10 @@ static bool TakeHotkeyFreeze() {
   return InterlockedExchange(&g_hotkeyFreezeReq, 0) > 0;
 }
 
+static bool TakeLeftClick() {
+  return InterlockedExchange(&g_leftClickReq, 0) > 0;
+}
+
 // 面板里的"改键"行：点按钮 → 等按键 → 应用并写回 poser_config.txt
 static void DrawHotkeySetting(const char *label, const char *cfgKey, int *vkp,
                               bool *ctrlp, int captureId) {
@@ -255,6 +282,11 @@ static int g_layerW = 0, g_layerH = 0;
 static int g_blitW = 0, g_blitH = 0;                // staging/DIB 当前尺寸
 static int g_prevDirtyX = 0, g_prevDirtyY = 0;      // 上一帧上传到分层表面的矩形
 static int g_prevDirtyW = 0, g_prevDirtyH = 0;
+// 分层路径：内容没变就不回读/不上传（面板静止时能省掉绝大部分 GPU→CPU 等待）
+static bool g_layerForcePresent = true;
+static unsigned long long g_layerLastHash = 0;
+static int g_layerLastX = -1, g_layerLastY = -1, g_layerLastW = 0,
+           g_layerLastH = 0;
 static double QpcMs(LARGE_INTEGER a, LARGE_INTEGER b) {
   static double freq = 0.0;
   if (freq == 0.0) {
@@ -423,6 +455,25 @@ static bool CreateDeviceLayered(HWND hWnd) {
 }
 
 // 本帧要上传的矩形 = 本帧 ImGui 顶点包围盒 ∪ 上一帧已上传的矩形
+// 内容指纹：面板静止时它不变 —— 用来跳过整轮回读+上传（给"mod 多、GPU 挤"的机器省时间）
+static unsigned long long ImGuiContentHash() {
+  ImDrawData *dd = ImGui::GetDrawData();
+  unsigned long long h = 1469598103934665603ull;
+  if (!dd)
+    return h;
+  for (int n = 0; n < dd->CmdListsCount; n++) {
+    const ImDrawList *cl = dd->CmdLists[n];
+    const unsigned char *p = (const unsigned char *)cl->VtxBuffer.Data;
+    size_t words = (size_t)cl->VtxBuffer.Size * sizeof(ImDrawVert) / 8;
+    const unsigned long long *q = (const unsigned long long *)p;
+    for (size_t i = 0; i < words; i++) {
+      h ^= q[i];
+      h *= 1099511628211ull;
+    }
+  }
+  return h;
+}
+
 // （后者必须并进来，否则"被擦掉"的像素会残留在分层表面上）
 static bool LayeredDirtyRect(int &ox, int &oy, int &ow, int &oh) {
   ImDrawData *dd = ImGui::GetDrawData();
@@ -519,6 +570,19 @@ static void PresentLayered() {
     LayeredLogTiming(0, 0, 0, 0, 0, 1); // 没内容可画：不碰窗口
     return;
   }
+  // 内容和矩形都没变 → 直接跳过（分层表面已经是对的），省掉这次 Map 等 GPU 的时间
+  unsigned long long hash = ImGuiContentHash();
+  if (!g_layerForcePresent && hash == g_layerLastHash && dx == g_layerLastX &&
+      dy == g_layerLastY && dw == g_layerLastW && dh == g_layerLastH) {
+    LayeredLogTiming(0, 0, 0, dw, dh, 1);
+    return;
+  }
+  g_layerLastHash = hash;
+  g_layerLastX = dx;
+  g_layerLastY = dy;
+  g_layerLastW = dw;
+  g_layerLastH = dh;
+  g_layerForcePresent = false;
   if (!EnsureBlitResources(dw, dh))
     return;
   LARGE_INTEGER t0, t1, t2, t3;
@@ -570,6 +634,7 @@ static void LayeredSyncSize() {
   if (w > 0 && h > 0 && (w != g_layerW || h != g_layerH)) {
     if (!CreateLayerResources(w, h))
       Log("[GUI] layered: resize to %dx%d failed", w, h);
+    g_layerForcePresent = true; // 资源重建过：下一帧必须重画/重传
   }
 }
 
@@ -948,20 +1013,15 @@ static DWORD WINAPI GuiThread(LPVOID) {
       Log("[GUI] overlay %s (panel=%d alt=%d)", shouldShow ? "shown" : "hidden",
           (int)g_guiVisible, (int)altHeld);
     }
-    // 真穿透逐位置决定：默认穿透（鼠标全归游戏），只有当光标自由、且指针确实落在
-    // 面板/关节/旋转环上（或正在拖拽）时才关掉穿透，把这次交互留给覆盖层。这样
-    // 摄影模式里点游戏 UI 也照样有效，不再依赖跨线程 HTTRANSPARENT。
-    if (g_clickThrough) {
-      bool overInteractive = g_inputTakeMouse || g_inputHoverGizmo ||
-                             g_inputDragging || g_inputMouseHeld;
-      SetOverlayClickThrough(!(g_cursorFreeNow && overInteractive));
-    }
+    // 真穿透逐位置决定放在 DrawPoserGui 之后（见下方）—— 用本帧的 hover 状态，
+    // 否则会慢一帧：环已经变色了，但这一下点击还是被当成点游戏（"点它没反应"）。
     if (shouldShow) {
       if (!s_panelShown) {
         SetWindowPos(g_guiHwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         ShowWindow(g_guiHwnd, SW_SHOWNOACTIVATE);
         s_panelShown = true;
+        g_layerForcePresent = true; // 刚显示：下一帧必须上传一次
       }
       // 覆盖层永不抢焦点（WS_EX_NOACTIVATE 常驻）：键盘永远归游戏。
       // 不为输入框临时激活覆盖层——任何情况都不抢焦点、不弹输入法。
@@ -1024,6 +1084,15 @@ static DWORD WINAPI GuiThread(LPVOID) {
     {
       ImGuiIO &io = ImGui::GetIO();
       g_inputTakeMouse = io.WantCaptureMouse; // 指针落在 ImGui 窗口内容上
+      // 真穿透逐位置决定：默认穿透（鼠标全归游戏），只有当光标自由、且指针确实落在
+      // 面板/关节/旋转环上（或正在拖拽）时才关掉穿透，把这次交互留给覆盖层。
+      // 放在这里（DrawPoserGui 之后）是关键：用的是**本帧**的 hover 状态，
+      // 快一帧都不行 —— 否则快速移到旋转环上立刻点击，那一下会被判成点游戏。
+      if (g_clickThrough) {
+        bool overInteractive = g_inputTakeMouse || g_inputHoverGizmo ||
+                               g_inputDragging || g_inputMouseHeld;
+        SetOverlayClickThrough(!(g_cursorFreeNow && overInteractive));
+      }
       bool wantText = io.WantTextInput;
       if (wantText != g_inputWantsText) {
         g_inputWantsText = wantText;
@@ -1052,7 +1121,14 @@ static DWORD WINAPI GuiThread(LPVOID) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     if (g_layeredOverlay) {
       PresentLayered();
-      Sleep(8); // 分层路径没有垂直同步，限一下帧率，省 CPU
+      // 分层路径没有垂直同步：按 overlay_fps 限帧（0=不限）。
+      // mod 多的机器上，回读等待本来就长，帧率越低对游戏干扰越小。
+      DWORD waitMs = 8;
+      if (g_overlayFps > 0) {
+        int ms = 1000 / g_overlayFps;
+        waitMs = (DWORD)(ms < 1 ? 1 : ms);
+      }
+      Sleep(waitMs);
     } else {
       g_pSwapChain->Present(0, 0);
     }

@@ -27,6 +27,10 @@ static bool g_clickThrough = true; // 默认常驻 + 真穿透（实测手感更
 // overlay_mode：0=auto（检测到 XXMI/3DMigoto 的 d3d11.dll 时用分层窗口，否则 DComp）
 //               1=强制 DComp   2=强制分层窗口（UpdateLayeredWindow，兼容性最好）
 static int g_overlayMode = 0;
+// 分层窗口（XXMI/3DMigoto 走的路径）的呈现帧率上限。分层路径要每帧做一次
+// GPU→CPU 回读，而 Map() 会等 GPU 队列跑完 —— mod 多的机器上等得久，会卡顿。
+// 60 = 默认（够用且流畅）；0 = 不限制；减小它可显著降低对游戏的干扰。
+static int g_overlayFps = 60;
 
 // Default pose dir: prefer deriving from poser.dll location (...\plugin\poses)
 // so presets work regardless of the game's working directory.
@@ -369,6 +373,10 @@ static bool LoadPoserConfig() {
       ParseHotkey(val, &g_freezeVK, &g_freezeCtrl, 'P', false);
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "overlay_mode") == 0)    g_overlayMode = (int)strtoul(val, nullptr, 0);
+    else if (strcmp(key, "overlay_fps") == 0) {
+      int v = (int)strtoul(val, nullptr, 0);
+      g_overlayFps = (v < 0) ? 0 : (v > 240 ? 240 : v);
+    }
     else if (strcmp(key, "default_pose_dir") == 0) {
       if (val[0] == '\0') {
         ResolveDefaultPoseDir();
@@ -397,9 +405,10 @@ static bool LoadPoserConfig() {
   fclose(f);
   CheckHotkeyConflicts();
   Log("[CFG] gui_toggle_key=%s%d (0x%X) freeze_key=%s%d (0x%X) "
-      "overlay_mode=%d",
+      "overlay_mode=%d overlay_fps=%d",
       g_guiToggleCtrl ? "CTRL+" : "", g_guiToggleVK, g_guiToggleVK,
-      g_freezeCtrl ? "CTRL+" : "", g_freezeVK, g_freezeVK, g_overlayMode);
+      g_freezeCtrl ? "CTRL+" : "", g_freezeVK, g_freezeVK, g_overlayMode,
+      g_overlayFps);
   // 配置是老版本留下的值时，用户容易以为"默认键没生效"（旧版默认 F12/F11），
   // 这里把"实际生效的键"连同提示一起打出来
   {

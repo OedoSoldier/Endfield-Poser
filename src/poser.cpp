@@ -24,6 +24,23 @@
 #include "config.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
+// 面板里的「打开日志」：弹资源管理器并选中 poser_log.txt —— 让非技术用户
+// 一步就能把日志拖给作者（路径：<游戏目录>\plugin\poser_log.txt）
+static void OpenLogInExplorer() {
+  char path[MAX_PATH] = {};
+  HMODULE m = GetModuleHandleA("poser.dll");
+  if (!m || !GetModuleFileNameA(m, path, MAX_PATH))
+    return;
+  char *slash = strrchr(path, '\\');
+  if (!slash)
+    return;
+  *slash = 0; // ...\plugin
+  char cmd[MAX_PATH + 64] = {};
+  snprintf(cmd, sizeof(cmd), "explorer.exe /select,\"%s\\poser_log.txt\"", path);
+  Log("[POSER] open log folder: %s", path);
+  WinExec(cmd, SW_SHOWNORMAL);
+}
+
 static void RefreshCharacterBones();
 
 #include "core/web_server.h"
@@ -269,6 +286,13 @@ void DrawPoserGui() {
       HotkeyDisplay(g_guiToggleVK, g_guiToggleCtrl, hk1, sizeof(hk1));
       HotkeyDisplay(g_freezeVK, g_freezeCtrl, hk2, sizeof(hk2));
       ImGui::TextDisabled("\u547c\u51fa %s   \u51bb\u7ed3 %s", hk1, hk2);
+      ImGui::SameLine();
+      if (ImGui::SmallButton(u8"\u6253\u5f00\u65e5\u5fd7"))
+        OpenLogInExplorer();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u5f39\u51fa\u8d44\u6e90\u7ba1\u7406\u5668\u5e76\u9009\u4e2d"
+                          u8" plugin\\poser_log.txt\uff08\u53d1\u7ed9\u4f5c\u8005\u5c31"
+                          u8"\u62d6\u8fd9\u4e2a\u6587\u4ef6\uff09");
     }
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)

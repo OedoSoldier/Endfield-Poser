@@ -486,6 +486,23 @@ static void DrawSkeletonOverlay() {
 static void HandleRigClick() {
   if (!g_showBones)
     return;
+  // 点空白处取消选中：轮询到的"左键短按"（见 HotkeyPollThread）。
+  // 因为覆盖层平时是可穿透的，点在远处空白处时这次点击不会进我们的窗口，
+  // 靠事件根本收不到 —— 只有轮询才判断得到。
+  // 排除三种"不该取消"的情况：面板上的点击、旋转盘/关节上的点击、拖拽。
+  if (TakeLeftClick()) {
+    bool overPanel = ImGui::GetIO().WantCaptureMouse || g_inputTakeMouse;
+    bool overGizmoOrJoint = g_inputHoverGizmo || g_inputDragging ||
+                            (g_selectedTransform &&
+                             ImGuizmo::IsOver(ImGuizmo::ROTATE));
+    if (!overPanel && !overGizmoOrJoint) {
+      if (g_selectedTransform) {
+        Log("[RIG] empty-space click -> deselect");
+        SelectTransform(nullptr, nullptr);
+      }
+      return;
+    }
+  }
   if (!ImGui::IsMouseClicked(0))
     return;
   if (ImGui::GetIO().WantCaptureMouse)
