@@ -9,6 +9,7 @@
 #include <dcomp.h>
 #include <imm.h>
 #include <tlhelp32.h>
+#include <cmath>
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -87,6 +88,148 @@ static void SetOverlayClickThrough(bool on) {
 }
 static volatile bool g_guiVisible = false;
 static volatile bool g_guiRunning = false;
+static bool g_xxmiDetected = false; // 进程里发现第三方 d3d11.dll（XXMI/3DMigoto）
+
+// ---- 热键轮询线程 ----
+// GetAsyncKeyState 的 bit0 是"自上次调用以来按下过"的锁存位，**进程内任何一次同键调用
+// 都会把它清掉**：装了 XXMI/3DMigoto 后它们（以及游戏自己）也在轮询 F11/F12，
+// 于是我们的 bit0 时有时无 —— 这正是"F11 有时有用有时没用"的根因。
+// 这里改成独立线程 5ms 轮询 bit15（当前是否按下）+ 自己维护边沿，不依赖锁存位；
+// 也不怕 GUI 循环被分层回读/游戏卡顿拖慢而漏掉短按。
+static volatile LONG g_hotkeyToggleReq = 0;
+static volatile LONG g_hotkeyFreezeReq = 0;
+static volatile LONG g_hotkeyPollRun = 0;
+// 面板内改键：captureReq 0=未捕获 1=呼出键 2=冻结键；captureVK 0=还没按 -1=取消
+static volatile LONG g_hotkeyCaptureReq = 0;
+static volatile LONG g_hotkeyCaptureVK = 0;
+static volatile LONG g_hotkeyCaptureCtrl = 0;
+
+static DWORD WINAPI HotkeyPollThread(LPVOID) {
+  bool prevToggle = false, prevFreeze = false;
+  static bool prevAll[256] = {};
+  int lastCapture = 0;
+  while (g_hotkeyPollRun) {
+    int cap = (int)g_hotkeyCaptureReq;
+    if (cap) {
+      if (lastCapture == 0) {
+        // 刚进入捕获：先把当前按键状态记下来，避免把"已经按着的键"当成新按键
+        for (int vk = 0x08; vk <= 0xFE; vk++)
+          prevAll[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
+        lastCapture = cap;
+        Sleep(5);
+        continue;
+      }
+      if ((int)g_hotkeyCaptureVK == 0) {
+        bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        for (int vk = 0x08; vk <= 0xFE; vk++) {
+          bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+          bool was = prevAll[vk];
+          prevAll[vk] = down;
+          if (!down || was)
+            continue;
+          // 修饰键本身不能当主键
+          if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
+              vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_LCONTROL ||
+              vk == VK_RCONTROL || vk == VK_LMENU || vk == VK_RMENU ||
+              vk == VK_LWIN || vk == VK_RWIN)
+            continue;
+          if (vk == VK_ESCAPE) {
+            InterlockedExchange(&g_hotkeyCaptureVK, -1);
+            break;
+          }
+          InterlockedExchange(&g_hotkeyCaptureVK, vk);
+          InterlockedExchange(&g_hotkeyCaptureCtrl, (ctrl || shift) ? 1 : 0);
+          Log("[CFG] captured vk=0x%X (%s%s)", vk, ctrl ? "CTRL+" : "",
+              shift ? "SHIFT+" : "");
+          break;
+        }
+      }
+      // 捕获期间不触发正常热键
+      prevToggle = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
+      prevFreeze = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
+      Sleep(5);
+      continue;
+    }
+    lastCapture = 0;
+    // 在插件自己的输入框里打字时不响应热键（否则单键绑成字母就会边打字边触发）
+    if (g_inputWantsText) {
+      prevToggle = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
+      prevFreeze = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
+      Sleep(5);
+      continue;
+    }
+    // 只有游戏窗口（或我们自己的覆盖窗）在前台时才响应热键：
+    // 否则在浏览器/聊天里打字也会触发（尤其是被绑成字母的情况）
+    HWND fg = GetForegroundWindow();
+    bool ourFocus = (fg != nullptr) && (fg == g_gameHwnd || fg == g_guiHwnd);
+    bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    bool t = ourFocus && (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0 &&
+             (!g_guiToggleCtrl || ctrl);
+    bool f = ourFocus && (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0 &&
+             (!g_freezeCtrl || ctrl);
+    if (t && !prevToggle)
+      InterlockedIncrement(&g_hotkeyToggleReq);
+    if (f && !prevFreeze)
+      InterlockedIncrement(&g_hotkeyFreezeReq);
+    prevToggle = t;
+    prevFreeze = f;
+    Sleep(5);
+  }
+  return 0;
+}
+
+static bool TakeHotkeyToggle() {
+  return InterlockedExchange(&g_hotkeyToggleReq, 0) > 0;
+}
+
+static bool TakeHotkeyFreeze() {
+  return InterlockedExchange(&g_hotkeyFreezeReq, 0) > 0;
+}
+
+// 面板里的"改键"行：点按钮 → 等按键 → 应用并写回 poser_config.txt
+static void DrawHotkeySetting(const char *label, const char *cfgKey, int *vkp,
+                              bool *ctrlp, int captureId) {
+  char name[48] = {};
+  HotkeyDisplay(*vkp, *ctrlp, name, sizeof(name));
+  bool capturing = ((int)g_hotkeyCaptureReq == captureId);
+  ImGui::PushID(captureId);
+  ImGui::Text("%s", label);
+  ImGui::SameLine(110.0f);
+  if (!capturing) {
+    ImGui::Text("%s", name);
+    ImGui::SameLine();
+    if (ImGui::SmallButton(u8"\u6539\u952e")) {
+      g_hotkeyCaptureVK = 0;
+      g_hotkeyCaptureCtrl = 0;
+      g_hotkeyCaptureReq = captureId;
+      Log("[CFG] rebind %s: waiting for a key...", cfgKey);
+    }
+  } else {
+    int got = (int)g_hotkeyCaptureVK;
+    if (got == 0) {
+      ImGui::TextDisabled(
+          u8"\u6309\u4e0b\u65b0\u952e\u2026\uff08\u5355\u952e\u4e5f\u884c\uff0c"
+          u8"\u4f46\u5355\u5b57\u6bcd\u4f1a\u548c\u6253\u5b57\u51b2\u7a81\uff1b"
+          u8"Esc \u53d6\u6d88\uff09");
+    } else if (got < 0) {
+      g_hotkeyCaptureReq = 0;
+      g_hotkeyCaptureVK = 0;
+      Log("[CFG] rebind %s: cancelled", cfgKey);
+    } else {
+      *vkp = got;
+      *ctrlp = (g_hotkeyCaptureCtrl != 0);
+      g_hotkeyCaptureReq = 0;
+      g_hotkeyCaptureVK = 0;
+      char nb[48] = {};
+      HotkeyDisplay(*vkp, *ctrlp, nb, sizeof(nb));
+      bool saved = SaveHotkeyConfig(cfgKey, *vkp, *ctrlp);
+      CheckHotkeyConflicts();
+      Log("[CFG] rebind %s -> %s (saved=%d)", cfgKey, nb, (int)saved);
+    }
+  }
+  ImGui::PopID();
+}
 
 static ID3D11Device *g_pd3dDevice = nullptr;
 static ID3D11DeviceContext *g_pd3dDeviceContext = nullptr;
@@ -103,12 +246,24 @@ static IDCompositionVisual *g_pDCompVisual = nullptr;
 // （表现为黑屏卡在开屏页）。
 // 故此采用 ImGui 画到离屏纹理，拷贝到 staging再由CPU 读回，最后 UpdateLayeredWindow 逐像素 alpha 渲染。
 static ID3D11Texture2D *g_pLayerTex = nullptr;      // 离屏渲染目标
-static ID3D11Texture2D *g_pLayerStaging = nullptr;  // CPU 可读副本
+static ID3D11Texture2D *g_pLayerStaging = nullptr;  // CPU 可读副本（只按脏矩形大小建）
 static HDC g_layerDC = nullptr;                     // 与 DIB 关联的内存 DC
 static HBITMAP g_layerBmp = nullptr;                // 32bpp 顶朝下 DIB
 static HGDIOBJ g_layerOldBmp = nullptr;
 static void *g_layerBits = nullptr;
 static int g_layerW = 0, g_layerH = 0;
+static int g_blitW = 0, g_blitH = 0;                // staging/DIB 当前尺寸
+static int g_prevDirtyX = 0, g_prevDirtyY = 0;      // 上一帧上传到分层表面的矩形
+static int g_prevDirtyW = 0, g_prevDirtyH = 0;
+static double QpcMs(LARGE_INTEGER a, LARGE_INTEGER b) {
+  static double freq = 0.0;
+  if (freq == 0.0) {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    freq = (double)f.QuadPart;
+  }
+  return (double)(b.QuadPart - a.QuadPart) * 1000.0 / freq;
+}
 
 static bool DetectForeignD3D11() {
   wchar_t sysDir[MAX_PATH] = {};
@@ -149,7 +304,8 @@ static PFN_D3D11_CREATE_DEVICE GetSystemD3D11CreateDevice() {
   if (m)
     s_fn = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(m, "D3D11CreateDevice");
   if (!s_fn)
-    Log("[GUI] WARN: system d3d11.dll unavailable, falling back to import");
+    Log("[GUI] WARN: system d3d11.dll unavailable, falling back to the "
+        "in-process import (may be a proxy!)");
   return s_fn ? s_fn : &D3D11CreateDevice;
 }
 
@@ -165,7 +321,60 @@ static void ReleaseLayerResources() {
   }
   if (g_layerBmp) { DeleteObject(g_layerBmp); g_layerBmp = nullptr; }
   g_layerBits = nullptr;
+  g_blitW = g_blitH = 0;
+  g_prevDirtyW = g_prevDirtyH = 0;
   g_layerW = g_layerH = 0;
+}
+
+// 只按"要上传的那块矩形"建 staging + DIB：整屏回读太贵（4K 每帧 33MB），
+// 面板通常只占屏幕一角，这里按脏矩形回读能把开销降一到两个数量级。
+static bool EnsureBlitResources(int w, int h) {
+  if (w <= 0 || h <= 0 || !g_pd3dDevice)
+    return false;
+  if (g_pLayerStaging && g_layerBits && g_blitW == w && g_blitH == h)
+    return true;
+  if (g_pLayerStaging) { g_pLayerStaging->Release(); g_pLayerStaging = nullptr; }
+  if (g_layerDC) {
+    if (g_layerOldBmp) SelectObject(g_layerDC, g_layerOldBmp);
+    DeleteDC(g_layerDC);
+    g_layerDC = nullptr;
+    g_layerOldBmp = nullptr;
+  }
+  if (g_layerBmp) { DeleteObject(g_layerBmp); g_layerBmp = nullptr; }
+  g_layerBits = nullptr;
+  g_blitW = g_blitH = 0;
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = w;
+  td.Height = h;
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_STAGING;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  if (FAILED(g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_pLayerStaging))) {
+    Log("[GUI] layered: staging %dx%d failed", w, h);
+    return false;
+  }
+  BITMAPINFO bi = {};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  HDC screen = GetDC(nullptr);
+  g_layerDC = CreateCompatibleDC(screen);
+  g_layerBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &g_layerBits, nullptr, 0);
+  ReleaseDC(nullptr, screen);
+  if (!g_layerDC || !g_layerBmp || !g_layerBits) {
+    Log("[GUI] layered: DIB %dx%d failed", w, h);
+    return false;
+  }
+  g_layerOldBmp = SelectObject(g_layerDC, g_layerBmp);
+  g_blitW = w;
+  g_blitH = h;
+  return true;
 }
 
 static bool CreateLayerResources(int w, int h) {
@@ -183,29 +392,9 @@ static bool CreateLayerResources(int w, int h) {
   td.BindFlags = D3D11_BIND_RENDER_TARGET;
   if (FAILED(g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_pLayerTex)))
     return false;
-  td.Usage = D3D11_USAGE_STAGING;
-  td.BindFlags = 0;
-  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  if (FAILED(g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_pLayerStaging)))
-    return false;
   if (FAILED(g_pd3dDevice->CreateRenderTargetView(g_pLayerTex, nullptr,
                                                    &g_pMainRenderTargetView)))
     return false;
-
-  BITMAPINFO bi = {};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = w;
-  bi.bmiHeader.biHeight = -h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  HDC screen = GetDC(nullptr);
-  g_layerDC = CreateCompatibleDC(screen);
-  g_layerBmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &g_layerBits, nullptr, 0);
-  ReleaseDC(nullptr, screen);
-  if (!g_layerDC || !g_layerBmp || !g_layerBits)
-    return false;
-  g_layerOldBmp = SelectObject(g_layerDC, g_layerBmp);
   g_layerW = w;
   g_layerH = h;
   return true;
@@ -241,26 +430,125 @@ static bool CreateDeviceLayered(HWND hWnd) {
   return true;
 }
 
+// 本帧要上传的矩形 = 本帧 ImGui 顶点包围盒 ∪ 上一帧已上传的矩形
+// （后者必须并进来，否则"被擦掉"的像素会残留在分层表面上）
+static bool LayeredDirtyRect(int &ox, int &oy, int &ow, int &oh) {
+  ImDrawData *dd = ImGui::GetDrawData();
+  float minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+  if (dd) {
+    for (int n = 0; n < dd->CmdListsCount; n++) {
+      const ImDrawList *cl = dd->CmdLists[n];
+      for (int v = 0; v < cl->VtxBuffer.Size; v++) {
+        const ImVec2 &p = cl->VtxBuffer.Data[v].pos;
+        if (p.x < minx) minx = p.x;
+        if (p.y < miny) miny = p.y;
+        if (p.x > maxx) maxx = p.x;
+        if (p.y > maxy) maxy = p.y;
+      }
+    }
+  }
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (maxx > minx && maxy > miny && minx < 1e29f) {
+    x0 = (int)floorf(minx) - 2;
+    y0 = (int)floorf(miny) - 2;
+    x1 = (int)ceilf(maxx) + 2;
+    y1 = (int)ceilf(maxy) + 2;
+  }
+  if (g_prevDirtyW > 0 && g_prevDirtyH > 0) {
+    if (g_prevDirtyX < x0) x0 = g_prevDirtyX;
+    if (g_prevDirtyY < y0) y0 = g_prevDirtyY;
+    if (g_prevDirtyX + g_prevDirtyW > x1) x1 = g_prevDirtyX + g_prevDirtyW;
+    if (g_prevDirtyY + g_prevDirtyH > y1) y1 = g_prevDirtyY + g_prevDirtyH;
+  }
+  // 裁到窗口范围
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > g_layerW) x1 = g_layerW;
+  if (y1 > g_layerH) y1 = g_layerH;
+  if (x1 - x0 <= 0 || y1 - y0 <= 0) {
+    g_prevDirtyW = g_prevDirtyH = 0;
+    return false;
+  }
+  ox = x0;
+  oy = y0;
+  ow = x1 - x0;
+  oh = y1 - y0;
+  g_prevDirtyX = ox;
+  g_prevDirtyY = oy;
+  g_prevDirtyW = ow;
+  g_prevDirtyH = oh;
+  return true;
+}
+
+static void LayeredLogTiming(double copyMs, double mapMs, double ulwMs, int w,
+                             int h, int skipped) {
+  static int frames = 0, skips = 0;
+  static double accC = 0, accM = 0, accU = 0;
+  static double maxC = 0, maxM = 0, maxU = 0;
+  static ULONGLONG windowStart = 0;
+  accC += copyMs;
+  accM += mapMs;
+  accU += ulwMs;
+  if (copyMs > maxC) maxC = copyMs;
+  if (mapMs > maxM) maxM = mapMs;
+  if (ulwMs > maxU) maxU = ulwMs;
+  frames++;
+  skips += skipped;
+  ULONGLONG now = GetTickCount64();
+  if (windowStart == 0) windowStart = now;
+  if (now - windowStart >= 1000) {
+    double sec = (double)(now - windowStart) / 1000.0;
+    Log("[GUI] layered present %.0f fps: rect %dx%d copy avg=%.1f max=%.1f | "
+        "map avg=%.1f max=%.1f | ulw avg=%.1f max=%.1f | skipped=%d",
+        frames / sec, w, h, accC / frames, maxC, accM / frames, maxM,
+        accU / frames, maxU, skips);
+    frames = 0;
+    skips = 0;
+    accC = accM = accU = 0;
+    maxC = maxM = maxU = 0;
+    windowStart = now;
+  }
+}
+
 static void PresentLayered() {
-  if (!g_layerBits || !g_pLayerStaging)
+  if (!g_layerBits || !g_pLayerStaging || !g_pLayerTex)
     return;
-  g_pd3dDeviceContext->CopyResource(g_pLayerStaging, g_pLayerTex);
+  int dx = 0, dy = 0, dw = 0, dh = 0;
+  if (!LayeredDirtyRect(dx, dy, dw, dh)) {
+    LayeredLogTiming(0, 0, 0, 0, 0, 1); // 没内容可画：不碰窗口
+    return;
+  }
+  if (!EnsureBlitResources(dw, dh))
+    return;
+  LARGE_INTEGER t0, t1, t2, t3;
+  QueryPerformanceCounter(&t0);
+  D3D11_BOX box = {(UINT)dx, (UINT)dy, 0, (UINT)(dx + dw), (UINT)(dy + dh), 1};
+  g_pd3dDeviceContext->CopySubresourceRegion(g_pLayerStaging, 0, 0, 0, 0,
+                                             g_pLayerTex, 0, &box);
   D3D11_MAPPED_SUBRESOURCE map = {};
-  if (FAILED(g_pd3dDeviceContext->Map(g_pLayerStaging, 0, D3D11_MAP_READ, 0, &map)))
+  if (FAILED(g_pd3dDeviceContext->Map(g_pLayerStaging, 0, D3D11_MAP_READ, 0,
+                                      &map)))
     return;
-  const size_t rowBytes = (size_t)g_layerW * 4;
-  for (int y = 0; y < g_layerH; y++)
-    memcpy((char *)g_layerBits + rowBytes * y,
-           (const char *)map.pData + (size_t)map.RowPitch * y, rowBytes);
+  QueryPerformanceCounter(&t1);
+  const size_t srcPitch = (size_t)map.RowPitch;
+  const size_t dstPitch = (size_t)g_blitW * 4;
+  const size_t rowBytes = (size_t)dw * 4;
+  for (int y = 0; y < dh; y++)
+    memcpy((char *)g_layerBits + dstPitch * y,
+           (const char *)map.pData + srcPitch * y, rowBytes);
   g_pd3dDeviceContext->Unmap(g_pLayerStaging, 0);
+  QueryPerformanceCounter(&t2);
 
   RECT wr;
   GetWindowRect(g_guiHwnd, &wr);
-  POINT dst = {wr.left, wr.top};
-  SIZE sz = {g_layerW, g_layerH};
+  POINT dst = {wr.left + dx, wr.top + dy};
+  SIZE sz = {dw, dh};
   POINT src = {0, 0};
   BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-  UpdateLayeredWindow(g_guiHwnd, nullptr, &dst, &sz, g_layerDC, &src, 0, &bf, ULW_ALPHA);
+  UpdateLayeredWindow(g_guiHwnd, nullptr, &dst, &sz, g_layerDC, &src, 0, &bf,
+                      ULW_ALPHA);
+  QueryPerformanceCounter(&t3);
+  LayeredLogTiming(QpcMs(t0, t1), QpcMs(t1, t2), QpcMs(t2, t3), dw, dh, 0);
 }
 
 // 覆盖层尺寸跟随游戏窗口后，分层纹理需要同步重建。
@@ -441,7 +729,15 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
     return true;
   switch (msg) {
   case WM_SIZE:
-    if (g_pd3dDevice && wParam != SIZE_MINIMIZED) {
+    if (wParam == SIZE_MINIMIZED)
+      return 0;
+    // 分层模式没有 swapchain：这里只让分层表面跟随尺寸重建，
+    // 否则 g_pSwapChain 为 nullptr 会直接访问违例（改分辨率/全屏切换时崩）
+    if (g_layeredOverlay || !g_pSwapChain) {
+      LayeredSyncSize();
+      return 0;
+    }
+    if (g_pd3dDevice) {
       CleanupRenderTarget();
       g_pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam),
                                    (UINT)HIWORD(lParam), DXGI_FORMAT_UNKNOWN,
@@ -514,13 +810,24 @@ static DWORD WINAPI GuiThread(LPVOID) {
   // auto：进程里有第三方 d3d11.dll（XXMI/3DMigoto）就走分层路径，否则走 DComp；
   // DComp 重试失败后也退回分层路径。
   bool d3dOk = false;
+  bool foreignD3D11 = DetectForeignD3D11();
+  if (foreignD3D11)
+    g_xxmiDetected = true;
   bool useLayered = (g_overlayMode == 2) ||
-                    (g_overlayMode == 0 && DetectForeignD3D11());
+                    (g_overlayMode == 0 && foreignD3D11);
   if (useLayered)
     Log("[GUI] overlay path: layered (mode=%d)", g_overlayMode);
   if (!useLayered) {
     // DComp 合成在游戏刚启动时可能暂不可用（0x887A0001），重试几次
     for (int i = 0; i < 8 && !d3dOk; i++) {
+      // XXMI/3DMigoto 的 d3d11.dll 若在我们之后才注入，第一次检测会漏判；
+      // 每次重试都再测一遍，宁可改走分层也别去踩 DComp 的坑
+      if (g_overlayMode == 0 && i > 0 && DetectForeignD3D11()) {
+        Log("[GUI] foreign d3d11.dll appeared late -> switching to layered");
+        g_xxmiDetected = true;
+        useLayered = true;
+        break;
+      }
       d3dOk = CreateDeviceD3D(g_guiHwnd);
       if (!d3dOk) {
         Log("[GUI] CreateDeviceD3D attempt %d failed, retrying...", i + 1);
@@ -609,10 +916,8 @@ static DWORD WINAPI GuiThread(LPVOID) {
       break;
     }
 
-    // 快捷键：切换面板显示
-    // GetAsyncKeyState 只能调用一次：bit0(按下边沿)会被调用消费掉，
-    // 同一表达式调两次会让第二次永远为 0，热键失效。
-    if (GetAsyncKeyState(g_guiToggleVK) & 1) {
+    // 快捷键：切换面板显示（由 HotkeyPollThread 边沿检测，见上方注释）
+    if (TakeHotkeyToggle()) {
       g_guiVisible = !g_guiVisible;
       Log("[GUI] toggle -> visible=%d", (int)g_guiVisible);
     }
@@ -761,9 +1066,14 @@ static DWORD WINAPI GuiThread(LPVOID) {
 static void StartGuiThread() {
   if (g_guiRunning) return;
   g_guiRunning = true;
+  if (!g_hotkeyPollRun) {
+    g_hotkeyPollRun = 1;
+    CreateThread(nullptr, 0, HotkeyPollThread, nullptr, 0, nullptr);
+  }
   CreateThread(nullptr, 0, GuiThread, nullptr, 0, nullptr);
 }
 
 static void StopGuiThread() {
   g_guiRunning = false;
+  g_hotkeyPollRun = 0;
 }

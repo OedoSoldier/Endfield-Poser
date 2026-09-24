@@ -7,9 +7,19 @@
 
 void Log(const char *fmt, ...);
 
-static int g_guiToggleVK = VK_INSERT;   // 呼出/隐藏 GUI
+// 呼出/隐藏 GUI：默认 L。
+// 为什么不用 F11/F12（连 Ctrl+F12 也不行）：XXMI/3DMigoto 是**直接轮询 F11/F12 的
+// 按键状态**，你按 Ctrl+F11 它照样会触发自己那份 —— 只有"根本不碰 F 键"才躲得掉。
+// 用字母的代价：游戏内文本框/聊天里打字会误触发（插件自己面板的输入框已做屏蔽）。
+static int g_guiToggleVK = 'L';
+static bool g_guiToggleCtrl = false;    // 是否要求按住 Ctrl
 static int g_screenshotVK = VK_F8;      // 截图
-static int g_freezeVK = VK_F11;         // 冻结 / 解冻
+// 冻结 / 解冻：默认 P
+static int g_freezeVK = 'P';
+static bool g_freezeCtrl = false;
+static bool g_hotkeyConflict = false;   // 配置里还留着易冲突的 F10~F12 → 面板给提示
+static char g_hotkeyConflictMsg[192] = "";
+static char g_hotkeyRiskyMsg[192] = ""; // 绑成单键（字母/数字…）→ 打字会误触发，提示
 static char g_defaultPoseDir[MAX_PATH] = "";
 // click_through=1：覆盖层常驻显示，用 WS_EX_LAYERED|TRANSPARENT 做真穿透；
 // 按住 Alt 时才取消穿透、由面板吃鼠标。默认 0 = 按住 Alt 才显示覆盖层。
@@ -39,6 +49,13 @@ static int ParseVK(const char *s, int fallback) {
   const char *p = s;
   if (s[0] == 'V' && s[1] == 'K' && s[2] == '_')
     p = s + 3;
+  // 单字母 / 单数字：直接就是 VK 码（A-Z = 0x41-0x5A，0-9 = 0x30-0x39）。
+  // 这条必须和 VkName() 的写法对称，否则"面板改键 → 写配置 → 下次解析"会对不上。
+  if (p[0] && !p[1]) {
+    if (p[0] >= 'A' && p[0] <= 'Z') return p[0];
+    if (p[0] >= 'a' && p[0] <= 'z') return p[0] - 'a' + 'A';
+    if (p[0] >= '0' && p[0] <= '9') return p[0];
+  }
   // 符号名（大小写不敏感）：VK_F12 / F12 / VK_INSERT / INSERT ...
   static const struct {
     const char *name;
@@ -101,6 +118,152 @@ static void StripBom(char *line) {
   }
 }
 
+// 解析热键：支持 "CTRL+F11" / "CTRL-F11" / "F11" / "0x7B"，大小写不敏感。
+// 修饰键写在前面，返回时把主键写进 *vkOut、是否需要 Ctrl 写进 *ctrlOut。
+static void ParseHotkey(const char *s, int *vkOut, bool *ctrlOut, int fallbackVk,
+                        bool fallbackCtrl) {
+  *vkOut = fallbackVk;
+  *ctrlOut = fallbackCtrl;
+  if (!s || !*s)
+    return;
+  char buf[64] = {};
+  snprintf(buf, sizeof(buf), "%s", s);
+  char *p = buf;
+  while (*p == ' ')
+    p++;
+  bool ctrl = false;
+  if (_strnicmp(p, "CTRL+", 5) == 0) {
+    ctrl = true;
+    p += 5;
+  } else if (_strnicmp(p, "CTRL-", 5) == 0) {
+    ctrl = true;
+    p += 5;
+  } else if (_strnicmp(p, "CTRL_", 5) == 0) {
+    ctrl = true;
+    p += 5;
+  }
+  *vkOut = ParseVK(p, fallbackVk);
+  *ctrlOut = ctrl;
+}
+
+// 单独按就安全的热键（游戏/mod 少用、也不可能是打字内容）：
+// F1~F12、Insert/Delete/Home/End/PgUp/PgDn/Pause/ScrollLock。
+// 单字母/数字/空格这类会打字的键不算"安全"，绑了就给提示（不禁止）。
+static bool IsSafeStandaloneKey(int vk) {
+  if (vk >= VK_F1 && vk <= VK_F12)
+    return true;
+  switch (vk) {
+  case VK_INSERT:
+  case VK_DELETE:
+  case VK_HOME:
+  case VK_END:
+  case VK_PRIOR:
+  case VK_NEXT:
+  case VK_PAUSE:
+  case VK_SCROLL:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// 撞键后两边同时响应（表现为"F11 有时不灵""F12 触发了别的东西"）。
+// 这里只在配置里还留着这些键时给一条提示，不擅自改用户的配置。
+static void CheckHotkeyConflicts() {
+  // 1) 单键（字母/数字/空格这类"会打字"的键）：不算错，但打字时会误触发，提示一下
+  g_hotkeyRiskyMsg[0] = 0;
+  char rb[32] = {};
+  const char *riskName = nullptr;
+  const char *riskWhich = nullptr;
+  if (!g_guiToggleCtrl && !IsSafeStandaloneKey(g_guiToggleVK)) {
+    riskName = VkName(g_guiToggleVK, rb, sizeof(rb));
+    riskWhich = "\u547c\u51fa\u952e";
+  } else if (!g_freezeCtrl && !IsSafeStandaloneKey(g_freezeVK)) {
+    riskName = VkName(g_freezeVK, rb, sizeof(rb));
+    riskWhich = "\u51bb\u7ed3\u952e";
+  }
+  if (riskName) {
+    snprintf(g_hotkeyRiskyMsg, sizeof(g_hotkeyRiskyMsg),
+             "%s %s \u662f\u5355\u952e\uff1a\u6e38\u620f\u5185\u6587\u672c"
+             "\u6846/\u804a\u5929\u91cc\u6253\u5b57\u4f1a\u8bef\u89e6\u53d1"
+             "\uff08\u5efa\u8bae\u6309\u4f4f Ctrl \u91cd\u8bbe\uff09",
+             riskWhich, riskName);
+  }
+  // 2) 裸 F10~F12：和 XXMI/3DMigoto、Steam 截图撞键（只在真装了 XXMI 时提示）
+  char b1[32] = {}, b2[32] = {};
+  const char *n1 = VkName(g_guiToggleVK, b1, sizeof(b1));
+  const char *n2 = VkName(g_freezeVK, b2, sizeof(b2));
+  const char *bad = nullptr;
+  // 加了 Ctrl 就不再和 XXMI/Steam 的裸 F 键撞了
+  if (!g_guiToggleCtrl && g_guiToggleVK >= VK_F10 && g_guiToggleVK <= VK_F12)
+    bad = n1;
+  else if (!g_freezeCtrl && g_freezeVK >= VK_F10 && g_freezeVK <= VK_F12)
+    bad = n2;
+  if (!bad) {
+    g_hotkeyConflict = false;
+    g_hotkeyConflictMsg[0] = 0;
+    return;
+  }
+  g_hotkeyConflict = true;
+  snprintf(g_hotkeyConflictMsg, sizeof(g_hotkeyConflictMsg),
+           "\u70ed\u952e %s \u53ef\u80fd\u4e0e XXMI/3DMigoto\u3001Steam "
+           "\u622a\u56fe\u51b2\u7a81\uff1a\u53ef\u5728\u4e0b\u9762 "
+           "\u300c\u5feb\u6377\u952e\u300d\u91cc\u6539\u6210 CTRL+%s",
+           bad, bad);
+  Log("[CFG] WARN: hotkey '%s' may conflict with XXMI/3DMigoto or Steam "
+      "(F10-F12); change gui_toggle_key/freeze_key in poser_config.txt",
+      bad);
+}
+
+// 热键显示名（含修饰键）
+static void HotkeyDisplay(int vk, bool ctrl, char *buf, size_t sz) {
+  char tmp[32] = {};
+  const char *n = VkName(vk, tmp, sizeof(tmp));
+  snprintf(buf, sz, "%s%s", ctrl ? "Ctrl+" : "", n);
+}
+
+// 面板里改键后写回 plugin\poser_config.txt：只替换对应那一行，其它行原样保留
+static bool SaveHotkeyConfig(const char *keyName, int vk, bool ctrl) {
+  const char *path = "plugin\\poser_config.txt";
+  static char lines[80][256];
+  int count = 0;
+  FILE *f = fopen(path, "r");
+  if (f) {
+    while (count < 80 && fgets(lines[count], sizeof(lines[count]), f))
+      count++;
+    fclose(f);
+  }
+  char vkbuf[32] = {};
+  const char *vn = VkName(vk, vkbuf, sizeof(vkbuf));
+  char newLine[160] = {};
+  snprintf(newLine, sizeof(newLine), "%s=%s%s\n", keyName, ctrl ? "CTRL+" : "",
+           vn);
+  bool replaced = false;
+  for (int i = 0; i < count; i++) {
+    char *eq = strchr(lines[i], '=');
+    if (!eq)
+      continue;
+    size_t klen = (size_t)(eq - lines[i]);
+    while (klen > 0 &&
+           (lines[i][klen - 1] == ' ' || lines[i][klen - 1] == '\t'))
+      klen--; // 键名后面的空格不算
+    if (klen == strlen(keyName) && strncmp(lines[i], keyName, klen) == 0) {
+      snprintf(lines[i], sizeof(lines[i]), "%s", newLine);
+      replaced = true;
+      break;
+    }
+  }
+  if (!replaced && count < 80)
+    snprintf(lines[count++], sizeof(lines[0]), "%s", newLine);
+  FILE *o = fopen(path, "wb");
+  if (!o)
+    return false;
+  for (int i = 0; i < count; i++)
+    fwrite(lines[i], 1, strlen(lines[i]), o);
+  fclose(o);
+  return true;
+}
+
 static bool LoadPoserConfig() {
   ResolveDefaultPoseDir();
   FILE *f = fopen("plugin\\poser_config.txt", "r");
@@ -119,9 +282,11 @@ static bool LoadPoserConfig() {
     while (kend > key && *kend == ' ') *kend-- = 0;
     while (*val == ' ') val++;
 
-    if (strcmp(key, "gui_toggle_key") == 0)       g_guiToggleVK = ParseVK(val, VK_INSERT);
+    if (strcmp(key, "gui_toggle_key") == 0)
+      ParseHotkey(val, &g_guiToggleVK, &g_guiToggleCtrl, 'L', false);
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
-    else if (strcmp(key, "freeze_key") == 0)      g_freezeVK = ParseVK(val, VK_F11);
+    else if (strcmp(key, "freeze_key") == 0)
+      ParseHotkey(val, &g_freezeVK, &g_freezeCtrl, 'P', false);
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "overlay_mode") == 0)    g_overlayMode = (int)strtoul(val, nullptr, 0);
     else if (strcmp(key, "default_pose_dir") == 0) {
@@ -150,7 +315,10 @@ static bool LoadPoserConfig() {
     }
   }
   fclose(f);
-  Log("[CFG] gui_toggle_key=%d (0x%X) freeze_key=%d (0x%X) overlay_mode=%d",
-      g_guiToggleVK, g_guiToggleVK, g_freezeVK, g_freezeVK, g_overlayMode);
+  CheckHotkeyConflicts();
+  Log("[CFG] gui_toggle_key=%s%d (0x%X) freeze_key=%s%d (0x%X) "
+      "overlay_mode=%d",
+      g_guiToggleCtrl ? "CTRL+" : "", g_guiToggleVK, g_guiToggleVK,
+      g_freezeCtrl ? "CTRL+" : "", g_freezeVK, g_freezeVK, g_overlayMode);
   return true;
 }

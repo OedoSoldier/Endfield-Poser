@@ -145,8 +145,10 @@ void GameFrameTick() {
     } else {
       s_captureRetry = 0;
     }
-    // 冻结热键（默认 F11）：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）
-    if (GetAsyncKeyState(g_freezeVK) & 1) {
+    // 冻结热键（默认 F11）：面板按钮万一点不到时的可靠通道（隐藏面板时也生效）。
+    // 边沿检测在 HotkeyPollThread 里做——直接用 GetAsyncKeyState 的 bit0 会被
+    // 游戏/XXMI 的同键轮询抢掉锁存位（"有时有用有时没用"的根因）。
+    if (TakeHotkeyFreeze()) {
       Log("[CTRL] freeze hotkey -> toggle freeze");
       if (g_frozen) {
         UnfreezeCharacter();
@@ -228,6 +230,20 @@ void DrawPoserGui() {
                        ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     ImGui::Text("v%s", POSER_VERSION);
+    // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
+    if (g_hotkeyConflict && g_xxmiDetected)
+      ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);
+    if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e\uff08\u53ef\u6539\uff09")) {
+      DrawHotkeySetting(u8"\u547c\u51fa / \u9690\u85cf\u9762\u677f",
+                        "gui_toggle_key", &g_guiToggleVK, &g_guiToggleCtrl, 1);
+      DrawHotkeySetting(u8"\u51bb\u7ed3 / \u89e3\u51bb", "freeze_key",
+                        &g_freezeVK, &g_freezeCtrl, 2);
+      if (g_hotkeyRiskyMsg[0])
+        ImGui::TextDisabled("\u26a0 %s", g_hotkeyRiskyMsg);
+      ImGui::TextDisabled(u8"\u70b9\u201c\u6539\u952e\u201d\u540e\u6309\u4e0b"
+                          u8"\u4f60\u60f3\u7528\u7684\u7ec4\u5408\uff08\u81ea\u52a8"
+                          u8"\u5199\u56de poser_config.txt\uff09");
+    }
     ImGui::SameLine();
     ImGui::Checkbox(u8"\u56fe\u9489", &g_pinPanels);
     if (ImGui::IsItemHovered())
