@@ -15,6 +15,7 @@ static double FrameNow() {
 static std::atomic<bool> g_frameRunning{false};
 static std::atomic<double> g_lastRenderTick{-1e30};
 static std::atomic<double> g_nextIndependentTick{0};
+static std::atomic<double> g_lastBbcTick{-1e30};
 static std::atomic<unsigned> g_frameBusy{0};
 static HANDLE g_frameWorker = nullptr, g_frameStop = nullptr;
 static void *g_frameCountMethod = nullptr;
@@ -22,14 +23,16 @@ static poser::FrameCadence g_frameCadence;
 struct FrameDiagnostics {
   double hz = 0, maxGapMs = 0, maxCostMs = 0;
   bool gameDriven = false;
-  int source = 0; // 0 independent, 1 built-in camera, 2 SRP render loop
+  int source = 0; // 0 independent, 1 built-in camera, 2 SRP, 3 native BBC
   unsigned busy = 0;
 };
 static FrameDiagnostics g_frameDiagnostics; // protected by g_poseMutex
-static void RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
+static bool RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
   if (!g_frameRunning.load())
-    return;
+    return false;
   double now = FrameNow();
+  if(fromGame && source==3) g_lastBbcTick.store(now);
+  if(fromGame && source!=3 && now-g_lastBbcTick.load()<.25) return false;
   if (fromGame)
     g_lastRenderTick.store(now);
   // Never block Unity waiting for the editor or for worker IL2CPP invocations.
@@ -37,16 +40,16 @@ static void RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
   if (!lock.owns_lock()) {
     if (fromGame)
       ++g_frameBusy;
-    return;
+    return false;
   }
   if (!g_frameRunning.load())
-    return;
+    return false;
   static thread_local bool nested = false;
   if (nested)
-    return;
+    return false;
   if (fromGame ? !g_frameCadence.gameDue(frame)
                : !g_frameCadence.fallbackDue(now, g_lastRenderTick.load()))
-    return;
+    return false;
   struct Guard {
     bool &v;
     Guard(bool &b) : v(b) { v = true; }
@@ -74,6 +77,7 @@ static void RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
     count = 0;
     gap = cost = 0;
   }
+  return true;
 }
 static int ReadUnityFrameCount() {
   __try {
@@ -224,6 +228,7 @@ static void StartGameFrameDriver() {
   }
   g_frameCadence = {};
   g_lastRenderTick.store(-1e30);
+  g_lastBbcTick.store(-1e30);
   g_frameRunning.store(true);
   g_frameWorker = CreateThread(nullptr, 0, FrameWorker, nullptr, 0, nullptr);
   if (!g_frameWorker)

@@ -97,10 +97,52 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if (path == "/api/mmd/status") {
     auto &m=g_mmd;
+    nlohmann::json clothDetails=nlohmann::json::array(),capsuleDetails=nlohmann::json::array(),bbcDetails=nlohmann::json::array(),garmentDetails=nlohmann::json::array();
+    for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active && cloth.garment.garment) {
+      const auto &e=cloth.garment;nlohmann::json legs=nlohmann::json::array();
+      for(const auto &leg:e.legs)legs.push_back({{"submitted",leg.listed},{"effective",leg.effective},
+        {"radius",leg.radius},{"padding",leg.padding},{"unsupported",leg.unavailable},
+        {"bone_length",Len(leg.endpoint)}});
+      garmentDetails.push_back({{"name",cloth.name},{"status",e.status},{"ready",e.ready},
+        {"max_distance_enabled",e.maxDistance},{"backstop_enabled",e.backstop},
+        {"connection_mode",e.connection},{"legs",legs}});
+    }
+    for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active)bbcDetails.push_back({
+      {"name",cloth.name},{"compatible",cloth.compatible},{"running",cloth.running},
+      {"skip_writing",cloth.skip},{"enabled",cloth.enabled},{"lod_culled",cloth.culled},
+      {"weight",cloth.weight},{"blend",cloth.blend},{"animation_pose_ratio",cloth.poseRatio},
+      {"mode_effective",cloth.mode},{"original_weight",cloth.scalars[0].original},
+      {"original_blend",cloth.scalars[3].original}});
+    for(auto &cloth:g_skirtCloths) clothDetails.push_back({{"name",cloth.name},
+      {"mode_original",cloth.originalMode},{"mode_requested",cloth.currentMode},
+      {"status",cloth.modeStatus},{"simulate_weight",cloth.simulateWeight},
+      {"animation_pose_ratio",cloth.animationPoseRatio},{"blend_weight",cloth.blendWeight},
+      {"running",cloth.running},{"skip_writing",cloth.skipWriting},{"enabled",cloth.enabled},
+      {"lod_culled",cloth.culled},{"mode_effective",cloth.effectiveMode},
+      {"runtime_weight",cloth.runtimeWeight},{"runtime_blend",cloth.runtimeBlend}});
+    for(auto &cap:g_skirtCapsules) capsuleDetails.push_back({{"attachment",cap.attachment},
+      {"center",{cap.center.x,cap.center.y,cap.center.z}},{"axis",cap.axis},
+      {"reverse",cap.reverse},{"aligned",cap.aligned},
+      {"original_size",{cap.originalSize.x,cap.originalSize.y,cap.originalSize.z}}});
     HttpJson(c, {{"active",MmdOwnsPose()},{"loading",m.loading},{"preview",m.preview},
       {"state",int(m.timeline.state)},{"frame",m.timeline.seconds*30.},
       {"last_frame",m.clip.lastFrame},{"speed",m.timeline.speed},{"loop",m.timeline.loop},
       {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
+      {"ground_contact",m.contact.enabled},{"ground_scene",m.contact.scene},
+      {"ground_status",m.groundProbe.status},
+      {"ground_fresh",MmdNow()-m.groundSampleTime<.3},
+      {"ground_left",m.contactResult.active[0]},{"ground_right",m.contactResult.active[1]},
+      {"ground_residual",m.contactResult.penetration},{"ground_limited",m.contactResult.limited},
+      {"skirt_collision",g_skirtCollisionEnabled},{"skirt_status",g_skirtStatus},
+      {"skirt_garments",g_skirtCloths.size()},{"skirt_examined",g_skirtExamined},
+      {"skirt_adjusted",g_skirtMatched},{"skirt_unsupported",g_skirtUnsupported},
+      {"skirt_edge",g_skirtEdgeCollision},{"skirt_details",clothDetails},{"skirt_capsules",capsuleDetails},
+      {"skirt_geometry",g_skirtGeometryOverride},
+      {"bbc_enabled",g_bbcSyncEnabled},{"bbc_hook",g_bbcHookReady},{"bbc_direct_transforms",g_bbcDirectTransforms},
+      {"bbc_full_simulation",g_bbcFullSimulation},{"bbc_details",bbcDetails},
+      {"bbc_leg_coverage",g_bbcLegCoverage},{"bbc_leg_padding",g_bbcLegPadding},{"bbc_garments",garmentDetails},
+      {"bbc_status",g_bbcStatus},{"bbc_frames",g_bbcFrames},{"bbc_restore_pending",g_bbcSaved&&!g_bbcRequested.load()},
+      {"freeze_cloth",m.freezeCloth},
       {"calibration",m.calibrationStatus},
       {"character_ready",MmdCharacterReady()},
       {"source_rig",m.rig.name},{"source_preset",m.sourcePreset},

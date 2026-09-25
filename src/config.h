@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include "core/plugin_paths.h"
 
 void Log(const char *fmt, ...);
 
@@ -233,10 +234,10 @@ static void HotkeyDisplay(int vk, bool ctrl, char *buf, size_t sz) {
 
 // 面板里改键后写回 plugin\poser_config.txt：只替换对应那一行，其它行原样保留
 static bool SaveHotkeyConfig(const char *keyName, int vk, bool ctrl) {
-  const char *path = "plugin\\poser_config.txt";
+  const auto path = PoserFilePath(L"poser_config.txt");
   static char lines[80][256];
   int count = 0;
-  FILE *f = fopen(path, "r");
+  FILE *f = _wfopen(path.c_str(), L"r");
   if (f) {
     while (count < 80 && fgets(lines[count], sizeof(lines[count]), f))
       count++;
@@ -264,7 +265,7 @@ static bool SaveHotkeyConfig(const char *keyName, int vk, bool ctrl) {
   }
   if (!replaced && count < 80)
     snprintf(lines[count++], sizeof(lines[0]), "%s", newLine);
-  FILE *o = fopen(path, "wb");
+  FILE *o = _wfopen(path.c_str(), L"wb");
   if (!o)
     return false;
   for (int i = 0; i < count; i++)
@@ -275,7 +276,7 @@ static bool SaveHotkeyConfig(const char *keyName, int vk, bool ctrl) {
 
 // 往配置末尾追加一行（迁移标记用）
 static void AppendConfigLine(const char *line) {
-  FILE *f = fopen("plugin\\poser_config.txt", "ab");
+  FILE *f = OpenPoserFile(L"poser_config.txt", L"ab");
   if (!f)
     return;
   fwrite(line, 1, strlen(line), f);
@@ -289,10 +290,10 @@ static void AppendConfigLine(const char *line) {
 // 这里只迁移"值正好等于旧默认"的那一项，且写一个标记行，之后不再重复迁移
 // （用户要是把键改回 F12，标记在，插件就不会再动它）。
 static void MigrateLegacyHotkeys() {
-  const char *path = "plugin\\poser_config.txt";
+  const auto path = PoserFilePath(L"poser_config.txt");
   static char lines[80][256];
   int count = 0;
-  FILE *f = fopen(path, "r");
+  FILE *f = _wfopen(path.c_str(), L"r");
   if (!f)
     return;
   while (count < 80 && fgets(lines[count], sizeof(lines[count]), f))
@@ -355,7 +356,7 @@ static void MigrateLegacyHotkeys() {
 static bool LoadPoserConfig() {
   ResolveDefaultPoseDir();
   MigrateLegacyHotkeys();
-  FILE *f = fopen("plugin\\poser_config.txt", "r");
+  FILE *f = OpenPoserFile(L"poser_config.txt", L"r");
   if (!f) return false;
   char line[512];
   while (fgets(line, sizeof(line), f)) {

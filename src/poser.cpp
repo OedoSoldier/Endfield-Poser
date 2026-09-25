@@ -7,6 +7,7 @@
 
 #include "core/base.h"
 #include "core/il2cpp_api.h"
+#include "core/runtime_bootstrap.h"
 #include "core/gui_overlay.h"
 #include "core/game_hooks.h"
 #include "game/skeleton.h"
@@ -74,12 +75,19 @@ static AP_PluginInfo g_info = {
     "plugin\\poser_config.txt", true};
 
 APPLEPIE_PLUGIN_EXPORT AP_PluginInfo *AP_GetPluginInfo() { return &g_info; }
+static std::mutex g_pluginLifecycleMutex;
+static bool g_pluginEnabled = true;
+static bool g_pluginInitialized = false;
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginEnable() {
-  StartGuiThread();
+  std::lock_guard<std::mutex> lock(g_pluginLifecycleMutex);
+  g_pluginEnabled = true;
+  if (g_pluginInitialized) StartGuiThread();
   return true;
 }
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
-  StopGuiThread();
+  std::lock_guard<std::mutex> lock(g_pluginLifecycleMutex);
+  g_pluginEnabled = false;
+  if (g_pluginInitialized) StopGuiThread();
   return true;
 }
 APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() { return LoadPoserConfig(); }
@@ -603,7 +611,7 @@ static void PoseApplyExtras(const PoseDoc &doc) {
 // 命令：toggle / freeze / tpose / reset
 static void ProcessControlFileBody() {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
-  FILE *f = fopen("plugin\\poser_control.txt", "r");
+  FILE *f = OpenPoserFile(L"poser_control.txt", L"r");
   if (!f)
     return;
   char line[32768];
@@ -678,7 +686,7 @@ static void ProcessControlFileBody() {
     }
   }
   fclose(f);
-  remove("plugin\\poser_control.txt");
+  _wremove(PoserFilePath(L"poser_control.txt").c_str());
 }
 
 static void ProcessControlFile() {
@@ -687,6 +695,9 @@ static void ProcessControlFile() {
 }
 
 static DWORD WINAPI InitThread(LPVOID) {
+  OpenLog(PoserFilePath(L"poser_log.txt").c_str());
+  Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
+      POSER_VERSION, __DATE__, __TIME__);
   LoadPoserConfig();
   g_beforeCharacterChange = PrepareCharacterHandoff;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
@@ -695,42 +706,50 @@ static DWORD WINAPI InitThread(LPVOID) {
   SetGuiShutdownFn(OnGuiShutdownRestore);
   g_poseCaptureExtras = PoseCaptureExtras;
   g_poseApplyExtras = PoseApplyExtras;
-  // 等待 GameAssembly.dll 加载并让 IL2CPP 域初始化（参照 {EIEM}/src/init.h）
-  while (!GetModuleHandleW(L"GameAssembly.dll"))
-    Sleep(500);
-  Sleep(3000);
+  ULONGLONG start = GetTickCount64();
+  while (!GetModuleHandleW(L"GameAssembly.dll")) {
+    if (GetTickCount64() - start >= 180000) {
+      Log("[BOOT] GameAssembly.dll load timed out; plugin initialization skipped");
+      return 0;
+    }
+    Sleep(100);
+  }
   Log("[POSER] Resolving IL2CPP...");
   if (!Resolve()) {
     Log("[POSER] ERROR: GameAssembly.dll not found or exports missing");
     return 0;
   }
-  // 附加到 IL2CPP 域（域内方法/对象操作必需）
+  auto hookStatus = MH_Initialize();
+  if (hookStatus != MH_OK && hookStatus != MH_ERROR_ALREADY_INITIALIZED) {
+    Log("[BOOT] MinHook initialization failed (%d)", hookStatus);
+    return 0;
+  }
+  if (!WaitForRuntimeReady()) return 0;
   RuntimeThreadScope runtime;
   if (!runtime.ready) {
     Log("[POSER] ERROR: cannot attach initialization thread");
     return 0;
   }
-  // MinHook 初始化（MH_CreateHook 前置）
-  if (MH_Initialize() != MH_OK)
-    Log("[POSER] WARN: MH_Initialize failed");
   Log("[POSER] IL2CPP resolved. Initializing game hooks.");
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
   InstallFrameHook();
+  InstallBbcFrameHook();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）
   Log("[POSER] Starting GUI thread.");
-  StartGuiThread();
+  {
+    std::lock_guard<std::mutex> lock(g_pluginLifecycleMutex);
+    g_pluginInitialized = true;
+    if (g_pluginEnabled) StartGuiThread();
+  }
   return 0;
 }
 
-BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
-    DisableThreadLibraryCalls(0);
-    OpenLog("plugin\\poser_log.txt");
-    // 带上编译时间：一版一测时用来确认跑的是哪次构建
-    Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
-        POSER_VERSION, __DATE__, __TIME__);
-    CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+    DisableThreadLibraryCalls(module);
+    HANDLE thread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+    if (thread) CloseHandle(thread);
   }
   return TRUE;
 }

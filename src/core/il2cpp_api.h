@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <windows.h>
 #include "MinHook.h"
 
@@ -37,7 +38,9 @@ D(int, il2cpp_field_get_flags, void *);
 D(void *, il2cpp_class_get_method_from_name, void *, const char *, int);
 D(void *, il2cpp_runtime_invoke, void *, void *, void **, void **);
 D(void *, il2cpp_class_get_parent, void *);
+D(void *, il2cpp_class_get_declaring_type, void *);
 D(void, il2cpp_field_static_get_value, void *, void *);
+D(void, il2cpp_field_static_set_value, void *, void *);
 D(void *, il2cpp_field_get_type, void *);
 D(int, il2cpp_type_get_type, void *);
 D(void *, il2cpp_method_get_return_type, void *);
@@ -128,9 +131,12 @@ static bool Resolve() {
   R(il2cpp_class_get_fields);
   R(il2cpp_field_get_name);
   R(il2cpp_field_get_offset);
+  R(il2cpp_field_get_flags);
   R(il2cpp_runtime_invoke);
   R(il2cpp_class_get_parent);
+  R(il2cpp_class_get_declaring_type);
   R(il2cpp_field_static_get_value);
+  R(il2cpp_field_static_set_value);
   R(il2cpp_field_get_type);
   R(il2cpp_type_get_type);
   R(il2cpp_method_get_return_type);
@@ -209,11 +215,13 @@ static bool Hook(void *mi, const char *l, void *d, void **o) {
   return true;
 }
 
+static std::atomic<bool> g_runtimeReady{false};
 static void *CurrentRuntimeThread() {
   __try { return il2cpp_thread_current ? il2cpp_thread_current() : nullptr; }
   __except (1) { return nullptr; }
 }
 static void *AttachRuntimeThread() {
+  if (!g_runtimeReady.load(std::memory_order_acquire)) return nullptr;
   __try {
     if (!il2cpp_domain_get || !il2cpp_thread_attach || !il2cpp_thread_detach) return nullptr;
     void *domain = il2cpp_domain_get();
@@ -228,6 +236,7 @@ struct RuntimeThreadScope {
   void *owned = nullptr;
   bool ready = false;
   RuntimeThreadScope() {
+    if (!g_runtimeReady.load(std::memory_order_acquire)) return;
     ready = CurrentRuntimeThread() != nullptr;
     if (!ready) { owned = AttachRuntimeThread(); ready = owned != nullptr; }
   }

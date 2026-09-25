@@ -45,6 +45,87 @@ static void DrawMmdAmplitude() {
   if (changed) MmdApplyFrame();
 }
 
+static void DrawMmdCollision() {
+  if (!ImGui::CollapsingHeader(u8"地面与裙摆碰撞辅助")) return;
+  auto &m=g_mmd; auto &c=m.contact;
+  bool changed=ImGui::Checkbox(u8"脚底防穿地",&c.enabled);
+  ImGui::BeginDisabled(!c.enabled);
+  int mode=c.scene?0:1;
+  if(ImGui::Combo(u8"地面来源",&mode,u8"探测游戏地面\0固定平面（起始脚底）\0")) {
+    c.scene=mode==0;m.groundPlanes={};m.groundSampleTime=-1e30;changed=true;
+  }
+  changed |= ImGui::SliderFloat(u8"接触修正强度",&c.strength,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  changed |= ImGui::SliderFloat(u8"最大抬脚修正",&c.maxLift,.01f,.5f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  changed |= ImGui::SliderFloat(u8"鞋底厚度补偿",&c.sole,0,.2f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  changed |= ImGui::SliderFloat(u8"地面高度微调",&c.groundOffset,-.3f,.3f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  changed |= ImGui::Checkbox(u8"脚部跟随坡面",&c.slope);
+  ImGui::EndDisabled();
+  if(c.enabled && m.session.active) {
+    ImGui::TextWrapped("%s",c.scene?(MmdNow()-m.groundSampleTime>.3?u8"等待游戏线程地面采样；当前保留原动作":m.groundProbe.status):u8"使用起始脚底估计的固定平面；可微调高度");
+    ImGui::Text(u8"脚部修正：左 %s / 右 %s",m.contactResult.active[0]?u8"生效":u8"无",m.contactResult.active[1]?u8"生效":u8"无");
+    if(m.contactResult.limited || m.contactResult.penetration>.005f)
+      ImGui::TextWrapped(u8"修正受骨长或幅度上限限制，仍可能穿地；可调整整体高度。剩余估计 %.3f",m.contactResult.penetration);
+  }
+  ImGui::TextWrapped(u8"只修正接近地面的脚，不把抬脚和跳跃拉回地面；暂停、拖动和循环均重新采样。固定平面不识别台阶。不会处理身体、墙壁或衣物网格与地面的碰撞。");
+  ImGui::Separator();
+  ImGui::Checkbox(u8"BBC 原生同帧碰撞",&g_bbcSyncEnabled);
+  ImGui::TextWrapped("%s",g_bbcStatus);
+  ImGui::TextWrapped(u8"播放时让 BBC 读取当前动作骨骼，求解后由游戏写回衣物。暂停时继续模拟；停止恢复原调度。原生调度开关作用于全场景布料，可能增加 CPU 开销。");
+  ImGui::Checkbox(u8"当前角色使用完整物理权重（含尾巴）",&g_bbcFullSimulation);
+  ImGui::TextWrapped(u8"仅在 BBC 接管时生效：将当前角色已启用衣物、头发和尾巴的模拟/混合权重设为 1，避免保留待机动画的低权重。关闭或停止后恢复；不会启用隐藏组件。");
+  if(ImGui::TreeNode(u8"当前角色 BBC 状态（含尾巴）")) {
+    for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active) {
+      ImGui::TextWrapped("%s",cloth.name);
+      if(!cloth.compatible)ImGui::TextDisabled(u8"权重接口不兼容，保留原设置");
+      else ImGui::TextDisabled(u8"模拟 %.2f / 混合 %.2f / 运行 %d / 跳过写回 %d / 裁剪 %d",
+          cloth.weight,cloth.blend,cloth.running,cloth.skip,cloth.culled);
+    }
+    ImGui::TreePop();
+  }
+  bool skirt=ImGui::Checkbox(u8"裙摆碰撞增强",&g_skirtCollisionEnabled);
+  ImGui::BeginDisabled(!g_skirtCollisionEnabled);
+  skirt |= ImGui::Checkbox(u8"裙摆边碰撞（减少节点间穿透）",&g_skirtEdgeCollision);
+  ImGui::Checkbox(u8"补齐腿部原生碰撞（大腿 / 膝盖 / 小腿）",&g_bbcLegCoverage);
+  ImGui::BeginDisabled(!g_bbcLegCoverage);
+  ImGui::SliderFloat(u8"腿部碰撞余量",&g_bbcLegPadding,0,.06f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  ImGui::EndDisabled();
+  ImGui::TextWrapped(u8"按当前角色骨长和原有大腿半径添加临时 BBC 胶囊，仅登记到裙摆。余量默认 0.015；过大会撑开裙子。关闭、停止或换人后撤销。需要开启 BBC 原生同帧碰撞。");
+  for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active && cloth.garment.garment) {
+    const auto &e=cloth.garment;int submitted=0,effective=0;
+    for(const auto &leg:e.legs) {submitted+=leg.listed;effective+=leg.effective==1;}
+    ImGui::TextWrapped("%s: %s",cloth.name,e.status);
+    ImGui::Text(u8"新增胶囊：已提交 %d / 原生登记 %d；动画距离限位 %d / 背面限位 %d",submitted,effective,e.maxDistance,e.backstop);
+  }
+  skirt |= ImGui::Checkbox(u8"手动调整碰撞体尺寸",&g_skirtGeometryOverride);
+  ImGui::BeginDisabled(!g_skirtGeometryOverride);
+  skirt |= ImGui::SliderFloat(u8"大腿根碰撞扩张",&g_skirtHipRadiusDelta,0,.25f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  skirt |= ImGui::SliderFloat(u8"碰撞半径倍率",&g_skirtRadiusA,.75f,1.5f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  skirt |= ImGui::SliderFloat(u8"碰撞体长度倍率",&g_skirtLengthScale,.75f,1.3f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  skirt |= ImGui::Checkbox(u8"锥形碰撞体",&g_skirtTaperOn);
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  ImGui::TextWrapped("%s",g_skirtStatus);
+  ImGui::Text(u8"裙摆组件 %d / 检查碰撞体 %d / 实际调整 %d",int(g_skirtCloths.size()),g_skirtExamined,g_skirtMatched);
+  if(g_skirtUnsupported) ImGui::TextWrapped(u8"%d 项接口或结构不支持，已跳过。",g_skirtUnsupported);
+  for(auto &cloth:g_skirtCloths) {
+    ImGui::TextWrapped("%s: %s",cloth.name,cloth.modeStatus);
+    if(cloth.running>=0) ImGui::Text(u8"BBC 运行 %s / 写回 %s / 权重 %.2f / 求解模式 %d",
+      cloth.running?u8"是":u8"否",cloth.skipWriting==0?u8"开启":u8"未开启",cloth.runtimeWeight,cloth.effectiveMode);
+  }
+  if(m.freezeCloth) ImGui::TextWrapped(u8"衣物已冻结：不会动态避让大腿。取消“冻结头发 / 衣物”后才能观察裙摆碰撞效果。");
+  else ImGui::TextWrapped(u8"边碰撞检测布料节点之间的连线，开销高于原节点碰撞；关闭后恢复原模式。仅作用于已有碰撞的裙摆，不改变动作。碰撞体覆盖不到的部位、固定顶点和快速穿透仍可能穿模；扩张过大会撑起裙摆。");
+  if(ImGui::SmallButton(u8"复位碰撞辅助")) {
+    c={};g_skirtCollisionEnabled=true;g_skirtHipRadiusDelta=.124f;
+    g_skirtRadiusA=1;g_skirtLengthScale=1;g_skirtTaperOn=true;g_skirtEdgeCollision=true;
+    g_bbcSyncEnabled=true;g_skirtGeometryOverride=false;
+    g_bbcFullSimulation=true;
+    g_bbcLegCoverage=true;g_bbcLegPadding=.015f;
+    changed=skirt=true;
+  }
+  if(skirt) SkirtMarkDirty();
+  ImGui::TextWrapped(u8"停止播放后可随适配预设保存这些设置；不保存当前场景的绝对地面位置。");
+  if(changed) MmdApplyFrame();
+}
 static void DrawMmdPanel() {
   auto &m = g_mmd;
   if (!m.show)
@@ -91,6 +172,7 @@ static void DrawMmdPanel() {
     }
     ImGui::TextDisabled(g_frameDiagnostics.gameDriven ? u8"动作更新：跟随游戏帧" : u8"动作更新：独立计时（游戏帧回调未触发）");
     if (g_frameDiagnostics.source == 2) ImGui::TextDisabled(u8"帧来源：游戏渲染管线 SRP");
+    if (g_frameDiagnostics.source == 3) ImGui::TextDisabled(u8"帧来源：BBC 原生布料求解前");
     ImGui::TextDisabled(u8"实际 %.1f Hz / 最长间隔 %.1f ms / 最大耗时 %.1f ms",
                         g_frameDiagnostics.hz, g_frameDiagnostics.maxGapMs, g_frameDiagnostics.maxCostMs);
     if (g_frameDiagnostics.busy) ImGui::TextDisabled(u8"本秒因编辑占用跳过：%u", g_frameDiagnostics.busy);
@@ -213,6 +295,7 @@ static void DrawMmdPanel() {
         CaptureAccessorySnapshot();
       SetAllPhysicsEnabled(!m.freezeCloth, true);
     }
+    DrawMmdCollision();
     ImGui::EndDisabled();
     if (MmdOwnsPose()) {
       ImGui::TextDisabled(u8"动作控制中；暂停后可在姿态库保存当前身体姿态");

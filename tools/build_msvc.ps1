@@ -134,13 +134,21 @@ Write-Host ''
 if ($RunTests) {
 Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(
+  @{ Name = 'test_runtime_bootstrap'; Src = 'tests\test_runtime_bootstrap.cpp' },
+  @{ Name = 'test_plugin_paths'; Src = 'tests\test_plugin_paths.cpp' },
+  @{ Name = 'test_layered_readback'; Src = 'tests\test_layered_readback.cpp' },
+  @{ Name = 'test_overlay_device'; Src = 'tests\test_overlay_device.cpp' },
   @{ Name = 'test_quat';      Src = 'tests\test_quat.cpp' },
   @{ Name = 'test_ik';        Src = 'tests\test_ik.cpp' },
   @{ Name = 'test_pose_file'; Src = 'tests\test_pose_file.cpp' },
   @{ Name = 'test_mmd'; Src = 'tests\test_mmd.cpp' },
+  @{ Name = 'test_mmd_contact'; Src = 'tests\test_mmd_contact.cpp' },
+  @{ Name = 'test_cloth_collision'; Src = 'tests\test_cloth_collision.cpp' },
+  @{ Name = 'test_ground_probe'; Src = 'tests\test_ground_probe.cpp' },
   @{ Name = 'test_mmd_transport'; Src = 'tests\test_mmd_transport.cpp' },
   @{ Name = 'test_mmd_audio'; Src = 'tests\test_mmd_audio.cpp' },
   @{ Name = 'test_frame_driver'; Src = 'tests\test_frame_driver.cpp' },
+  @{ Name = 'test_bbc_frame'; Src = 'tests\test_bbc_frame.cpp' },
   @{ Name = 'test_mmd_runtime'; Src = 'tests\test_mmd_runtime.cpp' },
   @{ Name = 'test_character_capture'; Src = 'tests\test_character_capture.cpp' }
   @{ Name = 'test_smc_switch'; Src = 'tests\test_smc_switch.cpp' }

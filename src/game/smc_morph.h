@@ -104,6 +104,9 @@ static char s_allMorphsClass[64] = "";
 static void *s_smcClass = nullptr;
 static void *s_smcCore = nullptr;
 static void *s_confirmedSMC = nullptr;
+// Optional read-only scene query on the game's update thread. Set/clear and
+// invocation all use g_poseMutex; never call from the independent frame worker.
+static void (*g_smcSceneObserver)() = nullptr;
 static int s_frame = 0;
 static volatile bool s_driving = false; // 面板启用 SMC 表情驱动
 static bool s_eyeIKDisabled = false;
@@ -1774,6 +1777,8 @@ static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
     return;
   }
   SMCUpdateBody(self, dt, method);
+  if (g_smcSceneObserver && self == s_smcCore)
+    g_smcSceneObserver();
 }
 
 static bool SMCJobValueType(void *type) {

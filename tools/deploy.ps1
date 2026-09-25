@@ -278,7 +278,7 @@ try {
     Write-Host "完成：$Action。配置、布局、校准、预设和姿态均保留。"
     Write-Host "备份目录：$(Get-Target $backupRel)"
     if ($Action -eq 'Install') {
-        Write-Host '请通过 Hypergryph Launcher 启动游戏。L 面板；P 冻结；Ctrl+F5/F6/F7/F8 播放/暂停/停止/重置。'
+        Write-Host '安装完成后启动游戏；启动方式见 README。L 面板；P 冻结；Ctrl+F5/F6/F7/F8 播放/暂停/停止/重置。'
     }
 } catch {
     Write-Verbose $_.ScriptStackTrace

@@ -77,6 +77,8 @@ static volatile bool g_charChanged = false; // hook 捕获新角色后置真，G
 // 避免解冻后仍然覆盖游戏的动画/表情写入。
 static bool g_frozen = false;
 static volatile LONG g_characterSwitchDepth = 0;
+// Observed on the game's character-selection callback, never on our workers.
+static volatile LONG g_gameLogicThreadId = 0;
 static bool CharacterSwitchInProgress() {
   return InterlockedCompareExchange(&g_characterSwitchDepth, 0, 0) != 0;
 }
@@ -502,6 +504,7 @@ static void ConsumeCapturedCharacter() {
 using SetMainCharacterFn = void (*)(void *, void *, bool, void *);
 static SetMainCharacterFn g_originalSetMainCharacter = nullptr;
 static void HookedSetMainCharacter(void *self, void *entity, bool flag, void *method) {
+  InterlockedCompareExchange(&g_gameLogicThreadId, LONG(GetCurrentThreadId()), 0);
   InterlockedIncrement(&g_characterSwitchDepth);
   __try {
     if (g_originalSetMainCharacter)

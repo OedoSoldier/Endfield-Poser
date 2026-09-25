@@ -84,72 +84,9 @@
     linker,                                                                    \
     "/export:DebugSetMute=C:\\Windows\\System32\\d3dcompiler_47.DebugSetMute")
 
-static bool IsPluginDisabled(const char* dllName) {
-  FILE* f = fopen("plugin\\applepie_manager_config.txt", "r");
-  if (!f) return false;  
+#include "proxy_loader.h"
 
-  bool inPluginsSection = false;
-  char line[512];
-  while (fgets(line, sizeof(line), f)) {
-    char* end = line + strlen(line) - 1;
-    while (end > line && (*end == '\n' || *end == '\r' || *end == ' ')) *end-- = 0;
-
-    if (line[0] == '[') {
-      inPluginsSection = (_stricmp(line, "[plugins]") == 0);
-      continue;
-    }
-    if (!inPluginsSection) continue;
-
-    char* eq = strchr(line, '=');
-    if (!eq) continue;
-    *eq = 0;
-    const char* key = line;
-    const char* val = eq + 1;
-
-    char* kend = eq - 1;
-    while (kend > key && *kend == ' ') *kend-- = 0;
-
-    while (*val == ' ') val++;
-
-    if (_stricmp(key, dllName) == 0 && strcmp(val, "0") == 0) {
-      fclose(f);
-      return true;
-    }
-  }
-  fclose(f);
-  return false;
-}
-
-void LoadPlugin() {
-  // 见 proxy_vulkan_full.cpp：标记插件是由哪个代理拉起的
-  {
-    FILE *lf = fopen("plugin\\poser_log.txt", "ab");
-    if (lf) {
-      fputs("[PROXY] plugins loaded via d3dcompiler_47.dll (DX path)\n", lf);
-      fclose(lf);
-    }
-  }
-  WIN32_FIND_DATAA fd;
-  HANDLE hFind = FindFirstFileA("plugin\\*.dll", &fd);
-  if (hFind != INVALID_HANDLE_VALUE) {
-    do {
-      if (_stricmp(fd.cFileName, "applepie_manager.dll") == 0) continue;
-      if (IsPluginDisabled(fd.cFileName)) continue;
-
-      char path[MAX_PATH];
-      snprintf(path, MAX_PATH, "plugin\\%s", fd.cFileName);
-      LoadLibraryA(path);
-    } while (FindNextFileA(hFind, &fd));
-    FindClose(hFind);
-  }
-
-  LoadLibraryA("plugin\\applepie_manager.dll");
-}
-
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
-  if (reason == DLL_PROCESS_ATTACH) {
-    DisableThreadLibraryCalls(hModule);
-    CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)LoadPlugin, NULL, 0, NULL);
-  }
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
+  if (reason == DLL_PROCESS_ATTACH) StartPluginLoader(module, "d3dcompiler_47.dll");
   return TRUE;
 }

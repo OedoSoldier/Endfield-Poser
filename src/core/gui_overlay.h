@@ -23,6 +23,8 @@
 #include "base.h"
 #include "il2cpp_api.h"
 #include "frame_driver.h"
+#include "layered_readback.h"
+#include "overlay_device.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -287,13 +289,12 @@ static IDCompositionVisual *g_pDCompVisual = nullptr;
 // （表现为黑屏卡在开屏页）。
 // 故此采用 ImGui 画到离屏纹理，拷贝到 staging再由CPU 读回，最后 UpdateLayeredWindow 逐像素 alpha 渲染。
 static ID3D11Texture2D *g_pLayerTex = nullptr;      // 离屏渲染目标
-static ID3D11Texture2D *g_pLayerStaging = nullptr;  // CPU 可读副本（只按脏矩形大小建）
+static LayeredReadback g_layerReadback;
 static HDC g_layerDC = nullptr;                     // 与 DIB 关联的内存 DC
 static HBITMAP g_layerBmp = nullptr;                // 32bpp 顶朝下 DIB
 static HGDIOBJ g_layerOldBmp = nullptr;
 static void *g_layerBits = nullptr;
 static int g_layerW = 0, g_layerH = 0;
-static int g_blitW = 0, g_blitH = 0;                // staging/DIB 当前尺寸
 static int g_prevDirtyX = 0, g_prevDirtyY = 0;      // 上一帧上传到分层表面的矩形
 static int g_prevDirtyW = 0, g_prevDirtyH = 0;
 // 分层路径：内容没变就不回读/不上传（面板静止时能省掉绝大部分 GPU→CPU 等待）
@@ -301,6 +302,13 @@ static bool g_layerForcePresent = true;
 static unsigned long long g_layerLastHash = 0;
 static int g_layerLastX = -1, g_layerLastY = -1, g_layerLastW = 0,
            g_layerLastH = 0;
+static unsigned g_guiTraceMask = 0;
+static void TraceGuiStage(unsigned stage, const char *name) {
+  if (!(g_guiTraceMask & (1u << stage))) {
+    g_guiTraceMask |= 1u << stage;
+    Log("[GUI] first frame: %s (thread=%lu)", name, GetCurrentThreadId());
+  }
+}
 static double QpcMs(LARGE_INTEGER a, LARGE_INTEGER b) {
   static double freq = 0.0;
   if (freq == 0.0) {
@@ -338,26 +346,22 @@ static bool DetectForeignD3D11() {
   return found;
 }
 
-// 从 System32 取原版 D3D11CreateDevice，绕开代理 d3d11.dll 的包装设备。
+// Use the verified, already loaded system module: LoadLibraryExW may be redirected.
 static PFN_D3D11_CREATE_DEVICE GetSystemD3D11CreateDevice() {
-  static PFN_D3D11_CREATE_DEVICE s_fn = nullptr;
-  if (s_fn)
-    return s_fn;
-  wchar_t path[MAX_PATH] = {};
-  GetSystemDirectoryW(path, MAX_PATH);
-  wcscat_s(path, MAX_PATH, L"\\d3d11.dll");
-  HMODULE m = LoadLibraryExW(path, nullptr, 0);
-  if (m)
-    s_fn = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(m, "D3D11CreateDevice");
-  if (!s_fn)
-    Log("[GUI] WARN: system d3d11.dll unavailable, falling back to the "
-        "in-process import (may be a proxy!)");
-  return s_fn ? s_fn : &D3D11CreateDevice;
+  static OverlaySystemD3D11 system;
+  if (!system.create) {
+    system = LoadOverlaySystemD3D11();
+    if (!system.create)
+      Log("[GUI] system D3D11 verification failed (error=%lu); overlay disabled", system.error);
+    else
+      Log("[GUI] verified System32 D3D11 factory (module=%p)", system.module);
+  }
+  return system.create;
 }
 
 static void ReleaseLayerResources() {
   if (g_pMainRenderTargetView) { g_pMainRenderTargetView->Release(); g_pMainRenderTargetView = nullptr; }
-  if (g_pLayerStaging) { g_pLayerStaging->Release(); g_pLayerStaging = nullptr; }
+  g_layerReadback.Reset();
   if (g_pLayerTex) { g_pLayerTex->Release(); g_pLayerTex = nullptr; }
   if (g_layerDC) {
     if (g_layerOldBmp) SelectObject(g_layerDC, g_layerOldBmp);
@@ -367,36 +371,9 @@ static void ReleaseLayerResources() {
   }
   if (g_layerBmp) { DeleteObject(g_layerBmp); g_layerBmp = nullptr; }
   g_layerBits = nullptr;
-  g_blitW = g_blitH = 0;
   g_prevDirtyW = g_prevDirtyH = 0;
   g_layerW = g_layerH = 0;
-}
-
-// 只按"要上传的那块矩形"建 staging + DIB：整屏回读太贵（4K 每帧 33MB），
-// 面板通常只占屏幕一角，这里按脏矩形回读能把开销降一到两个数量级。
-static bool EnsureBlitResources(int w, int h) {
-  if (w <= 0 || h <= 0 || !g_pd3dDevice)
-    return false;
-  if (g_pLayerStaging && g_blitW == w && g_blitH == h)
-    return true;
-  if (g_pLayerStaging) { g_pLayerStaging->Release(); g_pLayerStaging = nullptr; }
-  g_blitW = g_blitH = 0;
-  D3D11_TEXTURE2D_DESC td = {};
-  td.Width = w;
-  td.Height = h;
-  td.MipLevels = 1;
-  td.ArraySize = 1;
-  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  td.SampleDesc.Count = 1;
-  td.Usage = D3D11_USAGE_STAGING;
-  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  if (FAILED(g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_pLayerStaging))) {
-    Log("[GUI] layered: staging %dx%d failed", w, h);
-    return false;
-  }
-  g_blitW = w;
-  g_blitH = h;
-  return true;
+  g_layerForcePresent = true;
 }
 
 static bool CreateLayerResources(int w, int h) {
@@ -442,10 +419,15 @@ static bool CreateDeviceLayered(HWND hWnd) {
   D3D_FEATURE_LEVEL featureLevel;
   const D3D_FEATURE_LEVEL featureLevelArray[] = {D3D_FEATURE_LEVEL_11_0};
   PFN_D3D11_CREATE_DEVICE create = GetSystemD3D11CreateDevice();
-  HRESULT hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+  if (!create) return false;
+  // EFMI shares hardware-driver hooks with the game. Keep this small overlay
+  // on the software device; never silently fall back to the conflicting path.
+  D3D_DRIVER_TYPE driver = g_xxmiDetected ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
+  HRESULT hr = create(nullptr, driver, nullptr, 0,
                       featureLevelArray, 1, D3D11_SDK_VERSION,
                       &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
-  if (hr == DXGI_ERROR_UNSUPPORTED) {
+  if (hr == DXGI_ERROR_UNSUPPORTED && driver != D3D_DRIVER_TYPE_WARP) {
+    driver = D3D_DRIVER_TYPE_WARP;
     hr = create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
                 featureLevelArray, 1, D3D11_SDK_VERSION,
                 &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
@@ -454,6 +436,12 @@ static bool CreateDeviceLayered(HWND hWnd) {
     Log("[GUI] layered: D3D11CreateDevice failed: 0x%08X", hr);
     return false;
   }
+  Log("[GUI] layered device: %s", driver == D3D_DRIVER_TYPE_WARP ? "WARP (software)" : "hardware");
+  if (!OverlayDeviceIsUnwrapped(g_pd3dDevice, g_pd3dDeviceContext)) {
+    Log("[GUI] layered device is still wrapped by a graphics proxy; overlay disabled before drawing");
+    return false;
+  }
+  Log("[GUI] layered device/context methods verified: no proxy wrapper");
   RECT rc;
   GetClientRect(hWnd, &rc);
   if (!CreateLayerResources(rc.right - rc.left, rc.bottom - rc.top)) {
@@ -567,47 +555,23 @@ static void LayeredLogTiming(double copyMs, double mapMs, double ulwMs, int w,
   }
 }
 
-static void PresentLayered() {
-  // 注意：g_pLayerStaging 是"按脏矩形懒创建"的（见 EnsureBlitResources），
-  // 不能放在这里判空——否则它永远没机会被创建，表现为窗口显示了却什么都没有（面板看不见）。
-  if (!g_layerBits || !g_pLayerTex) {
-    static bool s_loggedNoRes = false;
-    if (!s_loggedNoRes) {
-      s_loggedNoRes = true;
-      Log("[GUI] layered: resources not ready (bits=%p tex=%p) -> nothing drawn",
-          g_layerBits, g_pLayerTex);
-    }
-    return;
-  }
-  int dx = 0, dy = 0, dw = 0, dh = 0;
-  if (!LayeredDirtyRect(dx, dy, dw, dh)) {
-    LayeredLogTiming(0, 0, 0, 0, 0, 1); // 没内容可画：不碰窗口
-    return;
-  }
-  // 内容和矩形都没变 → 直接跳过（分层表面已经是对的），省掉这次 Map 等 GPU 的时间
-  unsigned long long hash = ImGuiContentHash();
-  if (!g_layerForcePresent && hash == g_layerLastHash && dx == g_layerLastX &&
-      dy == g_layerLastY && dw == g_layerLastW && dh == g_layerLastH) {
-    LayeredLogTiming(0, 0, 0, dw, dh, 1);
-    return;
-  }
-  g_layerLastHash = hash;
-  g_layerLastX = dx;
-  g_layerLastY = dy;
-  g_layerLastW = dw;
-  g_layerLastH = dh;
-  g_layerForcePresent = false;
-  if (!EnsureBlitResources(dw, dh))
-    return;
+static bool PollLayeredFrame() {
+  if (!g_layerReadback.Pending()) return true;
+  const LayeredFrame frame = g_layerReadback.Frame();
+  const int dx=frame.x, dy=frame.y, dw=frame.width, dh=frame.height;
   LARGE_INTEGER t0, t1, t2, t3;
   QueryPerformanceCounter(&t0);
-  D3D11_BOX box = {(UINT)dx, (UINT)dy, 0, (UINT)(dx + dw), (UINT)(dy + dh), 1};
-  g_pd3dDeviceContext->CopySubresourceRegion(g_pLayerStaging, 0, 0, 0, 0,
-                                             g_pLayerTex, 0, &box);
+  TraceGuiStage(5, "poll readback");
   D3D11_MAPPED_SUBRESOURCE map = {};
-  if (FAILED(g_pd3dDeviceContext->Map(g_pLayerStaging, 0, D3D11_MAP_READ, 0,
-                                      &map)))
-    return;
+  HRESULT hr = g_layerReadback.TryMap(g_pd3dDeviceContext, map);
+  if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return false;
+  if (FAILED(hr)) {
+    static HRESULT lastError=S_OK;
+    if (hr != lastError) Log("[GUI] layered: readback failed 0x%08X", hr);
+    lastError=hr;
+    g_layerForcePresent=true;
+    return true;
+  }
   QueryPerformanceCounter(&t1);
   const size_t srcPitch = (size_t)map.RowPitch;
   const size_t dstPitch = (size_t)g_layerW * 4; // DIB 是整窗宽度
@@ -615,7 +579,7 @@ static void PresentLayered() {
   for (int y = 0; y < dh; y++)
     memcpy((char *)g_layerBits + dstPitch * (dy + y) + (size_t)dx * 4,
            (const char *)map.pData + srcPitch * y, rowBytes);
-  g_pd3dDeviceContext->Unmap(g_pLayerStaging, 0);
+  g_layerReadback.Finish();
   QueryPerformanceCounter(&t2);
 
   RECT wr;
@@ -635,9 +599,46 @@ static void PresentLayered() {
   info.pblend = &bf;
   info.dwFlags = ULW_ALPHA;
   info.prcDirty = &dirty; // 只更新这块区域（位置/尺寸不受影响）
-  UpdateLayeredWindowIndirect(g_guiHwnd, &info);
+  TraceGuiStage(6, "upload layered window");
+  if (UpdateLayeredWindowIndirect(g_guiHwnd, &info)) {
+    // Only a successful upload may suppress a subsequent retry.
+    g_layerLastHash = frame.hash;
+    g_layerLastX = dx; g_layerLastY = dy;
+    g_layerLastW = dw; g_layerLastH = dh;
+    g_layerForcePresent = false;
+    TraceGuiStage(7, "layered upload complete");
+  } else {
+    static DWORD lastError=ERROR_SUCCESS;
+    DWORD error=GetLastError();
+    if (lastError != error) Log("[GUI] layered: upload failed error=%lu", error);
+    lastError=error;
+    g_layerForcePresent=true;
+  }
   QueryPerformanceCounter(&t3);
   LayeredLogTiming(QpcMs(t0, t1), QpcMs(t1, t2), QpcMs(t2, t3), dw, dh, 0);
+  return true;
+}
+
+static void PresentLayered() {
+  if (!g_layerBits || !g_pLayerTex || g_layerReadback.Pending()) return;
+  LayeredFrame frame;
+  if (!LayeredDirtyRect(frame.x, frame.y, frame.width, frame.height)) return;
+  frame.hash = ImGuiContentHash();
+  if (!g_layerForcePresent && frame.hash == g_layerLastHash &&
+      frame.x == g_layerLastX && frame.y == g_layerLastY &&
+      frame.width == g_layerLastW && frame.height == g_layerLastH) {
+    LayeredLogTiming(0, 0, 0, frame.width, frame.height, 1);
+    return;
+  }
+  TraceGuiStage(4, "submit readback");
+  HRESULT hr = g_layerReadback.Queue(g_pd3dDeviceContext, g_pLayerTex, frame);
+  if (FAILED(hr)) {
+    static HRESULT lastError=S_OK;
+    if (lastError != hr) Log("[GUI] layered: queue failed 0x%08X", hr);
+    lastError=hr;
+    return;
+  }
+  PollLayeredFrame();
 }
 
 // 覆盖层尺寸跟随游戏窗口后，分层纹理需要同步重建。
@@ -861,6 +862,7 @@ static const ImWchar *PoserGlyphRanges(ImFontAtlas *atlas) {
 }
 
 static DWORD GuiThreadBody(LPVOID) {
+  g_guiTraceMask = 0;
   // 附加到 IL2CPP 域：GUI 线程每帧会经 DrawPoserGui->GameFrameTick 触碰游戏对象，
   // 不附加会让 GC 从"未知线程"收集托管对象，触发 fatal error 崩溃。
   // RuntimeThreadScope in the entry point releases registration on every exit.
@@ -1095,8 +1097,13 @@ static DWORD GuiThreadBody(LPVOID) {
       if (::GetCursorPos(&mp) && ::ScreenToClient(g_guiHwnd, &mp))
         ImGui::GetIO().AddMousePosEvent((float)mp.x, (float)mp.y);
     }
-    if (g_layeredOverlay)
+    if (g_layeredOverlay) {
       LayeredSyncSize();
+      // A pending copy owns its source frame/rectangle. Keep servicing messages
+      // and hotkeys, but do not queue more GPU work until it can be read.
+      if (!PollLayeredFrame()) continue;
+    }
+    TraceGuiStage(0, "begin ImGui frame");
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -1138,12 +1145,15 @@ static DWORD GuiThreadBody(LPVOID) {
     }
 
     ImGui::Render();
+    TraceGuiStage(1, "set and clear render target");
     const float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     g_pd3dDeviceContext->OMSetRenderTargets(1, &g_pMainRenderTargetView,
                                              nullptr);
     g_pd3dDeviceContext->ClearRenderTargetView(g_pMainRenderTargetView,
                                                 clear_color);
+    TraceGuiStage(2, "render ImGui draw data");
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    TraceGuiStage(3, "ImGui draw complete");
     if (g_layeredOverlay) {
       PresentLayered();
       // Pose updates run on the game callback / independent fallback.

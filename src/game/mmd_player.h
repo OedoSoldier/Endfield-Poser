@@ -6,6 +6,8 @@
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
 #include "math/mmd_adaptation.h"
+#include "game/mmd_ground_probe.h"
+#include "game/bbc_playback.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
 #include <chrono>
@@ -393,6 +395,9 @@ struct MmdSession {
   int revision = 0;
   Vec3 rootPos;
   Quat rootRot;
+  mmd::Matrix anchorWorld;
+  bool anchorWorldValid=false;
+  float planeHeight=0;
   std::vector<MmdSavedTransform> transforms;
   std::shared_ptr<GripReferences> references;
   std::vector<MmdSavedComponent> components;
@@ -424,6 +429,13 @@ struct MmdPlayer {
   int sourcePreset = 0; // 0: A-pose, 1: extracted T-pose; manual selection
   mmd::IkMode ikMode = mmd::IkMode::FollowMotion;
   mmd::MotionAmplitude amplitude;
+  mmd::ContactOptions contact;
+  mmd::ContactResult contactResult;
+  MmdGroundProbe groundProbe;
+  std::array<mmd::GroundPlane,2> groundPlanes;
+  std::array<Vec3,2> groundRequest{},groundSampleAt{};
+  std::array<bool,2> groundRequestValid{false,false};
+  double groundSampleTime=-1e30, groundNextQuery=0;
   mmd::RetargetProfile profile;
   mmd::Retargeter mapper;
   mmd::Timeline timeline;
@@ -445,6 +457,52 @@ struct MmdPlayer {
   void *profileAnimator = nullptr;
 };
 static MmdPlayer g_mmd;
+static void MmdBbcPrepare(bool stepped);
+static void MmdProbeGround() {
+  auto &m=g_mmd;
+  if(DWORD(InterlockedCompareExchange(&g_gameLogicThreadId,0,0))!=GetCurrentThreadId()) return;
+  if(!m.session.active || m.preview || !m.contact.enabled || !m.contact.scene ||
+     m.session.animator!=g_charAnimator || m.session.revision!=s_bonesRev ||
+     !UnityObjAlive(m.session.animator) || !UnityObjAlive(m.session.root) ||
+     CharacterSwitchInProgress()) return;
+  double now=MmdNow();
+  if(now<m.groundNextQuery) return;
+  m.groundNextQuery=now+.05; // bounded 20 Hz scene queries; pose still samples each frame
+  __try {
+    for(int side=0;side<2;++side) {
+      m.groundPlanes[side]={};
+      if(m.groundRequestValid[side])
+        m.groundProbe.sample(m.groundRequest[side],m.session.root,m.groundPlanes[side]);
+      m.groundSampleAt[side]=m.groundRequest[side];
+    }
+    m.groundSampleTime=now;
+  } __except(1) {
+    m.groundPlanes={};
+    m.groundProbe.status=u8"地面查询异常，已停用场景探测";
+    g_smcSceneObserver=nullptr;
+  }
+}
+static void MmdApplyContacts() {
+  auto &m=g_mmd;auto &s=m.session;auto &p=m.mapper.output;
+  m.contactResult={};m.groundRequestValid={false,false};
+  if(!m.contact.enabled || !s.anchorWorldValid) return;
+  std::array<mmd::GroundPlane,2> planes;
+  std::array<bool,2> allowed{true,true};
+  for(int side=0;side<2;++side) {
+    int foot=m.profile.roles[5+side];
+    if(foot<0 || !p.write[foot]) {allowed[side]=false;continue;}
+    for(int role:{1+side,3+side,5+side,19+side})
+      for(int h=0;h<s_humanBoneCount;++h)
+        if(s_humanBones[h].humanBone==role && s_humanBones[h].locked) allowed[side]=false;
+    Vec3 at=mmd::TransformPoint(s.anchorWorld,p.worldPos[foot]+p.rootOffset);
+    m.groundRequest[side]=at;m.groundRequestValid[side]=allowed[side];
+    if(m.contact.scene) {
+      Vec3 delta=at-m.groundSampleAt[side];delta.y=0;
+      if(MmdNow()-m.groundSampleTime<.3 && Len(delta)<.25f) planes[side]=m.groundPlanes[side];
+    } else planes[side]={{at.x,s.planeHeight,at.z},{0,1,0},true};
+  }
+  m.contactResult=mmd::ApplyGroundContact(m.profile,p,s.anchorWorld,planes,m.contact,allowed);
+}
 static void MmdSyncAudio() {
   auto &m = g_mmd;
   try {
@@ -623,6 +681,8 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
   if (kind == 4) {
     saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
     saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
+    saved["collision"] = mmd::CollisionJson({m.contact,g_skirtCollisionEnabled,
+      g_skirtTaperOn,g_skirtHipRadiusDelta,g_skirtRadiusA,g_skirtLengthScale,g_skirtEdgeCollision,g_bbcSyncEnabled,g_skirtGeometryOverride,g_bbcFullSimulation,g_bbcLegCoverage,g_bbcLegPadding});
     saved["requires_pmx"] = m.reference;
     // Portable source structure check, never store a required local PMX path.
     if (m.reference) {
@@ -694,6 +754,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
         int pose; mmd::IkMode ik;
         mmd::ReadAdaptation(result.adaptation, pose, ik);
         mmd::ReadAmplitude(result.adaptation);
+        mmd::ReadCollision(result.adaptation);
       } else if (kind == 2)
         result.rig = mmd::ReadPmx(bytes, mmd::Decode);
       else {
@@ -756,8 +817,17 @@ static void MmdPollLoad() {
       int pose; mmd::IkMode ik;
       auto a = mmd::ReadAdaptation(j, pose, ik);
       auto amplitude = mmd::ReadAmplitude(j);
+      auto collision = mmd::ReadCollision(j);
       if (MmdApplyAdaptation(a, pose)) {
         m.amplitude = amplitude;
+        m.contact=collision.ground;g_skirtCollisionEnabled=collision.skirt;
+        g_skirtTaperOn=collision.taper;g_skirtHipRadiusDelta=collision.hip;
+        g_skirtRadiusA=collision.radius;g_skirtLengthScale=collision.length;
+        g_skirtEdgeCollision=collision.edge;
+        g_bbcSyncEnabled=collision.bbc;g_skirtGeometryOverride=collision.geometry;
+        g_bbcFullSimulation=collision.fullSimulation;
+        g_bbcLegCoverage=collision.legCoverage;g_bbcLegPadding=collision.legPadding;
+        SkirtMarkDirty();
         m.ikMode = ik; m.adaptationFile = r.file;
         m.status = u8"适配预设已载入：" + r.file;
       }
@@ -848,6 +918,16 @@ static void MmdCaptureSession() {
   retain(s.root);
   s.rootPos = GetBoneLocalPos(s.root);
   s.rootRot = GetBoneLocalRot(s.root);
+  s.anchorWorldValid=MmdReadMatrix(g_transform_get_localToWorldMatrix,s.root,&s.anchorWorld);
+  s.planeHeight=1e9f;
+  if(s.anchorWorldValid) for(int role:{5,6,19,20}) {
+    int i=m.profile.roles[role];
+    if(i>=0) s.planeHeight=(std::min)(s.planeHeight,mmd::TransformPoint(s.anchorWorld,m.profile.bones[i].restPos).y-m.contact.sole);
+  }
+  if(s.planeHeight==1e9f) s.planeHeight=s.anchorWorld.position().y;
+  m.groundPlanes={};m.groundRequestValid={false,false};
+  m.groundSampleTime=-1e30;m.groundNextQuery=0;
+  g_smcSceneObserver=MmdProbeGround;
   for (auto &b : s_allBones) {
     retain(b.transform);
     s.transforms.push_back({b.transform, GetBoneLocalPos(b.transform),
@@ -877,6 +957,7 @@ static void MmdCaptureSession() {
       s.components.push_back({c, MmdEnabled(c)});
     }
   g_freezeAccessories = m.freezeCloth;
+  BbcPlaybackBegin();
   if (g_frozen && !m.freezeCloth)
     SetAllPhysicsEnabled(true, true);
   if (!g_frozen)
@@ -886,12 +967,21 @@ static void MmdCaptureSession() {
     SetAllPhysicsEnabled(false, true);
   }
   MmdHideProps(true);
+  g_bbcPreparePose=MmdBbcPrepare;
+  g_bbcObserve=BbcPlaybackObserve;
+  g_bbcMaintenance=BbcPlaybackMaintain;
+  g_bbcRequested.store(!m.preview && !m.freezeCloth);
 }
 static void MmdStop() {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
   auto &m = g_mmd;
   auto &s = m.session;
   m.timeline.stop();
+  g_bbcRequested.store(false);
+  BbcPlaybackEnd();
+  g_smcSceneObserver=nullptr;
+  m.groundProbe.release();m.groundPlanes={};m.groundRequestValid={false,false};
+  m.groundSampleTime=-1e30;m.contactResult={};
   m.audio.close();
   SMCMotionPublish({});
   InterlockedExchange(&g_mmdOwnsPose, 0);
@@ -962,6 +1052,7 @@ static void MmdApplyFrame() {
   }
   double frame = m.timeline.seconds * 30.;
   m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude);
+  MmdApplyContacts();
   const auto &p = m.mapper.output;
   MmdRawPose(s.root, s.rootPos + s.rootRot * p.rootOffset, s.rootRot);
   for (size_t i = 0; i < p.write.size(); i++) {
@@ -1003,6 +1094,13 @@ static void MmdApplyFrame() {
   }
   SMCMotionPublish(face);
 }
+static void MmdBbcPrepare(bool stepped) {
+  auto &m=g_mmd;
+  if(!m.session.active || m.preview || m.freezeCloth) {g_bbcRequested.store(false);return;}
+  // The native scheduling switch fences last frame before this pose is read.
+  // If another game callback sampled already, resubmit that same time's pose.
+  if(!stepped) {SkirtTick();MmdApplyFrame();}
+}
 static bool MmdStart() {
   auto &m = g_mmd;
   if (m.loading || m.preview || m.clip.empty())
@@ -1040,6 +1138,7 @@ static void MmdTick() {
   try {
     auto &m = g_mmd;
     MmdPollLoad();
+    g_bbcRequested.store(m.session.active && !m.preview && !m.freezeCloth);
     if (m.session.active && (!MmdCharacterReady() ||
                              m.session.animator != g_charAnimator ||
                              m.session.revision != s_bonesRev ||

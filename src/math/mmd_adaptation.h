@@ -1,9 +1,48 @@
 #pragma once
 #include "math/mmd_rig.h"
 #include "math/mmd_amplitude.h"
+#include "math/mmd_contact.h"
 #include "nlohmann/json.hpp"
 
 namespace mmd {
+struct CollisionPreset {
+  ContactOptions ground;
+  bool skirt=true, taper=true;
+  float hip=.124f, radius=1, length=1;
+  bool edge=true;
+  bool bbc=true,geometry=false,fullSimulation=true;
+  bool legCoverage=true;
+  float legPadding=.015f;
+};
+inline nlohmann::json CollisionJson(const CollisionPreset &c) {
+  return {{"ground",c.ground.enabled},{"scene",c.ground.scene},{"slope",c.ground.slope},
+    {"strength",c.ground.strength},{"max_lift",c.ground.maxLift},{"sole",c.ground.sole},
+    {"ground_offset",c.ground.groundOffset},{"skirt",c.skirt},{"taper",c.taper},
+    {"hip",c.hip},{"radius",c.radius},{"length",c.length},{"edge",c.edge},
+    {"bbc",c.bbc},{"geometry",c.geometry},{"full_simulation",c.fullSimulation},
+    {"leg_coverage",c.legCoverage},{"leg_padding",c.legPadding}};
+}
+inline CollisionPreset ReadCollision(const nlohmann::json &preset) {
+  CollisionPreset c;
+  if(!preset.contains("collision")) return c;
+  const auto &j=preset.at("collision");
+  if(!j.is_object()) throw std::runtime_error(u8"无效的碰撞辅助设置");
+  auto read=[&](const char *key,float def,float lo,float hi) {
+    float v=j.value(key,def);
+    if(!std::isfinite(v)||v<lo||v>hi) throw std::runtime_error(u8"碰撞辅助数值超出范围");
+    return v;
+  };
+  c.ground.enabled=j.value("ground",false);c.ground.scene=j.value("scene",true);
+  c.ground.slope=j.value("slope",true);c.skirt=j.value("skirt",true);c.taper=j.value("taper",true);
+  c.edge=j.value("edge",true);
+  c.bbc=j.value("bbc",true);c.geometry=j.value("geometry",false);
+  c.fullSimulation=j.value("full_simulation",true);
+  c.legCoverage=j.value("leg_coverage",true);c.legPadding=read("leg_padding",.015f,0,.06f);
+  c.ground.strength=read("strength",1,0,1);c.ground.maxLift=read("max_lift",.25f,.01f,.5f);
+  c.ground.sole=read("sole",.025f,0,.2f);c.ground.groundOffset=read("ground_offset",0,-.3f,.3f);
+  c.hip=read("hip",.124f,0,.25f);c.radius=read("radius",1,.75f,1.5f);c.length=read("length",1,.75f,1.3f);
+  return c;
+}
 inline const std::array<const char *, int(MotionPart::Count)> &MotionPartKeys() {
   static const std::array<const char *, int(MotionPart::Count)> keys = {
     "torso", "head", "left_arm", "right_arm", "left_hand", "right_hand",

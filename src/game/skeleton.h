@@ -440,7 +440,7 @@ static void DumpBoneInventoryOnce() {
   if (dumped || s_allBones.empty())
     return;
   dumped = true;
-  FILE *f = fopen("plugin\\poser_bones.txt", "wb");
+  FILE *f = OpenPoserFile(L"poser_bones.txt", L"wb");
   if (!f) {
     Log("[POSER] WARN: cannot write plugin/poser_bones.txt");
     return;
