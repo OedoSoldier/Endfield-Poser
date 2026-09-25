@@ -50,7 +50,7 @@ static bool DrawUserAgreement() {
     ImGui::TextWrapped(u8"用户须通过游戏内协议、对应地区官网等官方渠道自行核对最新规则；不明确时咨询官方客服。本项目不提供游戏或第三方素材授权、不代替官方解释规则，也不保证任何产物或使用行为符合官方要求。游戏及素材要求不改变 AGPL-3.0 对软件本身授予的权利或第三方软件许可证。用户作品不因使用本工具而获得作者或游戏官方的认可、参与或担保。 ");
     ImGui::Spacing();
     ImGui::TextColored(gold, u8"4. 风险与免责声明");
-    ImGui::TextWrapped(u8"本工具会注入并修改游戏客户端进程，可能违反游戏服务条款，存在账号受限或封禁、崩溃及数据损坏等风险。游戏更新或与其他模组共存也可能使功能失效。 ");
+    ImGui::TextWrapped(u8"使用本工具可能违反游戏服务条款，并带来账号受限或封禁、崩溃、数据损坏等风险。游戏更新或与其他模组共存可能导致功能失效。 ");
     ImGui::TextWrapped(u8"本工具按现状提供，不保证兼容性、稳定性、适用性或账号安全。请自行评估风险，备份自己的配置和姿态。 ");
     ImGui::PushStyleColor(ImGuiCol_Text, gold);
     ImGui::TextWrapped(u8"用户应自行判断使用及创作行为的合法性、合规性，并自行承担其使用、修改、分发本工具以及制作、发布、传播相关产物所造成的一切后果和相应责任。在适用法律允许的最大范围内，作者、维护者及贡献者不承担由此产生的任何责任、损失、索赔、处罚或纠纷，包括账号受限或封禁、内容下架、侵权争议、数据损坏或丢失、设备异常及财产损失。 ");
@@ -58,7 +58,6 @@ static bool DrawUserAgreement() {
     ImGui::PopStyleColor();
     ImGui::Spacing();
     ImGui::TextWrapped(u8"不接受时可选择“暂不使用”。插件功能保持未启用，游戏继续运行；之后可重新打开面板阅读，或退出游戏后使用安装向导卸载。 ");
-    ImGui::TextDisabled(u8"参考：Sasye/EIEM 用户协议（AGPL-3.0）");
     ImGui::EndChild();
     ImGui::TextWrapped(u8"若无法点击，请按住 Alt 呼出游戏光标。确认记录仅保存在本机。 ");
     if (saveError)
