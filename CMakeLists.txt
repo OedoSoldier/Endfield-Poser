@@ -34,6 +34,8 @@ if(WIN32)
     src/math/mmd_contact.h src/game/mmd_ground_probe.h
     src/game/bbc_playback.h src/game/bbc_garment.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h
+    src/math/face_templates.h
+    src/math/face_mixing.h
     src/game/char_state.h
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
     src/editor/panel_bones.h
@@ -106,6 +108,9 @@ add_poser_test(test_mmd tests/test_mmd.cpp)
 add_poser_test(test_mmd_contact tests/test_mmd_contact.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
+add_poser_test(test_face_templates tests/test_face_templates.cpp)
+add_poser_test(test_face_mixing tests/test_face_mixing.cpp)
+set_tests_properties(test_face_templates PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
   add_poser_test(test_user_agreement tests/test_user_agreement.cpp)
   add_poser_test(test_agreement_ui tests/test_agreement_ui.cpp)
@@ -164,6 +169,10 @@ if(MSVC)
   target_link_libraries(test_smc_switch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_smc_abi tests/test_smc_abi.cpp)
+  add_poser_test(test_face_runtime tests/test_face_runtime.cpp)
+  target_include_directories(test_face_runtime PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_face_runtime PRIVATE /EHa)
+  target_link_libraries(test_face_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_include_directories(test_smc_abi PRIVATE deps/minhook_lib/include)
   target_compile_options(test_smc_abi PRIVATE /EHa)
   target_link_libraries(test_smc_abi PRIVATE

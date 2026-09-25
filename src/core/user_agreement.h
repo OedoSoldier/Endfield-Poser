@@ -7,7 +7,7 @@
 
 namespace poser_agreement {
 // This revision changes only when the agreement changes, not on every release.
-inline constexpr int kRevision = 1;
+inline constexpr int kRevision = 2;
 inline constexpr wchar_t kFileName[] = L"poser_agreement.txt";
 static std::string Receipt() {
   return "Endfield Poser agreement\nrevision=" + std::to_string(kRevision) + "\naccepted=1\n";

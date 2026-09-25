@@ -343,9 +343,10 @@ static void DrawMmdPanel() {
     if (MmdOwnsPose()) {
       ImGui::TextDisabled(u8"动作控制中；暂停后可在姿态库保存当前身体姿态");
       if (!m.clip.morphs.empty())
-        ImGui::TextDisabled(SMCSectionReady()
+        ImGui::TextDisabled(((!m.faceSettings.uses(face_mixing::Driver::Template)||s_templateBinding.ready)&&
+                            (!m.faceSettings.uses(face_mixing::Driver::Eiem)||SMCSectionReady()))
                                 ? u8"表情系统已就绪"
-                                : u8"表情系统初始化中，身体动作继续播放");
+                                : u8"表情尚未就绪或骨骼不匹配，身体动作继续播放");
     }
     ImGui::TextWrapped("%s", m.status.c_str());
     DrawMmdAdaptationPanel();
@@ -370,35 +371,87 @@ static void DrawMmdPanel() {
           MmdStop();
       }
     }
+    if (ImGui::CollapsingHeader(u8"表情模板与强度",ImGuiTreeNodeFlags_DefaultOpen)) {
+      auto &settings=m.faceSettings;
+      float percent=settings.strength*100;
+      if(ImGui::SliderFloat(u8"整体表情强度",&percent,0,200,"%.0f%%"))settings.strength=percent*.01f;
+      if(ImGui::IsItemDeactivatedAfterEdit())MmdSaveFaceSettings();
+      ImGui::SameLine();
+      if(ImGui::SmallButton(u8"复位全部强度")){settings.strength=1;settings.gain.fill(1);MmdSaveFaceSettings();}
+      if(ImGui::BeginTable("##faceregions",3,ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(u8"部位",0,.65f);
+        ImGui::TableSetupColumn(u8"映射方式",0,1.7f);
+        ImGui::TableSetupColumn(u8"独立强度",0,1.f);ImGui::TableHeadersRow();
+        for(int r=0;r<face_mixing::RegionCount;++r) {
+          ImGui::PushID(r);ImGui::TableNextRow();ImGui::TableNextColumn();
+          ImGui::TextUnformatted(face_mixing::Label(r));ImGui::TableNextColumn();
+          ImGui::SetNextItemWidth(-1);
+          int mode=settings.driver[r]==face_mixing::Driver::Template?0:1;
+          if(ImGui::Combo("##source",&mode,u8"通用模板映射\0游戏表情映射\0")) {
+            settings.driver[r]=mode==0?face_mixing::Driver::Template:face_mixing::Driver::Eiem;
+            MmdSaveFaceSettings();MmdReport();
+          }
+          ImGui::TableNextColumn();ImGui::SetNextItemWidth(-1);
+          float regionPercent=settings.gain[r]*100;
+          if(ImGui::SliderFloat("##strength",&regionPercent,0,200,"%.0f%%"))settings.gain[r]=regionPercent*.01f;
+          if(ImGui::IsItemDeactivatedAfterEdit())MmdSaveFaceSettings();
+          ImGui::PopID();
+        }
+        ImGui::EndTable();
+      }
+      if(ImGui::SmallButton(u8"恢复默认分区")) {
+        settings.driver=face_mixing::Settings{}.driver;MmdSaveFaceSettings();MmdReport();
+      }
+      ImGui::TextWrapped(u8"默认所有部位使用游戏表情映射，可按部位手动切换为通用模板。模式与强度均可在播放 / 暂停时调整。最终强度 = 整体 × 区域；眼神方向仍由动作控制。");
+      if(settings.driver[face_mixing::Cheeks]==face_mixing::Driver::Eiem)
+        ImGui::TextWrapped(u8"游戏表情映射的脸颊随原有口型通道变化，没有独立鼓腮通道。");
+      if(settings.uses(face_mixing::Driver::Template)) {
+        const auto &b=s_templateBinding;
+        if(b.ready) {
+          ImGui::Text(u8"模板骨骼：眉毛 %d / 眼睑 %d / 嘴唇 %d / 脸颊 %d",b.brows,b.lids,b.lips,b.cheeks);
+          if(!b.brows||!b.lips||!b.cheeks)ImGui::TextWrapped(u8"部分区域缺少可用骨骼，对应模板将跳过。");
+        } else ImGui::TextWrapped(u8"等待中性脸与骨架。若持续不可用，此角色可能缺少模板所需眼睑骨骼；可将相应区域切换为游戏表情映射。");
+        ImGui::TextWrapped(u8"按角色脸部尺寸生成眉毛、眼睑和嘴部形变；ω / 三角嘴为骨骼近似，不包含瞳孔、牙齿显隐或材质特效。");
+      }
+    }
     if (ImGui::CollapsingHeader(u8"表情映射")) {
+      static int editSource=1;
+      ImGui::Combo(u8"编辑映射表",&editSource,u8"通用模板映射\0游戏表情映射\0");
+      bool native=editSource==1;
+      ImGui::TextWrapped(u8"两套映射分别保存；是否生效由上方各区域的映射方式决定。游戏表情映射未提供的口型 / 嘴角形状不会自动改用模板。");
       ImGui::BeginDisabled(MmdOwnsPose());
       bool changed = false;
       for (auto &kv : m.morphMap) {
+        int &slider=native?kv.second.nativeSlider:kv.second.slider;
+        float &gain=native?kv.second.nativeGain:kv.second.gain;
         ImGui::PushID(kv.first.c_str());
         ImGui::TextUnformatted(kv.first.c_str());
         ImGui::SetNextItemWidth(185);
-        const char *label = kv.second.slider < 0
+        const char *label = slider < 0
                                 ? u8"忽略 / 不支持"
-                                : SMCSliderLabel(kv.second.slider);
+                                : (native?SMCSliderLabel(slider):face_template::Definitions()[slider].label);
         if (ImGui::BeginCombo("##target", label)) {
-          if (ImGui::Selectable(u8"忽略 / 不支持", kv.second.slider < 0)) {
-            kv.second.slider = -1;
+          if (ImGui::Selectable(u8"忽略 / 不支持", slider < 0)) {
+            slider = -1;
             changed = true;
           }
-          for (int i = 0; i < SMCSliderCount(); i++)
-            if (ImGui::Selectable(SMCSliderLabel(i), kv.second.slider == i)) {
-              kv.second.slider = i;
+          for (int i = 0; i < (native?SMCSliderCount():int(face_template::Count)); i++)
+            if (ImGui::Selectable(native?SMCSliderLabel(i):face_template::Definitions()[i].label, slider == i)) {
+              slider = i;
               changed = true;
             }
           ImGui::EndCombo();
         }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(130);
-        changed |= ImGui::SliderFloat("##gain", &kv.second.gain, 0, 2, "%.2f");
+        changed |= ImGui::SliderFloat("##gain", &gain, 0, 2, "%.2f");
+        if(!native&&kv.second.slider>=0&&s_templateBinding.ready&&
+            !face_template::Supported(s_templateBinding,kv.second.slider))
+          ImGui::TextDisabled(u8"当前角色缺少对应骨骼");
         ImGui::PopID();
       }
       if (changed) {
-        MmdSaveMappings();
+        MmdSaveMappings(native);
         MmdReport();
       }
       ImGui::EndDisabled();

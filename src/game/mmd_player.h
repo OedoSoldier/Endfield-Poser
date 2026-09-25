@@ -413,6 +413,8 @@ struct MmdSession {
 struct MmdMorphMapping {
   int slider = -1;
   float gain = 1;
+  int nativeSlider = -1;
+  float nativeGain = 1;
 };
 struct MmdLoadResult {
   int kind = 0;
@@ -424,6 +426,10 @@ struct MmdLoadResult {
   std::shared_ptr<const mmd::AudioClip> music;
 };
 struct MmdPlayer {
+  bool faceSettingsLoaded=false;
+  face_mixing::Settings faceSettings;
+  nlohmann::json faceSavedMappings=nlohmann::json::object();
+  nlohmann::json faceSavedNativeMappings=nlohmann::json::object();
   mmd::MotionClip clip;
   std::vector<mmd::CameraKey> cameraTrack;
   std::string cameraFile;
@@ -612,20 +618,55 @@ static UINT_PTR CALLBACK MmdDialogHook(HWND window, UINT message, WPARAM,
   return 0;
 }
 static void MmdStop();
-static void MmdSaveMappings() {
+static void MmdLoadFaceSettings() {
+  auto &m=g_mmd;if(m.faceSettingsLoaded)return;m.faceSettingsLoaded=true;
   try {
-    nlohmann::json j = nlohmann::json::object();
+    std::ifstream f(MmdConfigDirectory()/L"face-templates.json");
+    if(!f)return;
+    nlohmann::json j;f>>j;
+    auto settings=face_mixing::Read(j);
+    auto mappings=j.value("mappings",nlohmann::json::object());
+    if(!mappings.is_object())throw std::runtime_error("Invalid face template mappings");
+    m.faceSettings=settings;m.faceSavedMappings=std::move(mappings);
+  } catch(const std::exception &e) {m.status=e.what();Log("[FACE] settings load failed: %s",e.what());}
+}
+static void MmdSaveFaceSettings() {
+  try {
+    auto dir=MmdConfigDirectory();std::filesystem::create_directories(dir);
+    auto path=dir/L"face-templates.json",temp=dir/L"face-templates.json.tmp";
+    nlohmann::json j=face_mixing::Write(g_mmd.faceSettings);
+    j["mappings"]=g_mmd.faceSavedMappings;
+    {std::ofstream f(temp,std::ios::binary|std::ios::trunc);f<<j.dump(2);f.flush();
+      if(!f)throw std::runtime_error("Could not write face template settings");}
+    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+      throw std::runtime_error("Could not replace face template settings");
+  } catch(const std::exception &e){g_mmd.status=e.what();Log("[FACE] settings save failed: %s",e.what());}
+}
+static void MmdSaveMappings(bool native) {
+  if(!native) {
+    for(auto &kv:g_mmd.morphMap)
+      g_mmd.faceSavedMappings[kv.first]={{"template",kv.second.slider>=0?
+        face_template::Definitions()[kv.second.slider].key:""},{"gain",kv.second.gain}};
+    MmdSaveFaceSettings();return;
+  }
+  try {
+    nlohmann::json j = g_mmd.faceSavedNativeMappings;
     for (auto &kv : g_mmd.morphMap)
-      j[kv.first] = {{"slider", kv.second.slider}, {"gain", kv.second.gain}};
+      j[kv.first] = {{"slider", kv.second.nativeSlider}, {"gain", kv.second.nativeGain}};
     auto dir = MmdConfigDirectory();
     std::filesystem::create_directories(dir);
-    std::ofstream f(dir / L"morph-mapping.json");
-    f << j.dump(2);
+    auto path=dir/L"morph-mapping.json",temp=dir/L"morph-mapping.json.tmp";
+    {std::ofstream f(temp,std::ios::binary|std::ios::trunc);f<<j.dump(2);f.flush();
+      if(!f)throw std::runtime_error("Could not write game expression mappings");}
+    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+      throw std::runtime_error("Could not replace game expression mappings");
+    g_mmd.faceSavedNativeMappings=std::move(j);
   } catch (const std::exception &e) {
     g_mmd.status = e.what();
   }
 }
 static void MmdMapMorphs() {
+  MmdLoadFaceSettings();
   auto &m = g_mmd;
   m.morphMap.clear();
   nlohmann::json saved;
@@ -635,24 +676,35 @@ static void MmdMapMorphs() {
       f >> saved;
   } catch (...) {
   }
+  m.faceSavedNativeMappings=saved.is_object()?saved:nlohmann::json::object();
   const char *vowels[] = {u8"あ", u8"い", u8"う", u8"え", u8"お"};
   for (auto &kv : m.clip.morphs) {
     MmdMorphMapping map;
+    {
+      map.slider=face_template::Find(kv.first);
+      try {
+        if(m.faceSavedMappings.contains(kv.first)) {
+          const auto &item=m.faceSavedMappings[kv.first];
+          map.slider=face_template::Find(item.value("template",std::string{}));
+          map.gain=face_template::Clamp(item.value("gain",1.f),0,2);
+        }
+      } catch(...) {}
+    }
     for (int i = 0; i < 5; i++)
       if (kv.first == vowels[i])
-        map.slider = i;
+        map.nativeSlider = i;
     for (int i = 0; i < s_extraMorphCount; i++)
       if (kv.first == mmd::Name(s_extraMorphs[i].vmdNameUtf8))
-        map.slider = 5 + i;
+        map.nativeSlider = 5 + i;
     try {
       if (saved.contains(kv.first)) {
-        map.slider = saved[kv.first].value("slider", map.slider);
-        map.gain = mmd::Clamp(saved[kv.first].value("gain", 1.f), 0, 2);
+        map.nativeSlider = saved[kv.first].value("slider", map.nativeSlider);
+        map.nativeGain = mmd::Clamp(saved[kv.first].value("gain", 1.f), 0, 2);
       }
     } catch (...) {
     }
-    if (map.slider < -1 || map.slider >= SMCSliderCount())
-      map.slider = -1;
+    if (map.nativeSlider < -1 || map.nativeSlider >= SMCSliderCount())
+      map.nativeSlider = -1;
     m.morphMap[kv.first] = map;
   }
 }
@@ -673,14 +725,20 @@ static void MmdReport() {
       m.report.push_back(u8"映射的动作轨道不存在：" + kv.second + u8" → " + kv.first);
   for (const auto &name : evaluation.unmapped)
     m.report.push_back(u8"未映射或不影响人体的骨骼: " + name);
-  for (auto &kv : m.morphMap)
-    if (kv.second.slider < 0) {
+  for (auto &kv : m.morphMap) {
+    if (kv.second.slider < 0 && kv.second.nativeSlider < 0) {
       auto type = m.rig.morphTypes.find(kv.first);
       m.report.push_back((type != m.rig.morphTypes.end() && type->second == 8
                               ? u8"不支持材质表情: "
                               : u8"未映射表情: ") +
                          kv.first);
     }
+    else if(kv.second.slider>=0&&kv.second.nativeSlider<0) {
+      int region=face_mixing::TemplateRegion(kv.second.slider);
+      if(m.faceSettings.driver[region]==face_mixing::Driver::Eiem)
+        m.report.push_back(std::string(face_mixing::Label(region))+u8"使用游戏表情映射，未匹配该轨道："+kv.first);
+    }
+  }
 }
 static bool MmdApplyAdaptation(const mmd::RigAdaptation &next, int sourcePreset) {
   auto &m = g_mmd;
@@ -1142,13 +1200,20 @@ static void MmdApplyFrame() {
   SMCMotionFrame face;
   face.active = !m.clip.morphs.empty();
   face.animator = s.animator;
-  for (auto &kv : m.morphMap)
-    if (kv.second.slider >= 0)
-      face.weights[kv.second.slider] =
-          mmd::Clamp(face.weights[kv.second.slider] +
-                         mmd::SampleMorph(m.clip.morphs.at(kv.first), frame) *
-                             kv.second.gain,
-                     0, 1);
+  face.generation=s_faceGeneration;
+  face.settings=m.faceSettings;
+  for (auto &kv : m.morphMap) {
+    float sample=mmd::SampleMorph(m.clip.morphs.at(kv.first),frame);
+    if (kv.second.slider >= 0) {
+        int id=kv.second.slider;
+        // Synonyms describe the same pose. Max prevents duplicate aliases
+        // (e.g. smile + mouth-corner-up) from doubling its displacement.
+        face.expressions[id]=(std::max)(face.expressions[id],face_template::Clamp(
+          sample*kv.second.gain,0,1));
+    }
+    if(kv.second.nativeSlider>=0)face.weights[kv.second.nativeSlider]=
+      mmd::Clamp(face.weights[kv.second.nativeSlider]+sample*kv.second.nativeGain,0,1);
+  }
   for (int e = 0; e < 2; e++) {
     int idx = m.profile.roles[21 + e];
     if (idx >= 0 && p.write[idx]) {
@@ -1205,6 +1270,7 @@ static bool MmdStart() {
 static void MmdTick() {
   try {
     auto &m = g_mmd;
+    MmdLoadFaceSettings();
     MmdPollLoad();
     g_bbcRequested.store(m.session.active && m.session.bodyOwned && !m.preview && !m.freezeCloth);
     if (m.session.active && (!MmdCharacterReady() ||

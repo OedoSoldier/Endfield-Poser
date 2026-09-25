@@ -182,6 +182,13 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"model",CurrentCharModelKey()},{"file",m.file},{"report",m.report},
       {"hidden_props",m.session.active ? m.session.props.size() : 0},
       {"smc_ready",SMCSectionReady()},{"bone_tracks",m.clip.bones.size()},
+      {"face_templates",m.faceSettings.uses(face_mixing::Driver::Template)},
+      {"face_strength",m.faceSettings.strength},{"face_regions",face_mixing::Write(m.faceSettings)["regions"]},
+      {"face_template_ready",s_templateBinding.ready},
+      {"face_template_bones",s_templateBinding.controlled},
+      {"face_template_brows",s_templateBinding.brows},
+      {"face_template_lids",s_templateBinding.lids},
+      {"face_template_lips",s_templateBinding.lips},
       {"morph_tracks",m.clip.morphs.size()}});
     return;
   }
