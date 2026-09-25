@@ -2,13 +2,13 @@
 
 《明日方舟：终末地》的游戏内摄影摆姿与 MMD 动作播放器。支持角色冻结、骨骼编辑、姿态库、口型表情、VMD 动作和可选音乐同步，无需 Blender。
 
-本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前源码版本：**0.4.16（开发版）**。本次更新提供源码，请按下文构建安装；已有二进制包可查看[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases)，其版本和功能可能与本分支不同。
+本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前版本：**0.4.16（预发布）**。下载本分支的 [Windows x64 预编译安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.16)，无需安装编译工具；更新内容和详细安装方法见 [0.4.16 发布说明](docs/releases/v0.4.16.md)。[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases) 的版本和功能可能与本分支不同。
 
 > 本项目仅供学习与技术交流。使用前请阅读下方[免责声明](#免责声明)。插件与游戏版本相关，开发版仍需游戏内兼容性验证。
 
 ## 安装、更新与卸载
 
-需要 Windows x64。先退出游戏，将下载包完整解压，再双击 **`安全安装.bat`**，选择包含 `Endfield.exe` 和 `GameAssembly.dll` 的游戏根目录。
+需要 Windows x64。在 Release 页的 **Assets** 中下载 **`Endfield-Poser-v0.4.16-win64.zip`**（`source.zip` 和 GitHub 的 `Source code` 是源码，需要自行构建）。先退出游戏，将安装包完整解压，再双击 **`安全安装.bat`**，选择包含 `Endfield.exe` 和 `GameAssembly.dll` 的游戏根目录。不要在压缩包内直接运行脚本。
 
 - **安装 / 更新**：直接覆盖更新，无需先卸载。修改前备份 DLL，保留已有配置、窗口布局、校准和姿态；只补充缺少的适配预设。
 - **卸载**：移除 `poser.dll`，按安装记录恢复本工具管理的代理 DLL。用户数据和备份保留；发现其他插件时保留共用代理。旧版没有安装记录时，仅移除已识别的 `poser.dll`。
@@ -158,4 +158,4 @@ cmake --build build-cmake --config Release
 ## 许可
 
 本仓库整体构成 **AGPL-3.0** 衍生作品（`src/core/` 的注入层参考 AGPL-3.0 的 EIEM），
-公开分发需按 AGPL 提供源码；不可改为 MIT / 专有许可发布。修改 `src/core/` 时请保留来源声明。
+公开分发需按 AGPL 提供源码；不可改为 MIT / 专有许可发布。修改 `src/core/` 时请保留来源声明。完整许可见 [LICENSE](LICENSE)，依赖声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。每个预编译 Release 同时提供对应版本源码。
