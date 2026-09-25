@@ -23,6 +23,7 @@
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "editor/panel_mmd.h"
+#include "editor/panel_agreement.h"
 #include "config.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
@@ -199,6 +200,11 @@ static void UpdateOverlayCursor() {
     }
 }
 static void GameFrameTickBody() {
+  if (!poser_agreement::Allowed()) {
+    TakeHotkeyFreeze();
+    InterlockedExchange(&g_mmdHotkeyRequests, 0);
+    return;
+  }
   __try {
     if (CharacterSwitchInProgress()) return;
     ConsumeCapturedCharacter();
@@ -291,7 +297,6 @@ static void RefreshCharacterBones() {
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
 static void DrawPoserGuiBody() {
-  UpdateOverlayCursor();
   ImGuizmo::BeginFrame(); // ImGuizmo 每帧初始化（draw list / 内部窗口），否则轮盘不绘制
   __try {
     DrawSkeletonOverlay();
@@ -319,6 +324,8 @@ static void DrawPoserGuiBody() {
                        ImGuiWindowFlags_AlwaysAutoResize |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
     ImGui::Text("v%s", POSER_VERSION);
+    ImGui::SameLine();
+    if (ImGui::SmallButton(u8"用户协议")) g_showUserAgreement = true;
     // 当前实际生效的热键（配置可能是老版本留下的值，别让用户以为"默认就是 L/P"）
     {
       char hk1[48] = {}, hk2[48] = {};
@@ -537,12 +544,22 @@ static void DrawPoserGuiBody() {
 }
 
 void GameFrameTick() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); GameFrameTickBody(); }
-void DrawPoserGui() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); DrawPoserGuiBody(); }
+void DrawPoserGui() {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  UpdateOverlayCursor();
+  if (DrawUserAgreement()) {
+    g_inputHoverGizmo = false;
+    TakeLeftClick();
+    return;
+  }
+  DrawPoserGuiBody();
+}
 
 // 外部控制（PostMessage WM_APP+90 触发，绕过反作弊输入拦截）：
 // 1=冻结/解冻 2=T-pose
 static void ExtControl(int code) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if (!poser_agreement::Allowed()) return;
   if(g_mmd.session.active) { if(code==1){MmdStop();UnfreezeCharacter();} return; }
   switch (code) {
   case 1:
@@ -623,6 +640,10 @@ static void ProcessControlFileBody() {
       *e-- = 0;
     if (!*line)
       continue;
+    if (!poser_agreement::Allowed() && strcmp(line, "toggle") != 0) {
+      Log("[CTRL] command ignored: user agreement required");
+      continue;
+    }
     if (strncmp(line, "mmd_load ", 9) == 0) {
       MmdBeginLoad(0, std::filesystem::u8path(line + 9));
     } else if (strncmp(line, "mmd_append ", 11) == 0) {
@@ -699,6 +720,9 @@ static DWORD WINAPI InitThread(LPVOID) {
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
       POSER_VERSION, __DATE__, __TIME__);
   LoadPoserConfig();
+  poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
+  Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
+      poser_agreement::Allowed() ? "already accepted" : "confirmation required");
   g_beforeCharacterChange = PrepareCharacterHandoff;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
   SetExtControl(ExtControl);
@@ -735,6 +759,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
   InstallFrameHook();
   InstallBbcFrameHook();
+  mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）
   Log("[POSER] Starting GUI thread.");
   {

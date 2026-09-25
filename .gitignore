@@ -35,6 +35,8 @@ __pycache__/
 *.flac
 *.ogg
 *.log
+poser_agreement.txt
+poser_agreement.txt.tmp-*
 .env
 .env.*
 *.local.*

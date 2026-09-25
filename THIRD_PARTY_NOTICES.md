@@ -4,6 +4,8 @@ Endfield Poser is distributed under AGPL-3.0; see [LICENSE](LICENSE). The inject
 
 The Windows binaries include the following dependencies. Their original licenses and notices are reproduced in the package:
 
+The first-use agreement layout and section structure also reference [Sasye/EIEM's src/gui.h](https://github.com/Sasye/EIEM/blob/main/src/gui.h), under AGPL-3.0. The wording is adapted for Endfield Poser; the local confirmation workflow is implemented in this project.
+
 | Dependency | Source | License notice |
 |---|---|---|
 | Dear ImGui | https://github.com/ocornut/imgui | [MIT](licenses/Dear-ImGui.txt) |

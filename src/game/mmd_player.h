@@ -8,6 +8,7 @@
 #include "math/mmd_adaptation.h"
 #include "game/mmd_ground_probe.h"
 #include "game/bbc_playback.h"
+#include "game/mmd_camera.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
 #include <chrono>
@@ -388,6 +389,9 @@ static int MmdChildCount(void *transform) {
   }
 }
 struct MmdSession {
+  bool bodyOwned = false;
+  uint64_t cameraSession = 0;
+  Quat cameraBasis;
   bool active = false, wasFrozen = false, freezeAccessories = false,
        animatorWasEnabled = false;
   void *animator = nullptr;
@@ -421,6 +425,9 @@ struct MmdLoadResult {
 };
 struct MmdPlayer {
   mmd::MotionClip clip;
+  std::vector<mmd::CameraKey> cameraTrack;
+  std::string cameraFile;
+  mmd::CameraSettings cameraSettings;
   mmd::RigDefinition rig = mmd::StandardRig();
   mmd::RigDefinition baseRig = mmd::StandardRig();
   mmd::RigAdaptation adaptation;
@@ -457,6 +464,28 @@ struct MmdPlayer {
   void *profileAnimator = nullptr;
 };
 static MmdPlayer g_mmd;
+static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
+  return g_mmd.cameraFile.empty() ? g_mmd.clip.cameras : g_mmd.cameraTrack;
+}
+static bool MmdHasContent() { return !g_mmd.clip.empty() || !MmdCameraKeys().empty(); }
+static void MmdUpdateDuration() {
+  auto &m=g_mmd;const auto &keys=MmdCameraKeys();
+  uint32_t last=keys.empty()?0:keys.back().frame;
+  for(const auto &kv:m.clip.bones)if(!kv.second.empty())last=(std::max)(last,kv.second.back().frame);
+  for(const auto &kv:m.clip.morphs)if(!kv.second.empty())last=(std::max)(last,kv.second.back().frame);
+  m.timeline.duration=last/30.0;
+}
+static void MmdPublishCamera() {
+  auto &m=g_mmd;auto &s=m.session;const auto &keys=MmdCameraKeys();
+  if (!s.active || m.preview || !m.cameraSettings.enabled || keys.empty() || !mmd_camera::ready) {
+    mmd_camera::Stop();return;
+  }
+  // Track actual model-root motion; camera-only playback can follow locomotion.
+  Vec3 delta=GetBoneWorldPos(s.root)-s.anchorWorld.position();
+  mmd_camera::Publish({true,s.cameraSession,s.animator,
+    mmd::PlaceCamera(mmd::SampleCamera(keys,m.timeline.seconds*30,m.cameraSettings.cuts),
+      m.cameraSettings,s.anchorWorld.position(),s.cameraBasis,delta,m.scale)});
+}
 static void MmdBbcPrepare(bool stepped);
 static void MmdProbeGround() {
   auto &m=g_mmd;
@@ -525,7 +554,7 @@ static const char *MmdSourceRigLabel() {
 }
 static void MmdHideProps(bool force = false) {
   auto &s = g_mmd.session;
-  if (!s.active || !UnityObjAlive(s.root) || !g_gameObject_setActive)
+  if (!s.active || !s.bodyOwned || !UnityObjAlive(s.root) || !g_gameObject_setActive)
     return;
   double now = MmdNow();
   if (!force && now < s.nextPropScan)
@@ -705,6 +734,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
         ofn.nMaxFile = 32768;
         ofn.lpstrFilter =
             kind == 5 ? L"Music (WAV/MP3/M4A/AAC/WMA/FLAC)\0*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac\0All files\0*.*\0\0" :
+            kind == 6 ? L"VMD camera\0*.vmd\0\0" :
             kind >= 3 ? L"MMD rig preset\0*.mmdrig.json;*.json\0\0" :
             kind == 2 ? L"PMX skeleton\0*.pmx\0\0" : L"VMD motion\0*.vmd\0\0";
         ofn.Flags = (kind == 4 ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST) | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
@@ -760,7 +790,9 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
       else {
         result.clip = mmd::ReadVmd(bytes, mmd::Decode);
         if (result.clip.empty())
-          throw std::runtime_error("VMD contains no bone or face motion");
+          throw std::runtime_error("VMD contains no bone, face or camera motion");
+        if (kind == 6 && result.clip.cameras.empty())
+          throw std::runtime_error("VMD contains no camera keyframes; previous camera retained");
         if (kind == 1) {
           bool eyes = false;
           for (auto &kv : result.clip.bones)
@@ -796,6 +828,13 @@ static void MmdPollLoad() {
     m.musicError.clear();
     m.musicEnabled = true;
     m.status = u8"音乐已就绪，随动作播放";
+    return;
+  }
+  if (r.kind == 6) {
+    m.cameraTrack=std::move(r.clip.cameras);m.cameraFile=r.file;
+    m.cameraSettings.enabled=true;MmdUpdateDuration();
+    m.status=u8"镜头已导入，随动作时间轴播放";
+    Log("[MMD-CAMERA] imported %s: keys=%zu",r.file.c_str(),m.cameraTrack.size());
     return;
   }
   if (r.kind == 4) {
@@ -851,11 +890,14 @@ static void MmdPollLoad() {
   } else if (r.kind == 1)
     mmd::AppendFace(m.clip, r.clip);
   else {
+    if (!r.clip.cameras.empty()) {
+      m.cameraTrack.clear();m.cameraFile.clear();m.cameraSettings.enabled=true;
+    }
     m.clip = std::move(r.clip);
     m.file = r.file;
     m.timeline.stop();
   }
-  m.timeline.duration = m.clip.duration();
+  MmdUpdateDuration();
   MmdMapMorphs();
   MmdReport();
   m.profileRevision = -1;
@@ -901,6 +943,8 @@ static void MmdCaptureSession() {
   auto &s = m.session;
   s = MmdSession{};
   s.active = true;
+  s.bodyOwned = m.preview || !m.clip.bones.empty() || !m.clip.morphs.empty();
+  s.cameraSession = ++mmd_camera::nextSession;
   s.animator = g_charAnimator;
   s.root = GetCharRootTransform();
   s.revision = s_bonesRev;
@@ -919,6 +963,22 @@ static void MmdCaptureSession() {
   s.rootPos = GetBoneLocalPos(s.root);
   s.rootRot = GetBoneLocalRot(s.root);
   s.anchorWorldValid=MmdReadMatrix(g_transform_get_localToWorldMatrix,s.root,&s.anchorWorld);
+  if (!s.anchorWorldValid) {
+    s.anchorWorld=mmd::TRS(GetBoneWorldPos(s.root),GetBoneWorldRot(s.root));
+    s.anchorWorldValid=true;
+  }
+  s.cameraBasis=NormQ(mmd::Rotation(s.anchorWorld)*m.mapper.sourceBasis());
+  if (m.clip.bones.empty()) {
+    // Camera-only/face-only clips do not require a calibrated body rig.
+    auto at=[&](int role) {for(int i=0;i<s_humanBoneCount;++i)
+      if(s_humanBones[i].humanBone==role && UnityObjAlive(s_humanBones[i].transform))
+        return GetBoneWorldPos(s_humanBones[i].transform);return Vec3{};};
+    Vec3 across=at(13)-at(14);across.y=0;
+    if (Len(across)>1e-4f) {
+      Vec3 x=Norm(across),up{0,1,0};s.cameraBasis=mmd::Basis(x,up,Norm(Cross(x,up)));
+    } else s.cameraBasis=mmd::Rotation(s.anchorWorld);
+  }
+  if (!s.bodyOwned) return;
   s.planeHeight=1e9f;
   if(s.anchorWorldValid) for(int role:{5,6,19,20}) {
     int i=m.profile.roles[role];
@@ -977,6 +1037,7 @@ static void MmdStop() {
   auto &m = g_mmd;
   auto &s = m.session;
   m.timeline.stop();
+  mmd_camera::Stop();
   g_bbcRequested.store(false);
   BbcPlaybackEnd();
   g_smcSceneObserver=nullptr;
@@ -988,6 +1049,10 @@ static void MmdStop() {
   m.preview = false;
   if (!s.active)
     return;
+  if (!s.bodyOwned) {
+    s.active=false;s.references.reset();m.status=u8"镜头已停止，等待游戏回调恢复相机";
+    return;
+  }
   bool ownerAlive = UnityObjAlive(s.animator) && UnityObjAlive(s.root);
   // Handles belong to the recorded actor, never implicitly to the new actor.
   if (ownerAlive)
@@ -1051,6 +1116,7 @@ static void MmdApplyFrame() {
     return;
   }
   double frame = m.timeline.seconds * 30.;
+  if (!s.bodyOwned) {MmdPublishCamera();return;}
   m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude);
   MmdApplyContacts();
   const auto &p = m.mapper.output;
@@ -1093,17 +1159,18 @@ static void MmdApplyFrame() {
     }
   }
   SMCMotionPublish(face);
+  MmdPublishCamera();
 }
 static void MmdBbcPrepare(bool stepped) {
   auto &m=g_mmd;
-  if(!m.session.active || m.preview || m.freezeCloth) {g_bbcRequested.store(false);return;}
+  if(!m.session.active || !m.session.bodyOwned || m.preview || m.freezeCloth) {g_bbcRequested.store(false);return;}
   // The native scheduling switch fences last frame before this pose is read.
   // If another game callback sampled already, resubmit that same time's pose.
   if(!stepped) {SkirtTick();MmdApplyFrame();}
 }
 static bool MmdStart() {
   auto &m = g_mmd;
-  if (m.loading || m.preview || m.clip.empty())
+  if (m.loading || m.preview || !MmdHasContent())
     return false;
   if (!MmdCharacterReady()) {
     MmdStop();
@@ -1121,12 +1188,13 @@ static bool MmdStart() {
     m.profileRevision = -1;
   } else if (!MmdPrepareProfile())
     return false;
-  m.mapper.bind(m.rig, m.clip, m.profile, mmd::AdaptedRoles(m.adaptation), m.adaptation.tracks);
-  if (m.reference && m.autoScale)
+  if (!m.clip.bones.empty() || !m.clip.morphs.empty())
+    m.mapper.bind(m.rig, m.clip, m.profile, mmd::AdaptedRoles(m.adaptation), m.adaptation.tracks);
+  if (!m.clip.bones.empty() && m.reference && m.autoScale)
     m.scale = m.mapper.suggestedScale;
   MmdCaptureSession();
   InterlockedExchange(&g_mmdOwnsPose, 1);
-  m.timeline.duration = m.clip.duration();
+  MmdUpdateDuration();
   m.timeline.play(MmdNow());
   m.status = u8"播放中";
   MmdApplyFrame();
@@ -1138,7 +1206,7 @@ static void MmdTick() {
   try {
     auto &m = g_mmd;
     MmdPollLoad();
-    g_bbcRequested.store(m.session.active && !m.preview && !m.freezeCloth);
+    g_bbcRequested.store(m.session.active && m.session.bodyOwned && !m.preview && !m.freezeCloth);
     if (m.session.active && (!MmdCharacterReady() ||
                              m.session.animator != g_charAnimator ||
                              m.session.revision != s_bonesRev ||

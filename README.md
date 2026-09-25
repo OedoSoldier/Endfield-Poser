@@ -2,17 +2,19 @@
 
 《明日方舟：终末地》的游戏内摄影摆姿与 MMD 动作播放器。支持角色冻结、骨骼编辑、姿态库、口型表情、VMD 动作和可选音乐同步，无需 Blender。
 
-本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前版本：**0.4.26（预发布）**。[下载 Windows x64 预编译安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.26)，无需安装编译工具；安装方法和本版变更见 [0.4.26 发布说明](docs/releases/v0.4.26.md)。本版包含启动、EFMI 面板和 BBC 原生布料接入改动，新增裙摆碰撞覆盖尚待游戏内验收。[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases) 的版本和功能可能与本分支不同。
+本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前版本：**0.4.35（预发布）**。[下载 Windows x64 预编译安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.35)，无需安装编译工具；安装方法和本版变更见 [0.4.35 发布说明](docs/releases/v0.4.35.md)。[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases) 的版本和功能可能与本分支不同。
+
+本版新增[首次使用协议弹窗](docs/user-agreement.md)与 [MMD 镜头播放](docs/mmd-player.md#mmd-镜头)：支持固定播放起点、追踪角色位移、镜头偏移与距离调整，随动作时间轴同步播放。保留 BBC 原生物理支持，不包含实验性 GPU 衣物修正及控制点生成。新增镜头接管、弹窗点击仍待游戏内验收，裙摆仍可能穿模，因此继续以预发布提供。
 
 > 本项目仅供学习与技术交流。使用前请阅读下方[免责声明](#免责声明)。插件与游戏版本相关，预发布功能仍需游戏内兼容性验证。
 
 ## 安装、更新与卸载
 
-需要 Windows x64。在 Release 页的 **Assets** 中下载 **`Endfield-Poser-v0.4.26-win64.zip`**（`source.zip` 和 GitHub 的 `Source code` 是源码，需要自行构建）。先退出游戏，将安装包完整解压，再双击 **`安全安装.bat`**，选择包含 `Endfield.exe` 和 `GameAssembly.dll` 的游戏根目录。不要在压缩包内直接运行脚本。
+需要 Windows x64。在 Release 页的 **Assets** 中下载 **`Endfield-Poser-v0.4.35-win64.zip`**（`source.zip` 和 GitHub 的 `Source code` 是源码，需要自行构建）。先退出游戏，将安装包完整解压，再双击 **`安全安装.bat`**，选择包含 `Endfield.exe` 和 `GameAssembly.dll` 的游戏根目录。不要在压缩包内直接运行脚本。
 
-- **安装 / 更新**：直接覆盖更新，无需先卸载。修改前备份 DLL，保留已有配置、窗口布局、校准和姿态；只补充缺少的适配预设。
+- **安装 / 更新**：直接覆盖更新，无需先卸载。修改前备份 DLL，保留已有配置、窗口布局、校准、适配预设和姿态。
 - **卸载**：移除 `poser.dll`，按安装记录恢复本工具管理的代理 DLL。用户数据和备份保留；发现其他插件时保留共用代理。旧版没有安装记录时，仅移除已识别的 `poser.dll`。
-- 游戏运行中脚本会拒绝操作。0.4.26 可按原有方式通过鹰角启动器、EFMI 或直接运行游戏启动；验证范围见下文。旧版 0.4.16 仍请经 Hypergryph Launcher 启动。更新应完整运行安装向导，包含代理 DLL。
+- 游戏运行中脚本会拒绝操作。可按原有方式通过鹰角启动器、EFMI 或直接运行游戏启动；验证范围见下文。旧版 0.4.16 仍请经 Hypergryph Launcher 启动。更新应完整运行安装向导，包含代理 DLL。
 
 仓库源码需要先运行 `build.bat` 生成 DLL，再运行安装向导。向导支持源码构建和发布包两种目录布局；不要只复制 `.bat` 文件，须保留 `tools/deploy.ps1`。
 
@@ -36,7 +38,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/deploy.ps1 -GameDir "D
 | `d3dcompiler_47.dll` | 游戏根目录 |
 | `vulkan-1.dll`（可选，Vulkan 模式需要） | 游戏根目录 |
 | `poser.dll` | `plugin/poser.dll` |
-| `presets/mmd/*.mmdrig.json` | `plugin/mmd/rig-presets/`，保留已有同名文件 |
 
 插件目录是 **`plugin`（单数）**；游戏自带的 `plugins` 不是安装位置。配置由插件首次启动生成。建议使用窗口化或无边框全屏，以便显示覆盖层面板。
 
@@ -49,6 +50,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/deploy.ps1 -GameDir "D
 在检测到 EFMI / XXMI 时，覆盖窗口直接获取并验证已加载的系统 D3D11 模块，避免绝对路径加载请求被重定向到代理。设备仍被代理包装时会在绘制前停用面板、记录原因。覆盖窗口使用 WARP 软件渲染和非阻塞回读；回读未完成时保留上一帧、继续处理窗口消息。该模式会增加一些 CPU 开销，可调整 `overlay_fps`；游戏场景仍使用原有渲染方式。已通过本机回读及重定向测试，并在 EFMI 启动的实际游戏中验证面板持续绘制、显示与隐藏。
 
 ## 快速使用
+
+首次加载时自动显示 **用户协议与免责声明**。阅读后选择 **我已阅读并同意**，或选择 **暂不使用** 继续游戏；未确认时插件操作保持停用。确认记录保存在本机，普通更新不会重复提示。主面板 **用户协议** 按钮可重新查看。[协议全文与记录说明](docs/user-agreement.md)。
 
 进入可操作角色的场景后按 **L** 打开面板。按 **P** 冻结，用骨骼面板或 3D 旋转盘摆姿，再在姿态库保存。**冻结飘带／裙子／头发默认关闭**，冻结身体时这些部位继续模拟，需要静止时再手动勾选。拖动窗口标题栏调整位置；取消 **锁定窗口** 后可自由移动，**重排窗口** 恢复初始布局。
 
@@ -89,6 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/deploy.ps1 -GameDir "D
 |---|---|
 | 设置 / 快捷键 | `plugin/poser_config.txt` |
 | 窗口布局 | `plugin/poser_layout.ini` |
+| 首次使用确认记录 | `plugin/poser_agreement.txt`（仅本机，不随安装包分发） |
 | 姿态库 | `plugin/poses/*.poser.json` |
 | 校准、表情映射、适配预设 | `plugin/mmd/` |
 | 日志 | `plugin/poser_log.txt` |
@@ -117,7 +121,7 @@ cmake --build build-cmake --config Release
 
 ## 当前限制与排查
 
-- 不包含 MMD 相机、灯光、模型导入、多角色同步或 MMD 物理模拟。特殊骨、道具和表情可能需要手动映射，未支持项显示在导入报告中。
+- 不包含 MMD 灯光、模型导入、多角色同步或 MMD 物理模拟。镜头播放见 [MMD 播放指南](docs/mmd-player.md#mmd-镜头)；特殊骨、道具和表情可能需要手动映射，未支持项显示在导入报告中。
 - 动作幅度不能保证消除穿模，也可能改变脚底接触；腿部表现需结合原始动作、源骨架和 IK 模式调整。
 - 动作更新与面板绘制已分离，但游戏帧回调可能不可用并回退到独立计时。面板显示实际驱动来源，当前不能保证所有渲染管线均与背景帧同步。
 - 0.4.13 调整了冻结换人的对象恢复与引用管理；复杂角色切换、连续播放及其他模组共存仍需游戏内验证。

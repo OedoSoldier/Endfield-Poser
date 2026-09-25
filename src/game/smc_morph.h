@@ -19,6 +19,7 @@
 #include "core/base.h"
 #include "core/il2cpp_api.h"
 #include "core/game_hooks.h"
+#include "core/user_agreement.h"
 
 // ---- 常量 ----
 #define SMC_MAX_BIGLIST 8192
@@ -1349,7 +1350,7 @@ static void SMCMotionPublish(const SMCMotionFrame& f) {
 static void *__fastcall HookedSMCMorphJob(void *result, void *smc, uint32_t count,
                                         void *dependency, void *method) {
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (lock.owns_lock() && !CharacterSwitchInProgress())
+  if (poser_agreement::Allowed() && lock.owns_lock() && !CharacterSwitchInProgress())
     SMCMorphJobBefore(smc);
   // Returning explicitly preserves RAX across the lock destructor as well as
   // busy/switching paths; a tail-call accidentally preserving RAX is insufficient.
@@ -1772,7 +1773,7 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
 // for a worker's IL2CPP invocation; busy callbacks run the original game code.
 static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (!lock.owns_lock() || CharacterSwitchInProgress()) {
+  if (!poser_agreement::Allowed() || !lock.owns_lock() || CharacterSwitchInProgress()) {
     if (s_origSMCUpdate) s_origSMCUpdate(self, dt, method);
     return;
   }

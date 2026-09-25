@@ -26,6 +26,7 @@
 #include "layered_readback.h"
 #include "overlay_device.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
+#include "user_agreement.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -200,7 +201,7 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
     bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
     for(int i=0;i<4;++i) {
       bool pressed=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0 && (!g_mmdHotkeyCtrl[i] || ctrl);
-      if(ourFocus && pressed && !prevMmd[i]) InterlockedOr(&g_mmdHotkeyRequests,1<<i);
+      if(poser_agreement::Allowed() && ourFocus && pressed && !prevMmd[i]) InterlockedOr(&g_mmdHotkeyRequests,1<<i);
       prevMmd[i]=pressed;
     }
     bool t = ourFocus && (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0 &&
@@ -209,7 +210,7 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
              (!g_freezeCtrl || ctrl);
     if (t && !prevToggle)
       InterlockedIncrement(&g_hotkeyToggleReq);
-    if (f && !prevFreeze)
+    if (poser_agreement::Allowed() && f && !prevFreeze)
       InterlockedIncrement(&g_hotkeyFreezeReq);
     prevToggle = t;
     prevFreeze = f;
@@ -993,7 +994,7 @@ static DWORD GuiThreadBody(LPVOID) {
   ImGui_ImplWin32_Init(g_guiHwnd);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-  g_guiVisible = false;
+  g_guiVisible = !poser_agreement::Allowed();
   ShowWindow(g_guiHwnd, SW_HIDE);
   Log("[GUI] ImGui initialized, panel ready");
   StartGameFrameDriver();
@@ -1033,7 +1034,7 @@ static DWORD GuiThreadBody(LPVOID) {
     // click_through 模式：面板打开就常驻显示，靠分层穿透把鼠标让给游戏；
     // 默认模式：只有按住 Alt（或拖拽中）才显示覆盖层，其余时间整窗隐藏。
     bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd) &&
-                      (g_clickThrough || altHeld || g_inputDragging);
+                      (g_clickThrough || altHeld || g_inputDragging || !poser_agreement::Allowed());
     static int s_showLogged = -1;
     if ((int)shouldShow != s_showLogged) {
       s_showLogged = (int)shouldShow;

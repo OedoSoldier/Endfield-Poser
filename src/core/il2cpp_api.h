@@ -220,6 +220,27 @@ static void *CurrentRuntimeThread() {
   __try { return il2cpp_thread_current ? il2cpp_thread_current() : nullptr; }
   __except (1) { return nullptr; }
 }
+
+// Endfield adds GetComponent<T>(int). Parameter count alone can choose it
+// before GetComponent(System.Type), silently returning no renderer.
+static bool MetadataClassIs(void *type,const char *space,const char *name) {
+  if(!type||!il2cpp_class_from_type||!il2cpp_class_get_name||!il2cpp_class_get_namespace)return false;
+  void *klass=il2cpp_class_from_type(type);if(!klass)return false;
+  const char *actualName=il2cpp_class_get_name(klass),*actualSpace=il2cpp_class_get_namespace(klass);
+  return actualName&&actualSpace&&!strcmp(actualName,name)&&!strcmp(actualSpace,space);
+}
+static void *FindComponentTypeQuery(void *klass,const char *name,bool multiple) {
+  if(!klass||!il2cpp_class_get_methods||!il2cpp_method_get_flags||!il2cpp_method_get_param||
+     !il2cpp_method_get_return_type||!il2cpp_method_get_param_count||!il2cpp_method_get_name)return nullptr;
+  void *iter=nullptr,*method;
+  while((method=il2cpp_class_get_methods(klass,&iter))) {
+    const char *actual=il2cpp_method_get_name(method);
+    if(!actual||strcmp(actual,name)||(il2cpp_method_get_flags(method,nullptr)&0x10)||il2cpp_method_get_param_count(method)!=1)continue;
+    if(MetadataClassIs(il2cpp_method_get_param(method,0),"System","Type")&&
+       MetadataClassIs(il2cpp_method_get_return_type(method),"UnityEngine",multiple?"Component[]":"Component"))return method;
+  }
+  return nullptr;
+}
 static void *AttachRuntimeThread() {
   if (!g_runtimeReady.load(std::memory_order_acquire)) return nullptr;
   __try {

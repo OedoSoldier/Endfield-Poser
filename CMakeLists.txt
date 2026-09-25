@@ -22,6 +22,7 @@ if(WIN32)
     src/poser.cpp
     src/poser.rc
     src/config.h
+    src/core/user_agreement.h src/editor/panel_agreement.h
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/core/game_hooks.h
@@ -29,6 +30,7 @@ if(WIN32)
     src/core/frame_driver.h src/core/bbc_frame.h src/math/frame_cadence.h
     src/core/runtime_bootstrap.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
+    src/game/mmd_camera.h src/math/mmd_camera.h
     src/math/mmd_contact.h src/game/mmd_ground_probe.h
     src/game/bbc_playback.h src/game/bbc_garment.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h
@@ -67,14 +69,6 @@ if(WIN32)
   set_target_properties(vulkan-1 PROPERTIES OUTPUT_NAME "vulkan-1")
 
   add_dependencies(poser d3dcompiler_47 vulkan-1)
-  file(GLOB MMD_RIG_PRESETS "${CMAKE_CURRENT_SOURCE_DIR}/presets/mmd/*.mmdrig.json")
-  file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/plugin/mmd/rig-presets")
-  foreach(PRESET ${MMD_RIG_PRESETS})
-    get_filename_component(PRESET_NAME "${PRESET}" NAME)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugin/mmd/rig-presets/${PRESET_NAME}")
-      configure_file("${PRESET}" "${CMAKE_CURRENT_SOURCE_DIR}/plugin/mmd/rig-presets/${PRESET_NAME}" COPYONLY)
-    endif()
-  endforeach()
 
   # 部署：把 poser.dll 与 d3dcompiler_47.dll 拷到 plugin/
   add_custom_command(TARGET poser POST_BUILD
@@ -110,8 +104,16 @@ add_poser_test(test_ik tests/test_ik.cpp)
 add_poser_test(test_pose_file tests/test_pose_file.cpp)
 add_poser_test(test_mmd tests/test_mmd.cpp)
 add_poser_test(test_mmd_contact tests/test_mmd_contact.cpp)
+add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
 if(MSVC)
+  add_poser_test(test_user_agreement tests/test_user_agreement.cpp)
+  add_poser_test(test_agreement_ui tests/test_agreement_ui.cpp)
+  target_include_directories(test_agreement_ui PRIVATE deps/imgui)
+  add_poser_test(test_mmd_camera_runtime tests/test_mmd_camera_runtime.cpp)
+  target_include_directories(test_mmd_camera_runtime PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_mmd_camera_runtime PRIVATE /EHa)
+  target_link_libraries(test_mmd_camera_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_runtime_bootstrap tests/test_runtime_bootstrap.cpp)
   target_include_directories(test_runtime_bootstrap PRIVATE deps/minhook_lib/include)
   target_compile_options(test_runtime_bootstrap PRIVATE /EHa)
@@ -147,6 +149,11 @@ if(MSVC)
   add_poser_test(test_mmd_runtime tests/test_mmd_runtime.cpp)
   target_compile_options(test_mmd_runtime PRIVATE /EHa)
   add_poser_test(test_character_capture tests/test_character_capture.cpp)
+  add_poser_test(test_component_query tests/test_component_query.cpp)
+  target_include_directories(test_component_query PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_component_query PRIVATE /EHa)
+  target_link_libraries(test_component_query PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_include_directories(test_character_capture PRIVATE deps/minhook_lib/include)
   target_compile_options(test_character_capture PRIVATE /EHa)
   target_link_libraries(test_character_capture PRIVATE

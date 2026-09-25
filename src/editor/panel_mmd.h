@@ -126,6 +126,48 @@ static void DrawMmdCollision() {
   ImGui::TextWrapped(u8"停止播放后可随适配预设保存这些设置；不保存当前场景的绝对地面位置。");
   if(changed) MmdApplyFrame();
 }
+static void DrawMmdCamera() {
+  if (!ImGui::CollapsingHeader(u8"MMD 镜头")) return;
+  auto &m=g_mmd;auto &s=m.cameraSettings;const auto &keys=MmdCameraKeys();
+  ImGui::BeginDisabled(m.loading || m.session.active);
+  if (ImGui::Button(u8"选择镜头 VMD")) MmdBeginLoad(6);
+  ImGui::SameLine();
+  if (ImGui::Button(u8"移除镜头")) {
+    m.cameraFile.clear();m.cameraTrack.clear();m.clip.cameras.clear();
+    mmd::Recount(m.clip);MmdUpdateDuration();mmd_camera::Stop();
+  }
+  ImGui::EndDisabled();
+  if(m.session.active)ImGui::TextDisabled(u8"停止并恢复后可更换镜头文件");
+  if (keys.empty()) {
+    ImGui::TextWrapped(u8"选择独立镜头 VMD，或打开包含镜头轨道的动作 VMD。也支持只播放镜头。");
+    return;
+  }
+  ImGui::TextWrapped("%s",m.cameraFile.empty()?m.file.c_str():m.cameraFile.c_str());
+  ImGui::Text(u8"镜头关键帧 %zu / %.2f 秒",keys.size(),keys.back().frame/30.0);
+  bool changed=ImGui::Checkbox(u8"随动作播放镜头",&s.enabled);
+  int origin=int(s.origin);
+  if(ImGui::Combo(u8"镜头原点",&origin,u8"按文件轨迹／固定播放起点\0追踪当前角色位移\0")) {
+    s.origin=static_cast<mmd::CameraOrigin>(origin);changed=true;
+  }
+  ImGui::TextWrapped(u8"VMD 没有角色跟随标志。按文件模式以开始播放时角色位置为零点，保留文件原有运镜；追踪模式额外叠加角色位移，已有跟拍的文件通常无需开启。");
+  if(s.origin==mmd::CameraOrigin::Follow)changed|=ImGui::Checkbox(u8"跟随上下起伏",&s.followVertical);
+  changed|=ImGui::SliderFloat3(u8"镜头偏移（左右／上下／前后）",&s.offset.x,-3,3,"%.3f");
+  ImGui::TextWrapped(u8"偏移沿播放开始时的角色坐标轴，单位为游戏世界单位；调整中间的上下值可适配身高。");
+  changed|=ImGui::Checkbox(u8"镜头比例跟随动作位移比例",&s.linkScale);
+  if(!s.linkScale)changed|=ImGui::SliderFloat(u8"镜头单位比例",&s.scale,.001f,.3f,"%.4f");
+  changed|=ImGui::SliderFloat(u8"镜头距离比例",&s.distanceScale,.1f,3.f,"%.2f");
+  changed|=ImGui::SliderFloat(u8"镜头整体朝向",&s.yaw,-180,180,"%.1f deg");
+  changed|=ImGui::SliderFloat(u8"视角偏移",&s.fovOffset,-60,60,"%.1f deg");
+  changed|=ImGui::Checkbox(u8"相邻帧视为切镜",&s.cuts);
+  if(ImGui::Button(u8"复位镜头调整")){s=mmd::CameraSettings{};changed=true;}
+  if(changed)MmdPublishCamera();
+  ImGui::TextWrapped("%s",mmd_camera::status.c_str());
+  if(!mmd_camera::ready)ImGui::TextWrapped(u8"相机接口尚未就绪，身体动作仍可播放。");
+  else if(mmd_camera::request.active && MmdNow()-mmd_camera::lastCallback>2)
+    ImGui::TextWrapped(u8"等待游戏相机更新；尚未确认镜头实际生效。");
+  ImGui::Text(u8"相机更新 %llu / 实际写入 %llu",(unsigned long long)mmd_camera::callbacks,(unsigned long long)mmd_camera::applied);
+  ImGui::TextWrapped(u8"镜头与动作同步暂停、拖动、倍速和循环。隐藏面板后继续；停止、关闭镜头或换人后恢复原相机。镜头调整当前在本次运行中保留。");
+}
 static void DrawMmdPanel() {
   auto &m = g_mmd;
   if (!m.show)
@@ -145,6 +187,7 @@ static void DrawMmdPanel() {
     HotkeyDisplay(g_guiToggleVK, g_guiToggleCtrl, panelKey, sizeof(panelKey));
     ImGui::TextWrapped(u8"显示/隐藏界面：%s（隐藏后快捷键仍有效）", panelKey);
     ImGui::Separator();
+    DrawMmdCamera();
     if (ImGui::CollapsingHeader(u8"音乐同步")) {
       ImGui::BeginDisabled(m.loading || m.session.active);
       if (ImGui::Button(u8"选择音乐")) MmdBeginLoad(5);
@@ -209,9 +252,9 @@ static void DrawMmdPanel() {
     ImGui::TextWrapped(u8"骨架：%s",
                        m.reference ? m.referenceFile.c_str() : MmdSourceRigLabel());
     ImGui::Text(u8"骨骼轨道 %zu / 表情轨道 %zu / %.2f 秒", m.clip.bones.size(),
-                m.clip.morphs.size(), m.clip.duration());
+                m.clip.morphs.size(), m.timeline.duration);
     ImGui::Separator();
-    ImGui::BeginDisabled(m.clip.empty() || m.loading || m.preview);
+    ImGui::BeginDisabled(!MmdHasContent() || m.loading || m.preview);
     if (ImGui::Button(m.timeline.state == mmd::PlayState::Playing ? u8"暂停"
                                                                   : u8"播放")) {
       MmdPlaybackCommand(m.timeline.state == mmd::PlayState::Playing ? 1 : 0);
@@ -251,7 +294,7 @@ static void DrawMmdPanel() {
         MmdApplyFrame();
       }
     }
-    ImGui::Text(u8"帧 %.1f / %u", m.timeline.seconds * 30, m.clip.lastFrame);
+    ImGui::Text(u8"帧 %.1f / %.0f", m.timeline.seconds * 30, m.timeline.duration * 30);
     if (m.session.active && !m.preview)
       ImGui::TextDisabled(
           m.timeline.state == mmd::PlayState::Playing ? u8"正在播放"
@@ -289,7 +332,7 @@ static void DrawMmdPanel() {
     ImGui::SliderFloat(u8"高度修正", &m.height, -1, 1, "%.3f");
     DrawMmdAmplitude();
     if (ImGui::Checkbox(u8"冻结头发 / 衣物", &m.freezeCloth) &&
-        m.session.active) {
+        m.session.active && m.session.bodyOwned) {
       g_freezeAccessories = m.freezeCloth;
       if (m.freezeCloth)
         CaptureAccessorySnapshot();

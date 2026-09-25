@@ -134,6 +134,8 @@ Write-Host ''
 if ($RunTests) {
 Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(
+  @{ Name = 'test_user_agreement'; Src = 'tests\test_user_agreement.cpp' },
+  @{ Name = 'test_agreement_ui'; Src = 'tests\test_agreement_ui.cpp' },
   @{ Name = 'test_runtime_bootstrap'; Src = 'tests\test_runtime_bootstrap.cpp' },
   @{ Name = 'test_plugin_paths'; Src = 'tests\test_plugin_paths.cpp' },
   @{ Name = 'test_layered_readback'; Src = 'tests\test_layered_readback.cpp' },
@@ -143,6 +145,8 @@ $tests = @(
   @{ Name = 'test_pose_file'; Src = 'tests\test_pose_file.cpp' },
   @{ Name = 'test_mmd'; Src = 'tests\test_mmd.cpp' },
   @{ Name = 'test_mmd_contact'; Src = 'tests\test_mmd_contact.cpp' },
+  @{ Name = 'test_mmd_camera'; Src = 'tests\test_mmd_camera.cpp' },
+  @{ Name = 'test_mmd_camera_runtime'; Src = 'tests\test_mmd_camera_runtime.cpp' },
   @{ Name = 'test_cloth_collision'; Src = 'tests\test_cloth_collision.cpp' },
   @{ Name = 'test_ground_probe'; Src = 'tests\test_ground_probe.cpp' },
   @{ Name = 'test_mmd_transport'; Src = 'tests\test_mmd_transport.cpp' },
@@ -151,6 +155,7 @@ $tests = @(
   @{ Name = 'test_bbc_frame'; Src = 'tests\test_bbc_frame.cpp' },
   @{ Name = 'test_mmd_runtime'; Src = 'tests\test_mmd_runtime.cpp' },
   @{ Name = 'test_character_capture'; Src = 'tests\test_character_capture.cpp' }
+  @{ Name = 'test_component_query'; Src = 'tests\test_component_query.cpp' }
   @{ Name = 'test_smc_switch'; Src = 'tests\test_smc_switch.cpp' }
   @{ Name = 'test_smc_abi'; Src = 'tests\test_smc_abi.cpp' }
 )
@@ -164,13 +169,6 @@ foreach ($t in $tests) {
 }
 
 Write-Host ''
-New-Item -ItemType Directory -Force -Path 'plugin\mmd\rig-presets' | Out-Null
-Get-ChildItem -LiteralPath 'presets\mmd' -Filter '*.mmdrig.json' | ForEach-Object {
-  $presetTarget = Join-Path 'plugin\mmd\rig-presets' $_.Name
-  if (-not (Test-Path -LiteralPath $presetTarget)) {
-    Copy-Item -LiteralPath $_.FullName -Destination $presetTarget
-  }
-}
 Write-Host '=== Build OK ==='
 Write-Host '  plugin\poser.dll'
 Write-Host '  plugin\d3dcompiler_47.dll'

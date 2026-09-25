@@ -178,17 +178,6 @@ try {
         foreach ($relative in $oldFiles.Keys) {
             if ($relative -notin @($newFiles | ForEach-Object { $_.path })) { $newFiles.Add($oldFiles[$relative]) }
         }
-        $presetDir = Join-Path $sourceDir 'presets\mmd'
-        if (-not (Test-Path -LiteralPath $presetDir -PathType Container)) { $presetDir = Join-Path $sourceDir 'plugin\mmd\rig-presets' }
-        if (Test-Path -LiteralPath $presetDir -PathType Container) {
-            foreach ($preset in Get-ChildItem -LiteralPath $presetDir -Filter '*.mmdrig.json' -File) {
-                $relative = 'plugin\mmd\rig-presets\' + $preset.Name
-                if (-not (Test-Path -LiteralPath (Get-Target $relative))) {
-                    $null = Get-Content -LiteralPath $preset.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-                    $operations.Add(@{ path = $relative; source = $preset.FullName; hash = (Get-Sha $preset.FullName) })
-                }
-            }
-        }
         $operations.Add(@{ path = $manifestRel; source = $null; manifest = $true })
     } else {
         if ($oldFiles.Count -eq 0) {

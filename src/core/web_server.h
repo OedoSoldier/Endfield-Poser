@@ -13,6 +13,7 @@
 
 #include "nlohmann/json.hpp"
 #include "config.h"
+#include "user_agreement.h"
 #include "game/skeleton.h"
 #include "game/freeze.h"
 #include "math/pose_file.h"
@@ -70,6 +71,13 @@ static nlohmann::json ApiBones() {
 static void HandleRequest(SOCKET c, const std::string &path,
                           const std::string &body) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if (!poser_agreement::Allowed() && path != "/api/status") {
+    const std::string payload = nlohmann::json({{"ok", false}, {"err", "agreement_required"},
+      {"message", u8"请在游戏内打开 Poser 面板，阅读并确认用户协议后使用插件。"}}).dump();
+    char head[256];
+    int n = snprintf(head, sizeof(head), "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", payload.size());
+    send(c, head, n, 0); send(c, payload.data(), (int)payload.size(), 0); return;
+  }
   const bool readOnly = path=="/" || path=="/index.html" || path=="/api/status" || path=="/api/mmd/status" || path=="/api/bones" || path=="/api/allbones" || (path=="/api/pose" && body.empty());
   if(MmdOwnsPose() && !readOnly) {
     const char* payload="{\"ok\":false,\"err\":\"MMD playback owns the pose; stop playback before editing\"}";
@@ -85,6 +93,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if (path == "/api/status") {
     HttpJson(c, {{"ok", true}, {"frozen", g_frozen},
+                 {"agreement_required", !poser_agreement::Allowed()},
+                 {"agreement_revision", poser_agreement::kRevision},
                  {"bones", s_humanBoneCount},
                  {"bones_rev", s_bonesRev},
                  {"selected", g_selectedBone},
@@ -126,7 +136,13 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"original_size",{cap.originalSize.x,cap.originalSize.y,cap.originalSize.z}}});
     HttpJson(c, {{"active",MmdOwnsPose()},{"loading",m.loading},{"preview",m.preview},
       {"state",int(m.timeline.state)},{"frame",m.timeline.seconds*30.},
-      {"last_frame",m.clip.lastFrame},{"speed",m.timeline.speed},{"loop",m.timeline.loop},
+      {"last_frame",m.timeline.duration*30},{"speed",m.timeline.speed},{"loop",m.timeline.loop},
+      {"camera_keys",MmdCameraKeys().size()},{"camera_file",m.cameraFile},
+      {"camera_enabled",m.cameraSettings.enabled},{"camera_origin",int(m.cameraSettings.origin)},
+      {"camera_offset",{m.cameraSettings.offset.x,m.cameraSettings.offset.y,m.cameraSettings.offset.z}},
+      {"camera_ready",mmd_camera::ready},{"camera_status",mmd_camera::status},
+      {"camera_callback_age",mmd_camera::lastCallback < 0 ? -1.0 : MmdNow()-mmd_camera::lastCallback},
+      {"camera_applied",mmd_camera::applied},{"camera_restore_pending",!mmd_camera::request.active&&mmd_camera::lease.camera!=nullptr},
       {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
       {"ground_contact",m.contact.enabled},{"ground_scene",m.contact.scene},
       {"ground_status",m.groundProbe.status},

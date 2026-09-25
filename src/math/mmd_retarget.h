@@ -332,6 +332,7 @@ class Retargeter {
 public:
   SampledPose output;
   float suggestedScale = .08f;
+  Quat sourceBasis() const { return basis_; }
   const RigPose &sourcePose() const { return eval_.pose; }
   const std::vector<std::string> &unmapped() const { return eval_.unmapped; }
   void bind(const RigDefinition &source, const MotionClip &clip,

@@ -222,8 +222,10 @@ static void ResolveGameApi() {
       g_gameObjectClass = goClass;
       g_gameObject_setActive = FindMethod(goClass, "SetActive", 1);
       g_gameObject_get_activeSelf = FindMethod(goClass, "get_activeSelf", 0);
-      g_gameObject_GetComponent = FindMethod(goClass, "GetComponent", 1);
-      g_gameObject_GetComponents = FindMethod(goClass, "GetComponents", 1);
+      g_gameObject_GetComponent = FindComponentTypeQuery(goClass, "GetComponent", false);
+      g_gameObject_GetComponents = FindComponentTypeQuery(goClass, "GetComponents", true);
+      Log("[POSER] typed component queries: GetComponent(Type)=%p GetComponents(Type)=%p",
+          g_gameObject_GetComponent,g_gameObject_GetComponents);
     }
 
     void *camClass = FindClass("UnityEngine", "Camera", asms, ac);

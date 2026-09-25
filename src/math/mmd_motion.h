@@ -130,6 +130,13 @@ struct IkKey {
   uint32_t frame = 0;
   bool enabled = true;
 };
+struct CameraKey {
+  uint32_t frame = 0;
+  float distance = -45, fov = 30;
+  Vec3 target, rotation; // VMD Euler radians, not a bone quaternion
+  std::array<Curve, 6> curves; // target XYZ, rotation, distance, FOV
+  bool perspective = true;
+};
 struct LocalPose {
   Vec3 position;
   Quat rotation;
@@ -139,11 +146,12 @@ struct MotionClip {
   std::map<std::string, std::vector<BoneKey>> bones;
   std::map<std::string, std::vector<MorphKey>> morphs;
   std::map<std::string, std::vector<IkKey>> ik;
+  std::vector<CameraKey> cameras;
   uint32_t lastFrame = 0;
   size_t boneKeys = 0, morphKeys = 0;
   std::vector<std::string> warnings;
   double duration() const { return lastFrame / 30.0; }
-  bool empty() const { return bones.empty() && morphs.empty(); }
+  bool empty() const { return bones.empty() && morphs.empty() && cameras.empty(); }
 };
 template <class T> inline void SortKeys(std::vector<T> &v) {
   std::stable_sort(v.begin(), v.end(),
@@ -175,6 +183,9 @@ inline void Recount(MotionClip &c) {
   }
   for (auto &kv : c.ik)
     SortKeys(kv.second);
+  SortKeys(c.cameras);
+  if (!c.cameras.empty())
+    c.lastFrame = (std::max)(c.lastFrame, c.cameras.back().frame);
 }
 inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
                           const Decoder &decode) {
@@ -212,9 +223,34 @@ inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
         c.morphs[name].push_back(k);
     }
   }
+  if (r.remaining()) {
+    n = r.count(61);
+    c.cameras.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      CameraKey k;
+      k.frame = r.read<uint32_t>();
+      k.distance = r.number();
+      if (std::fabs(k.distance) > 1e6f)
+        throw std::runtime_error("Camera distance exceeds supported range");
+      k.target = r.vec();
+      k.rotation = r.vec();
+      auto curve = r.raw(24);
+      for (int j = 0; j < 6; ++j) {
+        // Camera bytes are x1,x2,y1,y2, unlike bone interpolation.
+        auto unit = [&](int at) { return Clamp(uint8_t(curve[j * 4 + at]) / 127.f, 0, 1); };
+        k.curves[j] = {unit(0), unit(2), unit(1), unit(3)};
+      }
+      uint32_t angle = r.read<uint32_t>();
+      auto projection = r.read<uint8_t>();
+      if (angle < 1 || angle >= 180 || projection > 1)
+        throw std::runtime_error("Invalid VMD camera projection/FOV");
+      k.fov = float(angle);
+      k.perspective = projection == 0;
+      c.cameras.push_back(k);
+    }
+  }
   for (auto section :
-       {std::pair<size_t, const char *>(61, "Camera tracks ignored"),
-        {28, "Light tracks ignored"},
+       {std::pair<size_t, const char *>(28, "Light tracks ignored"),
         {9, "Shadow tracks ignored"}}) {
     if (!r.remaining())
       break;
