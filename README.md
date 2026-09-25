@@ -2,7 +2,9 @@
 
 《明日方舟：终末地》的游戏内摄影摆姿与 MMD 动作播放器。支持角色冻结、骨骼编辑、姿态库、口型表情、VMD 动作和可选音乐同步，无需 Blender。
 
-本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前版本：**0.4.41（预发布）**。[下载 Windows x64 预编译安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.41)，无需安装编译工具；安装方法和本版变更见 [0.4.41 发布说明](docs/releases/v0.4.41.md)。[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases) 的版本和功能可能与本分支不同。
+本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，当前源码版本：**0.4.42（修复版，尚未发布）**。最新已发布预编译版为 **0.4.41**。[下载 Windows x64 预编译安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.41)，无需安装编译工具；安装方法和本版变更见 [0.4.41 发布说明](docs/releases/v0.4.41.md)。[上游 Releases](https://github.com/honxi1/Endfield-Poser/releases) 的版本和功能可能与本分支不同。
+
+0.4.42 修正分区表情混合时的父子骨骼补偿，以 0.4.38 的完整通用模板为基准，保留每个部位的映射选择与独立强度。新增 **还原 0.4.38 通用模板** 按钮，便于对照；默认仍为全游戏表情映射。已加入旧版输出与分区回归对照，实际角色效果仍需游戏内确认。
 
 0.4.40 更新[用户协议与免责声明（第 2 版）](docs/user-agreement.md)，明确禁止违反鹰角官方创作限制的产物，并说明用户责任与免责范围。安装此版后需重新阅读并确认，配置和姿态保留。
 
@@ -178,5 +180,5 @@ cmake --build build-cmake --config Release
 
 ## 许可
 
-本仓库整体构成 **AGPL-3.0** 衍生作品（`src/core/` 的注入层参考 AGPL-3.0 的 EIEM），
-公开分发需按 AGPL 提供源码；不可改为 MIT / 专有许可发布。修改 `src/core/` 时请保留来源声明。完整许可见 [LICENSE](LICENSE)，依赖声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。每个预编译 Release 同时提供对应版本源码。
+本仓库整体构成 **AGPL-3.0** 衍生作品，
+公开分发需按 AGPL 提供源码；不可改为 MIT / 专有许可发布。修改 `src/core/` 时请保留来源声明。完整许可见 [LICENSE](LICENSE)。每个预编译 Release 同时提供对应版本源码。

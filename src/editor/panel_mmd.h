@@ -343,7 +343,8 @@ static void DrawMmdPanel() {
     if (MmdOwnsPose()) {
       ImGui::TextDisabled(u8"动作控制中；暂停后可在姿态库保存当前身体姿态");
       if (!m.clip.morphs.empty())
-        ImGui::TextDisabled(((!m.faceSettings.uses(face_mixing::Driver::Template)||s_templateBinding.ready)&&
+        ImGui::TextDisabled(((m.faceSettings.uniform()||s_faceHierarchy.ready)&&
+                            (!m.faceSettings.uses(face_mixing::Driver::Template)||s_templateBinding.ready)&&
                             (!m.faceSettings.uses(face_mixing::Driver::Eiem)||SMCSectionReady()))
                                 ? u8"表情系统已就绪"
                                 : u8"表情尚未就绪或骨骼不匹配，身体动作继续播放");
@@ -402,7 +403,14 @@ static void DrawMmdPanel() {
       if(ImGui::SmallButton(u8"恢复默认分区")) {
         settings.driver=face_mixing::Settings{}.driver;MmdSaveFaceSettings();MmdReport();
       }
+      if(ImGui::SmallButton(u8"还原 0.4.38 通用模板")) {
+        settings.driver.fill(face_mixing::Driver::Template);
+        settings.strength=1;settings.gain.fill(1);MmdSaveFaceSettings();MmdReport();
+      }
+      if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"所有区域使用通用模板，整体与分区强度复位到 100%%；保留手动轨道映射。");
       ImGui::TextWrapped(u8"默认所有部位使用游戏表情映射，可按部位手动切换为通用模板。模式与强度均可在播放 / 暂停时调整。最终强度 = 整体 × 区域；眼神方向仍由动作控制。");
+      if(!settings.uniform()&&!s_faceHierarchy.ready)
+        ImGui::TextWrapped(u8"分区表情正在等待中性脸骨架；骨架就绪后自动生效。");
       if(settings.driver[face_mixing::Cheeks]==face_mixing::Driver::Eiem)
         ImGui::TextWrapped(u8"游戏表情映射的脸颊随原有口型通道变化，没有独立鼓腮通道。");
       if(settings.uses(face_mixing::Driver::Template)) {

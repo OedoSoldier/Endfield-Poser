@@ -126,13 +126,14 @@ static bool s_faceBonesCaptured = false;
 static bool s_faceBoneTouched[SMC_MAX_FACE_BONES] = {};
 static bool s_faceBoneEvalOk = false; // 本帧是否成功按权重重算过 s_faceBones
 static face_template::Binding s_templateBinding;
+static face_mixing::Hierarchy s_faceHierarchy;
 static std::array<int,SMC_MAX_FACE_BONES> s_faceRegions=[] {
   std::array<int,SMC_MAX_FACE_BONES> regions;regions.fill(-1);return regions;
 }();
 static uint64_t s_faceGeneration=1;
 static int s_templateRevision=-1;
 static void SMCTemplateInvalidate() {
-  s_templateBinding={};s_templateRevision=-1;++s_faceGeneration;
+  s_templateBinding={};s_faceHierarchy={};s_templateRevision=-1;++s_faceGeneration;
   s_faceRegions.fill(-1);
   s_faceBoneEvalOk=false;
 }
@@ -1435,7 +1436,7 @@ static bool SMCTemplateIdentity(void *transform,char *name,void **parent) {
 static void SMCTemplateBind() {
   if(!s_faceBonesCaptured||s_captureNeutral||s_faceBoneCount<=0||
       s_allBones.empty()||s_templateRevision==s_bonesRev)return;
-  s_templateRevision=s_bonesRev;s_templateBinding={};s_faceRegions.fill(-1);
+  s_templateRevision=s_bonesRev;s_templateBinding={};s_faceHierarchy={};s_faceRegions.fill(-1);
   try {
     const int count=s_faceBoneCount;
     std::vector<face_template::Bone> nodes(count);
@@ -1495,10 +1496,17 @@ static void SMCTemplateBind() {
     };
     for(int i=0;i<count;++i)if(!visit(i))return;
     s_templateBinding=face_template::Bind(nodes);
+    face_mixing::Pose rest;
+    for(int i=0;i<count;++i) {
+      const auto &v=s_faceRestPose[i];
+      rest[i]={{v.px,v.py,v.pz},{v.rx,v.ry,v.rz,v.rw}};
+    }
+    s_faceHierarchy=face_mixing::BindHierarchy(nodes,rest,scales);
+    if(s_faceHierarchy.ready)s_faceRegions=s_faceHierarchy.region;
     Log("[FACE] templates neutral binding: ready=%d bones=%d brows=%d lids=%d lips=%d cheeks=%d revision=%d",
         s_templateBinding.ready,s_templateBinding.controlled,s_templateBinding.brows,
         s_templateBinding.lids,s_templateBinding.lips,s_templateBinding.cheeks,s_bonesRev);
-  } catch(...) {s_templateBinding={};Log("[FACE] template binding failed");}
+  } catch(...) {s_templateBinding={};s_faceHierarchy={};Log("[FACE] template binding failed");}
 }
 static bool SMCMotionActive() {
   return s_motionFaceCurrent.active&&s_motionFaceSaved&&
@@ -1507,7 +1515,9 @@ static bool SMCMotionActive() {
 // Same fixed EIEM channel table as the manual SMC panel. Normalize the raw
 // vowel mix first, then apply regional strength to the resulting bone deltas;
 // otherwise 200% mouth strength would be normalized back to 100%.
-static bool SMCMotionNativePose(const float *weights,const face_mixing::Settings &settings) {
+struct SMCMotionNativeDelta {Vec3 position,rotation;};
+using SMCMotionNativeDeltaArray=std::array<SMCMotionNativeDelta,SMC_MAX_FACE_BONES>;
+static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray &deltas) {
   if(!s_boneMapReady||s_boneIDMapCount<=0||s_capturedLen<=0||!s_mouthResolved)return false;
   __try {
     float total=0;for(int c=0;c<SMC_NUM_MOUTH;++c)total+=face_template::Clamp(weights[c],0,1);
@@ -1530,7 +1540,7 @@ static bool SMCMotionNativePose(const float *weights,const face_mixing::Settings
         for(int j=start;j<start+count;++j) {
           const auto &entry=s_capturedExpression[j];
           int i=entry.boneID>=0&&entry.boneID<SMC_BONE_MAP_SIZE?s_boneIDToIdx[entry.boneID]:-1;
-          if(i<0||i>=s_faceBoneCount||!settings.selects(s_faceRegions[i],face_mixing::Driver::Eiem))continue;
+          if(i<0||i>=s_faceBoneCount)continue;
           Vec3 p{entry.deltaPosX,entry.deltaPosY,entry.deltaPosZ},r{entry.deltaRotX,entry.deltaRotY,entry.deltaRotZ};
           if(!std::isfinite(Len(p))||fabsf(p.x)>1||fabsf(p.y)>1||fabsf(p.z)>1)continue;
           positions[i]=positions[i]+p*weight;
@@ -1540,12 +1550,10 @@ static bool SMCMotionNativePose(const float *weights,const face_mixing::Settings
       }
     }
     for(int i=0;i<s_faceBoneCount;++i) {
-      float gain=settings.amount(s_faceRegions[i]);
-      auto &out=s_faceBones[i];const auto &base=s_faceRestPose[i];
-      auto p=positions[i]*gain;
-      auto q=NormQ(Quat::FromEulerDeg(rotations[i]*gain)*Quat{base.rx,base.ry,base.rz,base.rw});
-      out.px=base.px+p.x;out.py=base.py+p.y;out.pz=base.pz+p.z;
-      out.rx=q.x;out.ry=q.y;out.rz=q.z;out.rw=q.w;
+      deltas[i].position=positions[i];
+      // Preserve Euler increments until regional strength is applied, as in
+      // the original game mapping (not a quaternion component scale).
+      deltas[i].rotation=rotations[i];
     }
     return true;
   } __except(1) {return false;}
@@ -1554,16 +1562,49 @@ static void SMCMotionEvaluate() {
   s_faceBoneEvalOk=false;
   if(!SMCMotionActive()||!s_faceBonesCaptured||s_captureNeutral)return;
   const auto &settings=s_motionFaceCurrent.settings;
-  memcpy(s_faceBones,s_faceRestPose,sizeof(s_faceBones));
-  if(settings.uses(face_mixing::Driver::Eiem))SMCMotionNativePose(s_motionFaceCurrent.weights,settings);
-  if(settings.uses(face_mixing::Driver::Template)&&s_templateBinding.ready) {
-    auto delta=face_template::Evaluate(s_templateBinding,s_motionFaceCurrent.expressions,settings.strength,settings.gain);
-    for(int i=0;i<s_faceBoneCount;++i)if(settings.selects(s_faceRegions[i],face_mixing::Driver::Template)) {
-      // Exclusive output ownership: native deltas never leak into template
-      // regions, and a template never overwrites the game's mouth shape.
-      s_faceBones[i]=s_faceRestPose[i];
-      s_faceBones[i].px+=delta[i].x;s_faceBones[i].py+=delta[i].y;s_faceBones[i].pz+=delta[i].z;
+  face_mixing::Pose rest;
+  SMCMotionNativeDeltaArray nativeDeltas{};
+  for(int i=0;i<s_faceBoneCount;++i) {
+    const auto &v=s_faceRestPose[i];
+    rest[i]={{v.px,v.py,v.pz},{v.rx,v.ry,v.rz,v.rw}};
+  }
+  if(settings.uses(face_mixing::Driver::Eiem))SMCMotionNativeDeltas(s_motionFaceCurrent.weights,nativeDeltas);
+  std::array<face_mixing::Pose,face_mixing::RegionCount> complete;
+  bool identical=true;
+  for(int r=0;r<face_mixing::RegionCount;++r) {
+    float amount=settings.amount(r);int reuse=-1;
+    for(int j=0;j<r;++j)if(settings.driver[j]==settings.driver[r]&&settings.amount(j)==amount){reuse=j;break;}
+    if(reuse>=0){complete[r]=complete[reuse];continue;}
+    if(r)identical=false;
+    complete[r]=rest;
+    if(settings.driver[r]==face_mixing::Driver::Template) {
+      // Evaluate the original 0.4.38 whole-face pose at this region's strength.
+      auto delta=face_template::Evaluate(s_templateBinding,s_motionFaceCurrent.expressions,amount);
+      for(int i=0;i<s_faceBoneCount;++i)complete[r][i].position=rest[i].position+delta[i];
+    } else for(int i=0;i<s_faceBoneCount;++i) {
+      const auto &d=nativeDeltas[i];
+      complete[r][i].position=rest[i].position+d.position*amount;
+      complete[r][i].rotation=NormQ(Quat::FromEulerDeg({d.rotation.x*amount,d.rotation.y*amount,d.rotation.z*amount})*rest[i].rotation);
     }
+  }
+  face_mixing::Pose output;
+  if(identical)output=complete[0]; // Exact old whole-face path; no name mask.
+  else {
+    auto fallback=rest;
+    // Unclassified roots still keep game helper motion; named template
+    // descendants are compensated against that motion by Compose().
+    float amount=settings.amount(-1);
+    for(int i=0;i<s_faceBoneCount;++i) {
+      fallback[i].position=rest[i].position+nativeDeltas[i].position*amount;
+      fallback[i].rotation=NormQ(Quat::FromEulerDeg(nativeDeltas[i].rotation*amount)*rest[i].rotation);
+    }
+    if(!face_mixing::Compose(s_faceHierarchy,complete,fallback,output))return;
+  }
+  memcpy(s_faceBones,s_faceRestPose,sizeof(s_faceBones));
+  for(int i=0;i<s_faceBoneCount;++i) {
+    const auto &v=output[i];auto &bone=s_faceBones[i];
+    bone.px=v.position.x;bone.py=v.position.y;bone.pz=v.position.z;
+    bone.rx=v.rotation.x;bone.ry=v.rotation.y;bone.rz=v.rotation.z;bone.rw=v.rotation.w;
   }
   s_faceBoneEvalOk=true;
 }

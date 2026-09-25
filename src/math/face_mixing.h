@@ -20,6 +20,11 @@ struct Settings {
   float amount(int region) const {
     return face_template::Clamp(strength,0,2)*(region>=0&&region<RegionCount?face_template::Clamp(gain[region],0,2):1.f);
   }
+  bool uniform() const {
+    for(int r=1;r<RegionCount;++r)
+      if(driver[r]!=driver[0]||amount(r)!=amount(0))return false;
+    return true;
+  }
   bool selects(int region,Driver source) const {
     // Unknown native helper bones are retained only in the all-EIEM mode.
     return region>=0&&region<RegionCount?driver[region]==source:source==Driver::Eiem&&all(Driver::Eiem);
@@ -39,6 +44,88 @@ inline int TemplateRegion(int id) {
   if(id>=face_template::BrowUp&&id<=face_template::WorriedR)return Brows;
   if(id>=face_template::Blink&&id<=face_template::LowerLids)return Eyes;
   return id==face_template::CheekPuff?Cheeks:Mouth;
+}
+// A region selects a complete evaluated face, not isolated local bone deltas.
+// Otherwise a game-driven jaw can drag template cheeks/lips away from their
+// targets, or a zero-strength child can still inherit its parent's expression.
+struct Transform {
+  Vec3 position;
+  Quat rotation;
+};
+using Pose=std::array<Transform,face_template::MaxBones>;
+struct Hierarchy {
+  int count=0;
+  bool ready=false;
+  Pose rest;
+  std::array<int,face_template::MaxBones> parent{},region{},order{};
+  std::array<Vec3,face_template::MaxBones> scale{};
+  std::array<mmd::Matrix,face_template::MaxBones> external{};
+  std::array<Quat,face_template::MaxBones> externalRotation{};
+};
+inline Hierarchy BindHierarchy(const std::vector<face_template::Bone> &nodes,
+                              const Pose &rest,const std::vector<Vec3> &scales) {
+  Hierarchy h;h.count=int(nodes.size());h.rest=rest;
+  if(h.count<=0||h.count>face_template::MaxBones||scales.size()!=nodes.size())return h;
+  std::array<int,face_template::MaxBones> state{};int next=0;
+  for(int i=0;i<h.count;++i) {
+    h.parent[i]=nodes[i].parent;h.region[i]=BoneRegion(nodes[i].name);
+    h.scale[i]=scales[i];h.external[i]=nodes[i].parentNeutral;
+    h.externalRotation[i]=mmd::Rotation(nodes[i].parentNeutral);
+    mmd::Matrix inverse;
+    if(!mmd::Inverse(nodes[i].parentNeutral,inverse)||
+       !std::isfinite(Len(scales[i]))||std::fabs(scales[i].x)<1e-6f||
+       std::fabs(scales[i].y)<1e-6f||std::fabs(scales[i].z)<1e-6f)return h;
+  }
+  std::function<bool(int)> visit=[&](int i) {
+    if(state[i]==2)return true;
+    if(state[i]==1)return false;
+    state[i]=1;int p=h.parent[i];
+    if(p < -1||p>=h.count||(p>=0&&!visit(p)))return false;
+    // Unnamed helpers follow their owning branch, never disappear just
+    // because another region switches driver.
+    if(h.region[i]<0&&p>=0)h.region[i]=h.region[p];
+    h.order[next++]=i;state[i]=2;return true;
+  };
+  for(int i=0;i<h.count;++i)if(!visit(i))return h;
+  h.ready=true;return h;
+}
+inline Pose Globals(const Hierarchy &h,const Pose &local) {
+  Pose result;
+  std::array<mmd::Matrix,face_template::MaxBones> matrices;
+  for(int n=0;n<h.count;++n) {
+    int i=h.order[n],p=h.parent[i];
+    const auto &parent=p>=0?matrices[p]:h.external[i];
+    auto parentRotation=p>=0?result[p].rotation:h.externalRotation[i];
+    matrices[i]=parent*mmd::TRS(local[i].position,local[i].rotation,h.scale[i]);
+    result[i]={matrices[i].position(),NormQ(parentRotation*local[i].rotation)};
+  }
+  return result;
+}
+inline bool Compose(const Hierarchy &h,const std::array<Pose,RegionCount> &complete,
+                    const Pose &fallback,Pose &output) {
+  if(!h.ready)return false;
+  Pose desired=Globals(h,fallback);
+  for(int r=0;r<RegionCount;++r) {
+    auto whole=Globals(h,complete[r]);
+    for(int i=0;i<h.count;++i)if(h.region[i]==r)desired[i]=whole[i];
+  }
+  Pose result;
+  std::array<mmd::Matrix,face_template::MaxBones> actual,inverses;
+  std::array<Quat,face_template::MaxBones> rotations;
+  for(int n=0;n<h.count;++n) {
+    int i=h.order[n],p=h.parent[i];
+    const auto &parent=p>=0?actual[p]:h.external[i];
+    mmd::Matrix inverse;
+    if(p>=0)inverse=inverses[p];
+    else if(!mmd::Inverse(parent,inverse))return false;
+    auto parentRotation=p>=0?rotations[p]:h.externalRotation[i];
+    result[i].position=face_template::Vector(inverse,desired[i].position)+inverse.position();
+    result[i].rotation=NormQ(Conj(parentRotation)*desired[i].rotation);
+    actual[i]=parent*mmd::TRS(result[i].position,result[i].rotation,h.scale[i]);
+    rotations[i]=NormQ(parentRotation*result[i].rotation);
+    if(!mmd::Inverse(actual[i],inverses[i]))return false;
+  }
+  output=result;return true;
 }
 inline Settings Read(const nlohmann::json &j) {
   int version=j.value("version",0);

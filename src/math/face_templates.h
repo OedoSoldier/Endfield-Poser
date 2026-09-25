@@ -212,13 +212,13 @@ inline bool Supported(const Binding &b,int id) {
   if(id==CheekPuff)return b.cheeks>0;
   return b.lips>0;
 }
-inline Deltas Evaluate(const Binding &b,const Weights &weights,float strength,
-                       const std::array<float,4> &regionGain={{1,1,1,1}}) {
+inline Deltas Evaluate(const Binding &b,const Weights &weights,float strength) {
   Deltas local{},desired{};if(!b.ready)return local;
-  strength=Clamp(strength,0,2);if(strength==0)return local;
+  // The 0.4.38 pose equations are unchanged. Regional controls may multiply
+  // two 0..2 gains; retain their product while the original shape limits apply.
+  strength=Clamp(strength,0,4);if(strength==0)return local;
   auto w=[&](int i){return Clamp(weights[i],0,1);};
-  float regionStrength=strength*Clamp(regionGain[2],0,2);
-  auto strong=[&](float v,float lo,float hi){return Clamp(v*regionStrength,lo,hi);};
+  auto strong=[&](float v,float lo,float hi){return Clamp(v*strength,lo,hi);};
   float mouthTotal=w(A)+w(I)+w(U)+w(E)+w(O),vscale=1.f/(std::max)(1.f,mouthTotal);
   float a=w(A)*vscale,ii=w(I)*vscale,u=w(U)*vscale,e=w(E)*vscale,o=w(O)*vscale;
   float opening=strong(.42f*a+.08f*ii+.16f*u+.23f*e+.36f*o+.5f*w(OpenMouth)+.3f*w(Triangle),0,.75f);
@@ -229,8 +229,6 @@ inline Deltas Evaluate(const Binding &b,const Weights &weights,float strength,
   opening*=1-close;
   for(int i=0;i<b.count;++i) {
     const auto &n=b.bones[i];Vec3 d;
-    int region=RegionIndex(n.part);
-    regionStrength=strength*(region>=0?Clamp(regionGain[region],0,2):0.f);
     if(n.part==Part::Brow) {
       int s=n.side;float inner=(1-n.horizontal)*.5f;
       float up=w(BrowUp)+w(s?BrowUpR:BrowUpL),down=w(BrowDown)+w(s?BrowDownR:BrowDownL);
@@ -270,7 +268,7 @@ inline Deltas Evaluate(const Binding &b,const Weights &weights,float strength,
     desired[i]=d;
   }
   // Sculpted mouth variants must not turn the upper lip inside the lower lip.
-  for(int i=0;i<b.count;++i)if(Clamp(regionGain[2],0,2)>0&&b.bones[i].part==Part::Lip&&b.bones[i].upper) {
+  for(int i=0;i<b.count;++i)if(b.bones[i].part==Part::Lip&&b.bones[i].upper) {
     int pair=-1;float nearest=1e30f;
     for(int j=0;j<b.count;++j)if(b.bones[j].part==Part::Lip&&!b.bones[j].upper) {
       float distance=std::fabs(b.bones[j].horizontal-b.bones[i].horizontal);
