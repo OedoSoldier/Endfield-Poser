@@ -30,7 +30,7 @@ if(WIN32)
     src/core/frame_driver.h src/math/frame_cadence.h
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
-    src/game/mmd_camera.h src/math/mmd_camera.h
+    src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h
     src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
     src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
@@ -109,6 +109,7 @@ add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
 add_poser_test(test_character_faces tests/test_character_faces.cpp)
 add_poser_test(test_face_mixing tests/test_face_mixing.cpp)
+add_poser_test(test_eye_gaze tests/test_eye_gaze.cpp)
 set_tests_properties(test_character_faces PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
   add_poser_test(test_user_agreement tests/test_user_agreement.cpp)
@@ -167,6 +168,10 @@ if(MSVC)
   target_compile_options(test_smc_automation PRIVATE /EHa)
   target_link_libraries(test_smc_automation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_face_runtime tests/test_face_runtime.cpp)
+  add_poser_test(test_eye_gaze_runtime tests/test_eye_gaze_runtime.cpp)
+  target_include_directories(test_eye_gaze_runtime PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_eye_gaze_runtime PRIVATE /EHa)
+  target_link_libraries(test_eye_gaze_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_mmd_face_controls tests/test_mmd_face_controls.cpp)
   target_include_directories(test_face_runtime PRIVATE deps/minhook_lib/include)
   target_compile_options(test_face_runtime PRIVATE /EHa)

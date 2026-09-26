@@ -733,7 +733,8 @@ static void MmdReport() {
       else m.report.push_back(u8"专属校准未覆盖，使用固定映射: "+kv.first);
     } else {
       const auto &morph=m.characterFace->morphs[kv.second.slider];
-      if(!morph.supported)m.report.push_back(kv.first+u8"："+morph.reason);
+      if(!morph.supported)m.report.push_back(kv.first+u8"："+morph.reason+
+        (kv.second.nativeSlider>=0?u8"；可使用固定映射":u8"；无对应的固定映射"));
       else if(s_characterBinding.ready&&kv.second.slider<int(s_characterBinding.usable.size())&&!s_characterBinding.usable[kv.second.slider])
         m.report.push_back(kv.first+u8"：游戏面部缺少校准所需控制点");
       else if(morph.residual>.1f)m.report.push_back(kv.first+u8"：骨骼近似，部分源形变无法完整还原");

@@ -162,6 +162,8 @@ $tests = @(
   @{ Name = 'test_face_mixing'; Src = 'tests\test_face_mixing.cpp' }
   @{ Name = 'test_face_runtime'; Src = 'tests\test_face_runtime.cpp' }
   @{ Name = 'test_mmd_face_controls'; Src = 'tests\test_mmd_face_controls.cpp' }
+  @{ Name = 'test_eye_gaze'; Src = 'tests\test_eye_gaze.cpp' }
+  @{ Name = 'test_eye_gaze_runtime'; Src = 'tests\test_eye_gaze_runtime.cpp' }
 )
 foreach ($t in $tests) {
   if (-not (Test-Path -LiteralPath $t.Src)) { throw "Missing local test source: $($t.Src)" }

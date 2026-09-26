@@ -803,6 +803,8 @@ static DWORD WINAPI InitThread(LPVOID) {
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
   g_characterFramePulse=[](){SampleGameRenderFrame(3);};
   mmd_camera::framePulse=[](){SampleGameRenderFrame(4);};
+  mmd_camera::needsCamera=[](){return poser_gaze::settings.mode==eye_gaze::Mode::Camera;};
+  mmd_camera::afterCamera=[](void *camera){poser_gaze::SetCamera(camera);SMCGazeTick();};
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
   s_clothThreadId = []() -> DWORD {
     DWORD observed=g_frameGameThreadId.load();

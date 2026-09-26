@@ -41,8 +41,10 @@ function Get-Target([string]$Relative) {
 }
 
 function Assert-GameStopped {
-    if (Get-Process -Name Endfield -ErrorAction SilentlyContinue) {
-        throw 'Endfield is running. Exit the game before installing, updating or uninstalling.'
+    $running = @(Get-Process -Name Endfield -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        $ids = ($running | ForEach-Object { $_.Id }) -join ', '
+        throw "Endfield 仍在运行（进程 ID：$ids）。请完全退出游戏后重试；若窗口已关闭，请在任务管理器中确认游戏进程已退出。"
     }
 }
 
@@ -62,6 +64,18 @@ function Assert-Dll([string]$Path) {
 function Test-OurProxy([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
     return [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path)).Contains('[PROXY] plugins loaded via ')
+}
+
+function Test-OurDll([string]$Path, [string]$Relative) {
+    # A manual upgrade can leave the old receipt behind. Recognize our actual
+    # x64 binaries before repairing it; an unrelated replacement must survive.
+    try {
+        Assert-Dll $Path
+        if ($Relative -eq 'plugin\poser.dll') {
+            return (Get-Item -LiteralPath $Path).VersionInfo.ProductName -eq 'Endfield Poser'
+        }
+        return Test-OurProxy $Path
+    } catch { return $false }
 }
 
 function Set-FileAtomically([string]$Source, [string]$Destination) {
@@ -132,6 +146,7 @@ try {
     $resourceFiles = @{}
     $resourceWrites = 0
     $resourceKept = 0
+    $dllWrites = 0
 
     if ($Action -eq 'Install') {
         $sourceDir = (Resolve-Path -LiteralPath $SourceRoot).ProviderPath
@@ -162,18 +177,33 @@ try {
             if ($relative -eq 'plugin\poser.dll') {
                 if ((Get-Item -LiteralPath $source).VersionInfo.ProductName -ne 'Endfield Poser') { throw 'Unexpected poser.dll product.' }
             } elseif (-not (Test-OurProxy $source)) { throw "Unexpected proxy DLL: $source" }
-            if ([IO.Path]::GetFullPath($source) -eq (Get-Target $relative)) { throw 'Source and destination DLL must differ.' }
+            if ([IO.Path]::GetFullPath($source) -eq (Get-Target $relative)) {
+                throw '安装包和游戏目录重合。请将完整安装包解压到游戏目录之外，再运行其中的安全安装.bat 并选择游戏目录。'
+            }
             $payload.Add(@{ path = $relative; source = $source; hash = (Get-Sha $source) })
         }
+        $incomingPoser = $payload | Where-Object { $_.path -eq 'plugin\poser.dll' }
+        $incomingVersion = (Get-Item -LiteralPath $incomingPoser.source).VersionInfo.FileVersion
+        $currentPoser = Get-Target 'plugin\poser.dll'
+        $currentVersion = '未安装或无法识别'
+        if (Test-OurDll $currentPoser 'plugin\poser.dll') {
+            $currentVersion = (Get-Item -LiteralPath $currentPoser).VersionInfo.FileVersion
+        }
+        Write-Host "当前版本：$currentVersion；安装包版本：$incomingVersion。"
+        Write-Host '本向导使用当前安装包中的文件，不会自动下载新版。'
         foreach ($item in $payload) {
             $destination = Get-Target $item.path
             $exists = Test-Path -LiteralPath $destination -PathType Leaf
+            $currentHash = if ($exists) { Get-Sha $destination } else { $null }
             $original = $null
             $originalHash = $null
             if ($oldFiles.ContainsKey($item.path)) {
                 $prior = $oldFiles[$item.path]
-                if ($exists -and (Get-Sha $destination) -ne $prior.installed_sha256) {
-                    throw "Installed file changed outside this installer; preserved: $destination"
+                if ($exists -and $currentHash -ne $prior.installed_sha256) {
+                    if ($currentHash -ne $item.hash -and -not (Test-OurDll $destination $item.path)) {
+                        throw "文件已被其他程序替换，无法确认为本插件，已保留：$destination"
+                    }
+                    Write-Warning "检测到手动更新的插件文件，将同步安装记录并保留原始备份：$($item.path)"
                 }
                 $original = $prior.original
                 $originalHash = $prior.original_sha256
@@ -192,8 +222,9 @@ try {
             }
             $newFiles.Add(@{ path = $item.path; installed_sha256 = $item.hash; original = $original; original_sha256 = $originalHash })
             # Back up even an identical old DLL if it is the recorded original.
-            if (-not $exists -or (Get-Sha $destination) -ne $item.hash -or ($original -and $original.StartsWith($backupRel))) {
+            if (-not $exists -or $currentHash -ne $item.hash -or ($original -and $original.StartsWith($backupRel))) {
                 $operations.Add(@{ path = $item.path; source = $item.source; hash = $item.hash })
+                ++$dllWrites
             }
         }
         # A package without the optional Vulkan proxy must retain its old record.
@@ -315,6 +346,7 @@ try {
     Write-Host "完成：$Action。配置、布局、自定义校准、预设和姿态均保留。"
     Write-Host "备份目录：$(Get-Target $backupRel)"
     if ($Action -eq 'Install') {
+        if ($dllWrites -eq 0) { Write-Host '插件 DLL 已与本安装包一致，无需替换；安装记录已同步。' }
         Write-Host "角色表情校准：内置 $($resources.Count) 份，复制或更新 $resourceWrites 份，保留冲突文件 $resourceKept 份。"
         Write-Host '安装完成后启动游戏；启动方式见 README。L 面板；P 冻结；Ctrl+F5/F6/F7/F8 播放/暂停/停止/重置。'
     }

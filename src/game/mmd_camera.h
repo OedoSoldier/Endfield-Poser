@@ -136,6 +136,8 @@ static void Pump(void *camera) {
 using TailFn=void(__fastcall *)(void*,float,void*);
 static TailFn original=nullptr;
 static void (*framePulse)() = nullptr;
+static bool (*needsCamera)() = nullptr;
+static void (*afterCamera)(void *) = nullptr;
 static void __fastcall Tail(void *self,float dt,void *method) {
   original(self,dt,method);
   if (RuntimeClosing()) return;
@@ -155,8 +157,10 @@ static void __fastcall Tail(void *self,float dt,void *method) {
   }
   try {
     void *camera=nullptr;
-    if (request.active) Call(getMain,self,nullptr,&camera);
+    if (request.active || (needsCamera && needsCamera())) Call(getMain,self,nullptr,&camera);
     Pump(camera);
+    // Observe the final game/MMD camera, after any playback offset is applied.
+    if(afterCamera)afterCamera(camera);
   } catch (...) {Stop();status=u8"相机回调异常，等待恢复";}
 }
 static bool Signature(void *method,bool isStatic,int result,int argument=-1) {

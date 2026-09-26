@@ -25,6 +25,7 @@
 #include "math/character_face.h"
 #include "math/mmd_face_controls.h"
 #include "game/smc_automation.h"
+#include "game/eye_gaze.h"
 
 // ---- 常量 ----
 #define SMC_MAX_BIGLIST 8192
@@ -141,6 +142,7 @@ static int s_faceBindingRevision=-1;
 static bool s_mmdFaceMode=false;
 static mmd_face_controls::State s_manualFace;
 static void SMCFaceInvalidate() {
+  poser_gaze::Reset();
   s_manualFace={};
   s_faceNodes.clear();s_characterBinding={};s_characterProfile.reset();s_characterModel.clear();s_characterBindingGeneration=0;
   s_faceHierarchy={};s_faceBindingRevision=-1;++s_faceGeneration;
@@ -1124,6 +1126,7 @@ static void SMCRestoreBigList() {
 }
 
 static void SMCReleaseFreeze() {
+  poser_gaze::Release();
   s_smcAutomation.release();
   if (s_wasFrozen && CharAnimatorAlive()) SMCRestoreBigList();
   s_wasFrozen=false;
@@ -1498,6 +1501,59 @@ static bool SMCFaceIdentity(void *transform,char *name,void **parent) {
 }
 // Called once per neutral capture / skeleton revision on the SMC owner thread.
 // No game objects are accessed by Evaluate(), nor by background file loaders.
+static void SMCGazeBind(Vec3 origin,const std::vector<void *> &parents) {
+  poser_gaze::Binding b;b.owner=g_charAnimator;b.generation=s_faceGeneration;
+  for(const auto &bone:s_allBones) {
+    auto name=face_geometry::Canonical(bone.name);
+    if(name=="bip001_head"||name=="head") {b.head=bone.transform;break;}
+  }
+  if(!b.head)return;
+  Vec3 headPos;Quat headRot;
+  if(!poser_gaze::Read(g_transform_get_position,b.head,&headPos,sizeof(headPos))||
+     !poser_gaze::Read(g_transform_get_rotation,b.head,&headRot,sizeof(headRot))||
+     !std::isfinite(QuatLen(headRot))||QuatLen(headRot)<.5f)return;
+  Vec3 eyes[2],iris[2],mouth;bool haveIris[2]={};int mouthCount=0;
+  auto inverse=Conj(NormQ(headRot));
+  for(int i=0;i<int(s_faceNodes.size());++i) {
+    auto name=face_geometry::Canonical(s_faceNodes[i].name);
+    auto point=inverse*(s_faceNodes[i].neutral.position()+origin-headPos);
+    int eye=name=="eyelfjoint"||name=="bip001_l_eye"?0:name=="eyertjoint"||name=="bip001_r_eye"?1:-1;
+    if(eye>=0) {
+      b.eyes[eye]=s_faceRestPose[i].transform;b.parents[eye]=parents[i];eyes[eye]=point;
+      b.eyeInHead[eye]=NormQ(inverse*mmd::Rotation(s_faceNodes[i].neutral));
+    }
+    int ir=name=="facelfirisjoint"?0:name=="facertirisjoint"?1:-1;
+    if(ir>=0){iris[ir]=point;haveIris[ir]=true;}
+    if(name.find("lipmd")==0){mouth=mouth+point;++mouthCount;}
+  }
+  if(!b.eyes[0]||!b.eyes[1]||!b.parents[0]||!b.parents[1]||!mouthCount)return;
+  b.opticalReady=haveIris[0]&&haveIris[1]&&Len(iris[0]-eyes[0])>1e-5f&&Len(iris[1]-eyes[1])>1e-5f;
+  Vec3 optical;
+  if(b.opticalReady) {
+    // Only the symmetric average estimates face forward. Keep the authored
+    // lateral iris offsets instead of treating each offset as a sight axis.
+    optical=Norm(Norm(iris[0]-eyes[0])+Norm(iris[1]-eyes[1]));
+    b.opticalReady=Len(optical)>.9f;
+  }
+  b.basis=eye_gaze::Calibrate(eyes[0],eyes[1],mouth*(1.f/mouthCount),{},optical);
+  poser_gaze::binding=b;
+  Log("[GAZE] neutral eyes ready=%d optical=%d generation=%llu",b.basis.ready,b.opticalReady,(unsigned long long)b.generation);
+}
+static void SMCGazeTick() {
+  Quat fallback[2];bool haveFallback=poser_gaze::lease.active;
+  for(int e=0;e<2;++e) {
+    fallback[e]=poser_gaze::lease.original[e];
+    if(s_driving&&g_frozen&&s_faceBoneEvalOk)for(int i=0;i<s_faceBoneCount;++i)
+      if(s_faceBones[i].transform==poser_gaze::binding.eyes[e]) {
+        const auto &b=s_faceBones[i];fallback[e]={b.rx,b.ry,b.rz,b.rw};break;
+      }
+    if(s_motionFaceCurrent.active&&s_motionFaceCurrent.animator==g_charAnimator&&
+       s_motionFaceCurrent.generation==s_faceGeneration&&s_motionFaceCurrent.eyeDriven[e]&&
+       s_motionFaceCurrent.eyes[e]==poser_gaze::binding.eyes[e])fallback[e]=s_motionFaceCurrent.eyeRotation[e];
+  }
+  poser_gaze::Update(g_frozen&&s_faceBonesCaptured&&!s_captureNeutral&&s_smcOwnershipVerified,
+                     s_faceGeneration,haveFallback?fallback:nullptr);
+}
 static void SMCFaceBind() {
   if(!s_faceBonesCaptured||s_captureNeutral||s_faceBoneCount<=0||
       s_allBones.empty()||s_faceBindingRevision==s_bonesRev)return;
@@ -1567,6 +1623,7 @@ static void SMCFaceBind() {
       rest[i]={{v.px,v.py,v.pz},{v.rx,v.ry,v.rz,v.rw}};
     }
     s_faceHierarchy=face_mixing::BindHierarchy(nodes,rest,scales);
+    if(s_faceHierarchy.ready)SMCGazeBind(origin,parents);
     if(s_faceHierarchy.ready)s_faceRegions=s_faceHierarchy.region;
     Log("[FACE] neutral hierarchy: ready=%d bones=%d revision=%d",s_faceHierarchy.ready,count,s_bonesRev);
     SMCFaceSelectProfile(s_characterProfile,s_characterModel);
@@ -1787,6 +1844,7 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
   // 必须限定在冻结态：hook 是启动时就装上的，解冻后若继续写，会永久盖住游戏的面部动画。
   if (s_driving && g_frozen && s_faceBonesCaptured && s_frame > 5)
     SMCWriteTouchedBones();
+  SMCGazeTick();
 
   // 面部骨骼引用（m_allBonesTransforms，一次性）
   if (!s_faceBoneRefs && s_frame >= 1) {
@@ -2205,6 +2263,7 @@ static void InstallSMCFaceHooks() {
 
 // 角色切换 / 停止驱动时重置（把大列表还回游戏）
 static void ResetSMCState(bool restoreOriginal = true) {
+  poser_gaze::Reset(restoreOriginal);
   s_smcAutomation.release(restoreOriginal);
   s_wasFrozen = false;
   SMCFaceInvalidate();

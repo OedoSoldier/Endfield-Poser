@@ -179,7 +179,36 @@ static void DrawGameMorphPanel() {
   ImGui::EndChild();
 }
 
+static void DrawGazeSection() {
+  if(!ImGui::CollapsingHeader(u8"眼睛朝向",ImGuiTreeNodeFlags_DefaultOpen))return;
+  bool ready=poser_gaze::binding.basis.ready&&poser_gaze::binding.owner==g_charAnimator&&
+      poser_gaze::binding.generation==s_faceGeneration;
+  ImGui::BeginDisabled(!ready);
+  int mode=int(poser_gaze::settings.mode);
+  ImGui::SetNextItemWidth(-1);
+  if(ImGui::Combo("##gaze-mode",&mode,u8"跟随游戏 / 动作\0手动方向\0自动看向镜头\0"))
+    poser_gaze::settings.mode=eye_gaze::Mode(mode);
+  if(mode!=0) {
+    ImGui::SetNextItemWidth((std::max)(70.f,ImGui::GetContentRegionAvail().x-52.f));
+    ImGui::SliderFloat(u8"左右",&poser_gaze::settings.yaw,-30,30,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"正值向角色右侧，负值向角色左侧");
+    ImGui::SetNextItemWidth((std::max)(70.f,ImGui::GetContentRegionAvail().x-52.f));
+    ImGui::SliderFloat(u8"上下",&poser_gaze::settings.pitch,-20,20,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"正值向上，负值向下");
+    if(ImGui::SmallButton(u8"方向归零"))poser_gaze::settings.yaw=poser_gaze::settings.pitch=0;
+    if(mode==2)ImGui::TextWrapped(u8"滑条微调看向镜头的方向；镜头在身后时回到正前方。");
+  }
+  ImGui::EndDisabled();
+  ImGui::TextWrapped("%s",ready?poser_gaze::status:u8"冻结角色，等待眼睛控制就绪");
+  if(ready&&!g_frozen) {
+    ImGui::BeginDisabled(!CharAnimatorAlive());
+    if(ImGui::SmallButton(u8"冻结并控制眼睛"))FreezeCharacter();
+    ImGui::EndDisabled();
+  }
+  ImGui::Separator();
+}
 static void DrawMorphPanel() {
+  DrawGazeSection();
   int mode=s_mmdFaceMode?1:0;
   ImGui::SetNextItemWidth(-1);
   if(ImGui::Combo("##face-mode",&mode,u8"游戏模式\0MMD 模式\0"))SMCManualMode(mode==1);

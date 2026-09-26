@@ -335,7 +335,7 @@ static void DrawMmdPanel() {
       if(ImGui::SmallButton(u8"全部使用角色专属映射")) {
         settings.driver.fill(face_mixing::Driver::Character);MmdSaveFaceSettings();MmdReport();
       }
-      ImGui::TextWrapped(u8"整体和部位强度可以在播放或暂停时调整；眼神方向仍由动作控制。");
+      ImGui::TextWrapped(u8"整体和部位强度可以在播放或暂停时调整；可在表情面板的“眼睛朝向”覆盖动作眼神。");
     }
     if(ImGui::CollapsingHeader(u8"表情映射")) {
       static int editSource=0;ImGui::Combo(u8"编辑映射表",&editSource,u8"角色专属映射\0固定表情映射\0");
