@@ -1,6 +1,7 @@
 # Generated output and local runtime data
 /build/
 /build-*/
+# Reusable face calibrations live in tracked resources/character-faces/.
 /plugin/
 /debug/
 /dist/

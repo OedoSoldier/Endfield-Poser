@@ -7,7 +7,7 @@
 
 static void FreeGripHandle(uint32_t handle) {
   __try {
-    if (handle && il2cpp_gchandle_free)
+    if (handle && !RuntimeClosing() && il2cpp_gchandle_free)
       il2cpp_gchandle_free(handle);
   } __except (1) {
   }

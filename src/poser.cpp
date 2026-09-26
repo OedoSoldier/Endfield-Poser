@@ -8,6 +8,7 @@
 #include "core/base.h"
 #include "core/il2cpp_api.h"
 #include "core/runtime_bootstrap.h"
+#include "core/runtime_shutdown.h"
 #include "core/gui_overlay.h"
 #include "core/game_hooks.h"
 #include "game/skeleton.h"
@@ -81,6 +82,7 @@ static bool g_pluginEnabled = true;
 static bool g_pluginInitialized = false;
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginEnable() {
   std::lock_guard<std::mutex> lock(g_pluginLifecycleMutex);
+  if (RuntimeClosing()) return false;
   g_pluginEnabled = true;
   if (g_pluginInitialized) StartGuiThread();
   return true;
@@ -142,7 +144,6 @@ static void PrepareCharacterHandoff() {
   UnfreezeCharacter();
   ReleaseGripFor(oldAnimator);
   ResetFreezeWriters();
-  ResetSkirtState();
   ResetSMCState(oldAlive);
   g_curCharKey.clear();
   s_humanBoneCount = 0;
@@ -168,7 +169,6 @@ static void RebuildCapturedCharacter() {
   RebuildAccessories();
   RebuildBlendShapes();
   ResetSMCState();
-  ResetSkirtState();
   if (s_humanBoneCount > 0) {
     CaptureRestPose();
     if (changed)
@@ -412,7 +412,7 @@ static void DrawPoserGuiBody() {
     ImGui::Checkbox(u8"\u51bb\u7ed3\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1",
                     &g_freezeAccessories);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u5f00\uff1a\u51bb\u7ed3\u65f6\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1\u8ddf\u7740\u4e00\u8d77\u51bb\u4f4f\uff1b\u53d6\u6d88\u52fe\u9009\u5219\u4ece\u9aa8\u4fdd\u6301\u5b9e\u65f6\u6f14\u7b97");
+      ImGui::SetTooltip(u8"\u9ed8\u8ba4\u5173\uff1a\u51bb\u7ed3\u65f6\u98d8\u5e26/\u88d9\u5b50/\u5934\u53d1\u8ddf\u7740\u4e00\u8d77\u51bb\u4f4f\uff1b\u53d6\u6d88\u52fe\u9009\u5219\u4ece\u9aa8\u4fdd\u6301\u5b9e\u65f6\u6f14\u7b97");
     if (g_frozen && accPrev != g_freezeAccessories) {
       if (g_freezeAccessories) {
         if (s_accessoryChains.empty())
@@ -525,13 +525,11 @@ static void DrawPoserGuiBody() {
   ImGui::SetNextWindowPos(ImVec2(750, 10), PanelPositionCondition());
   // 形态键面板内部用 BeginChild(size=(0,0)) 填满可用空间，和 AlwaysAutoResize 冲突
   // （子区域会塌成 0 → 内容看不见），所以这里保持固定初始尺寸、允许手动调整。
-  ImGui::SetNextWindowSize(ImVec2(360, 320), ImGuiCond_FirstUseEver);
-  if (ImGui::Begin(u8"\u5f62\u6001\u952e", nullptr,
+  ImGui::SetNextWindowSize(ImVec2(360, 520), ImGuiCond_FirstUseEver);
+  if (ImGui::Begin(u8"表情###\u5f62\u6001\u952e", nullptr,
                    ImGuiWindowFlags_NoCollapse |
                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
-    ImGui::BeginDisabled(MmdOwnsPose());
     DrawMorphPanel();
-    ImGui::EndDisabled();
   }
   ImGui::End();
 
@@ -546,6 +544,8 @@ static void DrawPoserGuiBody() {
 void GameFrameTick() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); GameFrameTickBody(); }
 void DrawPoserGui() {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) return;
   UpdateOverlayCursor();
   if (DrawUserAgreement()) {
     g_inputHoverGizmo = false;
@@ -559,6 +559,8 @@ void DrawPoserGui() {
 // 1=冻结/解冻 2=T-pose
 static void ExtControl(int code) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) return;
   if (!poser_agreement::Allowed()) return;
   if(g_mmd.session.active) { if(code==1){MmdStop();UnfreezeCharacter();} return; }
   switch (code) {
@@ -582,17 +584,35 @@ static void ExtControl(int code) {
 // 冻结状态下禁用插件/卸载时，把 Animator、IK、布料物理、形态键都还原回去，
 // 否则头发布料会一直僵在冻结姿态。
 static void OnGuiShutdownRestore() {
+  // During game shutdown its objects are being destroyed, not handed back to
+  // gameplay. Avoid restoration, import joins or reattaching to a closing VM.
+  if (RuntimeClosing()) {Log("[EXIT] editor stopped; skipped game-object restoration");return;}
+  {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) return;
   MmdStop();
   s_mmdClosing.store(true);
   if(HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
   if(g_mmd.loading) { g_mmd.loader.wait(); g_mmd.loading=false; }
+  if(g_mmd.faceLibraryLoading) { g_mmd.faceLoader.wait(); g_mmd.faceLibraryLoading=false; }
   if (g_frozen) {
     Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
     UnfreezeCharacter();
     RestoreBlendShapes();
   }
   ReleaseAllGrips(); // 后台还冻结着的角色也要把写者还回去
+  SMCReleaseFreeze();
+  }
+  // Let the normal game callback finish cloth restoration without holding the
+  // pose lock or issuing Unity cloth commands from the overlay thread.
+  const ULONGLONG deadline=GetTickCount64()+1000;
+  while (GetTickCount64()<deadline) {
+    { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+      if (!s_cloth.active && !s_cloth.releasing) return; }
+    Sleep(10);
+  }
+  Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
 }
 
 // 姿态文件扩展：从骨 + 形态键（skeleton.h 通过钩子调用，避免底层反向包含）
@@ -627,7 +647,11 @@ static void PoseApplyExtras(const PoseDoc &doc) {
 // 控制文件通道：外部（Codex）往 plugin\poser_control.txt 写命令，每帧执行后清空。
 // 命令：toggle / freeze / tpose / reset
 static void ProcessControlFileBody() {
+  // File polling itself must not keep a managed runtime thread registered.
+  if (RuntimeClosing() || GetFileAttributesW(PoserFilePath(L"poser_control.txt").c_str())==INVALID_FILE_ATTRIBUTES) return;
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) return;
   FILE *f = OpenPoserFile(L"poser_control.txt", L"r");
   if (!f)
     return;
@@ -715,6 +739,22 @@ static void ProcessControlFile() {
   catch(const std::exception &e) { MmdStop();g_mmd.status=e.what();Log("[CTRL] command failed: %s",e.what()); }
 }
 
+static void SignalGameQuit() {
+  // No pose mutex, thread joins or Unity calls on the shutdown notification.
+  g_guiRunning=false;g_hotkeyPollRun=0;g_webRunning=false;
+  g_frameRunning.store(false);
+  // The fallback timer wakes at least every 9ms; avoid racing the GUI closing
+  // its event handle by signalling it from another thread here.
+  s_mmdClosing.store(true);
+  if (HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
+}
+static void FinalizeGameQuit() {
+  std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
+  if (!lock.owns_lock()) {Log("[EXIT] audio cleanup deferred; editor operation still finishing");return;}
+  g_mmd.audio.close();
+  Log("[EXIT] music stopped; runtime teardown may continue");
+}
+
 static DWORD WINAPI InitThread(LPVOID) {
   OpenLog(PoserFilePath(L"poser_log.txt").c_str());
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
@@ -724,6 +764,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
       poser_agreement::Allowed() ? "already accepted" : "confirmation required");
   g_beforeCharacterChange = PrepareCharacterHandoff;
+  g_onFreezeReleased=SMCReleaseFreeze;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
   SetExtControl(ExtControl);
   SetExtPollFn(ProcessControlFile);
@@ -755,10 +796,20 @@ static DWORD WINAPI InitThread(LPVOID) {
     return 0;
   }
   Log("[POSER] IL2CPP resolved. Initializing game hooks.");
+  g_runtimeQuitSignal=SignalGameQuit;
+  g_runtimeQuitFinalize=FinalizeGameQuit;
+  InstallRuntimeShutdownHooks();
+  if (RuntimeClosing()) return 0;
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
+  g_characterFramePulse=[](){SampleGameRenderFrame(3);};
+  mmd_camera::framePulse=[](){SampleGameRenderFrame(4);};
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
+  s_clothThreadId = []() -> DWORD {
+    DWORD observed=g_frameGameThreadId.load();
+    return observed?observed:(g_gameHwnd?GetWindowThreadProcessId(g_gameHwnd,nullptr):0);
+  };
+  g_gameMaintenance = []() { ClothService(); };
   InstallFrameHook();
-  InstallBbcFrameHook();
   mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）
   Log("[POSER] Starting GUI thread.");

@@ -27,14 +27,13 @@ if(WIN32)
     src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h
-    src/core/frame_driver.h src/core/bbc_frame.h src/math/frame_cadence.h
-    src/core/runtime_bootstrap.h src/core/plugin_paths.h src/core/proxy_loader.h
+    src/core/frame_driver.h src/math/frame_cadence.h
+    src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
     src/game/mmd_camera.h src/math/mmd_camera.h
-    src/math/mmd_contact.h src/game/mmd_ground_probe.h
-    src/game/bbc_playback.h src/game/bbc_garment.h
-    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h
-    src/math/face_templates.h
+    src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h
+    src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
+    src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
     src/math/face_mixing.h
     src/game/char_state.h
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
@@ -103,14 +102,14 @@ endfunction()
 
 add_poser_test(test_quat tests/test_quat.cpp)
 add_poser_test(test_ik tests/test_ik.cpp)
+add_poser_test(test_native_cloth tests/test_native_cloth.cpp)
 add_poser_test(test_pose_file tests/test_pose_file.cpp)
 add_poser_test(test_mmd tests/test_mmd.cpp)
-add_poser_test(test_mmd_contact tests/test_mmd_contact.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
-add_poser_test(test_face_templates tests/test_face_templates.cpp)
+add_poser_test(test_character_faces tests/test_character_faces.cpp)
 add_poser_test(test_face_mixing tests/test_face_mixing.cpp)
-set_tests_properties(test_face_templates PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(test_character_faces PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
   add_poser_test(test_user_agreement tests/test_user_agreement.cpp)
   add_poser_test(test_agreement_ui tests/test_agreement_ui.cpp)
@@ -119,6 +118,10 @@ if(MSVC)
   target_include_directories(test_mmd_camera_runtime PRIVATE deps/minhook_lib/include)
   target_compile_options(test_mmd_camera_runtime PRIVATE /EHa)
   target_link_libraries(test_mmd_camera_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  add_poser_test(test_runtime_shutdown tests/test_runtime_shutdown.cpp)
+  target_include_directories(test_runtime_shutdown PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_runtime_shutdown PRIVATE /EHa)
+  target_link_libraries(test_runtime_shutdown PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_runtime_bootstrap tests/test_runtime_bootstrap.cpp)
   target_include_directories(test_runtime_bootstrap PRIVATE deps/minhook_lib/include)
   target_compile_options(test_runtime_bootstrap PRIVATE /EHa)
@@ -130,23 +133,13 @@ if(MSVC)
   add_poser_test(test_overlay_device tests/test_overlay_device.cpp)
   target_link_libraries(test_overlay_device PRIVATE d3d11)
   add_poser_test(test_mmd_audio tests/test_mmd_audio.cpp)
-  add_poser_test(test_cloth_collision tests/test_cloth_collision.cpp)
-  add_poser_test(test_ground_probe tests/test_ground_probe.cpp)
-  target_include_directories(test_ground_probe PRIVATE deps/minhook_lib/include)
-  target_compile_options(test_ground_probe PRIVATE /EHa)
-  target_link_libraries(test_ground_probe PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
-  target_include_directories(test_cloth_collision PRIVATE deps/minhook_lib/include)
-  target_compile_options(test_cloth_collision PRIVATE /EHa)
-  target_link_libraries(test_cloth_collision PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_compile_options(test_mmd_audio PRIVATE /EHa)
-  add_poser_test(test_frame_driver tests/test_frame_driver.cpp)
-  add_poser_test(test_bbc_frame tests/test_bbc_frame.cpp)
-  target_include_directories(test_bbc_frame PRIVATE deps/minhook_lib/include)
-  target_compile_options(test_bbc_frame PRIVATE /EHa)
-  target_link_libraries(test_bbc_frame PRIVATE
+  add_poser_test(test_cloth_runtime tests/test_cloth_runtime.cpp)
+  target_include_directories(test_cloth_runtime PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_cloth_runtime PRIVATE /EHa)
+  target_link_libraries(test_cloth_runtime PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  add_poser_test(test_frame_driver tests/test_frame_driver.cpp)
   target_include_directories(test_frame_driver PRIVATE deps/minhook_lib/include)
   target_compile_options(test_frame_driver PRIVATE /EHa)
   target_link_libraries(test_frame_driver PRIVATE
@@ -169,7 +162,12 @@ if(MSVC)
   target_link_libraries(test_smc_switch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_smc_abi tests/test_smc_abi.cpp)
+  add_poser_test(test_smc_automation tests/test_smc_automation.cpp)
+  target_include_directories(test_smc_automation PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_smc_automation PRIVATE /EHa)
+  target_link_libraries(test_smc_automation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_face_runtime tests/test_face_runtime.cpp)
+  add_poser_test(test_mmd_face_controls tests/test_mmd_face_controls.cpp)
   target_include_directories(test_face_runtime PRIVATE deps/minhook_lib/include)
   target_compile_options(test_face_runtime PRIVATE /EHa)
   target_link_libraries(test_face_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)

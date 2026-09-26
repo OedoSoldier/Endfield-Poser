@@ -117,7 +117,6 @@ static void RestoreCharStateOnSwitch() {
     SetAllPhysicsEnabled(false);
     ApplyAccessorySnapshot();
   }
-  SkirtBegin();
   g_frozen = true;
   Log("[CHAR] frozen state restored ('%s')", g_curCharKey.c_str());
 }

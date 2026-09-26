@@ -45,86 +45,25 @@ static void DrawMmdAmplitude() {
   if (changed) MmdApplyFrame();
 }
 
-static void DrawMmdCollision() {
-  if (!ImGui::CollapsingHeader(u8"地面与裙摆碰撞辅助")) return;
-  auto &m=g_mmd; auto &c=m.contact;
-  bool changed=ImGui::Checkbox(u8"脚底防穿地",&c.enabled);
-  ImGui::BeginDisabled(!c.enabled);
-  int mode=c.scene?0:1;
-  if(ImGui::Combo(u8"地面来源",&mode,u8"探测游戏地面\0固定平面（起始脚底）\0")) {
-    c.scene=mode==0;m.groundPlanes={};m.groundSampleTime=-1e30;changed=true;
-  }
-  changed |= ImGui::SliderFloat(u8"接触修正强度",&c.strength,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-  changed |= ImGui::SliderFloat(u8"最大抬脚修正",&c.maxLift,.01f,.5f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-  changed |= ImGui::SliderFloat(u8"鞋底厚度补偿",&c.sole,0,.2f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-  changed |= ImGui::SliderFloat(u8"地面高度微调",&c.groundOffset,-.3f,.3f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-  changed |= ImGui::Checkbox(u8"脚部跟随坡面",&c.slope);
-  ImGui::EndDisabled();
-  if(c.enabled && m.session.active) {
-    ImGui::TextWrapped("%s",c.scene?(MmdNow()-m.groundSampleTime>.3?u8"等待游戏线程地面采样；当前保留原动作":m.groundProbe.status):u8"使用起始脚底估计的固定平面；可微调高度");
-    ImGui::Text(u8"脚部修正：左 %s / 右 %s",m.contactResult.active[0]?u8"生效":u8"无",m.contactResult.active[1]?u8"生效":u8"无");
-    if(m.contactResult.limited || m.contactResult.penetration>.005f)
-      ImGui::TextWrapped(u8"修正受骨长或幅度上限限制，仍可能穿地；可调整整体高度。剩余估计 %.3f",m.contactResult.penetration);
-  }
-  ImGui::TextWrapped(u8"只修正接近地面的脚，不把抬脚和跳跃拉回地面；暂停、拖动和循环均重新采样。固定平面不识别台阶。不会处理身体、墙壁或衣物网格与地面的碰撞。");
-  ImGui::Separator();
-  ImGui::Checkbox(u8"BBC 原生同帧碰撞",&g_bbcSyncEnabled);
-  ImGui::TextWrapped("%s",g_bbcStatus);
-  ImGui::TextWrapped(u8"播放时让 BBC 读取当前动作骨骼，求解后由游戏写回衣物。暂停时继续模拟；停止恢复原调度。原生调度开关作用于全场景布料，可能增加 CPU 开销。");
-  ImGui::Checkbox(u8"当前角色使用完整物理权重（含尾巴）",&g_bbcFullSimulation);
-  ImGui::TextWrapped(u8"仅在 BBC 接管时生效：将当前角色已启用衣物、头发和尾巴的模拟/混合权重设为 1，避免保留待机动画的低权重。关闭或停止后恢复；不会启用隐藏组件。");
-  if(ImGui::TreeNode(u8"当前角色 BBC 状态（含尾巴）")) {
-    for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active) {
-      ImGui::TextWrapped("%s",cloth.name);
-      if(!cloth.compatible)ImGui::TextDisabled(u8"权重接口不兼容，保留原设置");
-      else ImGui::TextDisabled(u8"模拟 %.2f / 混合 %.2f / 运行 %d / 跳过写回 %d / 裁剪 %d",
-          cloth.weight,cloth.blend,cloth.running,cloth.skip,cloth.culled);
+static void DrawMmdCloth() {
+  if (!ImGui::CollapsingHeader(u8"衣物物理")) return;
+  float hip=s_skirtHipRadiusDelta.load();
+  bool changed=ImGui::SliderFloat(u8"腿根半径补偿", &hip, 0, .25f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+  if(ImGui::SmallButton(u8"恢复默认补偿")) {hip=.124f;changed=true;}
+  if(changed) {s_skirtHipRadiusDelta.store(hip);s_skirtDirty.store(true);}
+  ImGui::TextWrapped(u8"播放和暂停时使用角色原有衣物、头发和尾巴物理。裙摆被撑开时减小补偿；停止后恢复原设置。可随适配预设保存。");
+  if(g_mmd.freezeCloth) ImGui::TextWrapped(u8"衣物已冻结：取消“冻结头发 / 衣物”后恢复动态模拟。");
+  else if(s_cloth.releasing) ImGui::TextWrapped(u8"正在恢复原有物理设置；未完成前不会接管新角色。");
+  else if(s_cloth.failed) ImGui::TextWrapped(u8"原生物理初始化或校验未通过，已停止调整。详细原因见日志。");
+  else if(s_cloth.active) {
+    int ready=0,suspended=0;
+    for(int n=0;n<s_cloth.count;++n) {
+      ready+=s_cloth.instances[n].startup.phase==poser_cloth::Phase::Ready;
+      suspended+=s_cloth.instances[n].startup.phase==poser_cloth::Phase::Suspended;
     }
-    ImGui::TreePop();
-  }
-  bool skirt=ImGui::Checkbox(u8"裙摆碰撞增强",&g_skirtCollisionEnabled);
-  ImGui::BeginDisabled(!g_skirtCollisionEnabled);
-  skirt |= ImGui::Checkbox(u8"裙摆边碰撞（减少节点间穿透）",&g_skirtEdgeCollision);
-  ImGui::Checkbox(u8"补齐腿部原生碰撞（大腿 / 膝盖 / 小腿）",&g_bbcLegCoverage);
-  ImGui::BeginDisabled(!g_bbcLegCoverage);
-  ImGui::SliderFloat(u8"腿部碰撞余量",&g_bbcLegPadding,0,.06f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-  ImGui::EndDisabled();
-  ImGui::TextWrapped(u8"按当前角色骨长和原有大腿半径添加临时 BBC 胶囊，仅登记到裙摆。余量默认 0.015；过大会撑开裙子。关闭、停止或换人后撤销。需要开启 BBC 原生同帧碰撞。");
-  for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active && cloth.garment.garment) {
-    const auto &e=cloth.garment;int submitted=0,effective=0;
-    for(const auto &leg:e.legs) {submitted+=leg.listed;effective+=leg.effective==1;}
-    ImGui::TextWrapped("%s: %s",cloth.name,e.status);
-    ImGui::Text(u8"新增胶囊：已提交 %d / 原生登记 %d；动画距离限位 %d / 背面限位 %d",submitted,effective,e.maxDistance,e.backstop);
-  }
-  skirt |= ImGui::Checkbox(u8"手动调整碰撞体尺寸",&g_skirtGeometryOverride);
-  ImGui::BeginDisabled(!g_skirtGeometryOverride);
-  skirt |= ImGui::SliderFloat(u8"大腿根碰撞扩张",&g_skirtHipRadiusDelta,0,.25f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-  skirt |= ImGui::SliderFloat(u8"碰撞半径倍率",&g_skirtRadiusA,.75f,1.5f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-  skirt |= ImGui::SliderFloat(u8"碰撞体长度倍率",&g_skirtLengthScale,.75f,1.3f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-  skirt |= ImGui::Checkbox(u8"锥形碰撞体",&g_skirtTaperOn);
-  ImGui::EndDisabled();
-  ImGui::EndDisabled();
-  ImGui::TextWrapped("%s",g_skirtStatus);
-  ImGui::Text(u8"裙摆组件 %d / 检查碰撞体 %d / 实际调整 %d",int(g_skirtCloths.size()),g_skirtExamined,g_skirtMatched);
-  if(g_skirtUnsupported) ImGui::TextWrapped(u8"%d 项接口或结构不支持，已跳过。",g_skirtUnsupported);
-  for(auto &cloth:g_skirtCloths) {
-    ImGui::TextWrapped("%s: %s",cloth.name,cloth.modeStatus);
-    if(cloth.running>=0) ImGui::Text(u8"BBC 运行 %s / 写回 %s / 权重 %.2f / 求解模式 %d",
-      cloth.running?u8"是":u8"否",cloth.skipWriting==0?u8"开启":u8"未开启",cloth.runtimeWeight,cloth.effectiveMode);
-  }
-  if(m.freezeCloth) ImGui::TextWrapped(u8"衣物已冻结：不会动态避让大腿。取消“冻结头发 / 衣物”后才能观察裙摆碰撞效果。");
-  else ImGui::TextWrapped(u8"边碰撞检测布料节点之间的连线，开销高于原节点碰撞；关闭后恢复原模式。仅作用于已有碰撞的裙摆，不改变动作。碰撞体覆盖不到的部位、固定顶点和快速穿透仍可能穿模；扩张过大会撑起裙摆。");
-  if(ImGui::SmallButton(u8"复位碰撞辅助")) {
-    c={};g_skirtCollisionEnabled=true;g_skirtHipRadiusDelta=.124f;
-    g_skirtRadiusA=1;g_skirtLengthScale=1;g_skirtTaperOn=true;g_skirtEdgeCollision=true;
-    g_bbcSyncEnabled=true;g_skirtGeometryOverride=false;
-    g_bbcFullSimulation=true;
-    g_bbcLegCoverage=true;g_bbcLegPadding=.015f;
-    changed=skirt=true;
-  }
-  if(skirt) SkirtMarkDirty();
-  ImGui::TextWrapped(u8"停止播放后可随适配预设保存这些设置；不保存当前场景的绝对地面位置。");
-  if(changed) MmdApplyFrame();
+    ImGui::Text(u8"组件确认 %d / %d，游戏暂挂 %d",ready,s_cloth.count,suspended);
+  } else ImGui::TextDisabled(u8"开始播放后检查原生物理组件");
+  ImGui::TextWrapped(u8"实际避让范围由角色原有布料和碰撞体决定。缺少可动衣物骨骼的部位仍可能穿模。脚底位置可用播放器的“高度修正”调整。");
 }
 static void DrawMmdCamera() {
   if (!ImGui::CollapsingHeader(u8"MMD 镜头")) return;
@@ -214,8 +153,9 @@ static void DrawMmdPanel() {
       if (!m.musicError.empty()) ImGui::TextWrapped("%s", m.musicError.c_str());
     }
     ImGui::TextDisabled(g_frameDiagnostics.gameDriven ? u8"动作更新：跟随游戏帧" : u8"动作更新：独立计时（游戏帧回调未触发）");
+    if (g_frameDiagnostics.source == 3) ImGui::TextDisabled(u8"帧来源：角色更新");
+    if (g_frameDiagnostics.source == 4) ImGui::TextDisabled(u8"帧来源：游戏镜头更新");
     if (g_frameDiagnostics.source == 2) ImGui::TextDisabled(u8"帧来源：游戏渲染管线 SRP");
-    if (g_frameDiagnostics.source == 3) ImGui::TextDisabled(u8"帧来源：BBC 原生布料求解前");
     ImGui::TextDisabled(u8"实际 %.1f Hz / 最长间隔 %.1f ms / 最大耗时 %.1f ms",
                         g_frameDiagnostics.hz, g_frameDiagnostics.maxGapMs, g_frameDiagnostics.maxCostMs);
     if (g_frameDiagnostics.busy) ImGui::TextDisabled(u8"本秒因编辑占用跳过：%u", g_frameDiagnostics.busy);
@@ -267,32 +207,17 @@ static void DrawMmdPanel() {
       MmdPlaybackCommand(3);
     ImGui::SameLine();
     if (ImGui::SmallButton("<")) {
-      if (!m.session.active)
-        MmdStart();
-      if (m.session.active) {
-        MmdSeek(m.timeline.seconds - 1. / 30);
-        MmdApplyFrame();
-      }
+      MmdSeekOrStart(m.timeline.seconds - 1. / 30);
     }
     ImGui::SameLine();
     if (ImGui::SmallButton(">")) {
-      if (!m.session.active)
-        MmdStart();
-      if (m.session.active) {
-        MmdSeek(m.timeline.seconds + 1. / 30);
-        MmdApplyFrame();
-      }
+      MmdSeekOrStart(m.timeline.seconds + 1. / 30);
     }
     float seconds = float(m.timeline.seconds);
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat(u8"##mmdtime", &seconds, 0,
                            float(m.timeline.duration), "%.2f s")) {
-      if (!m.session.active)
-        MmdStart();
-      if (m.session.active) {
-        MmdSeek(seconds);
-        MmdApplyFrame();
-      }
+      MmdSeekOrStart(seconds);
     }
     ImGui::Text(u8"帧 %.1f / %.0f", m.timeline.seconds * 30, m.timeline.duration * 30);
     if (m.session.active && !m.preview)
@@ -338,14 +263,14 @@ static void DrawMmdPanel() {
         CaptureAccessorySnapshot();
       SetAllPhysicsEnabled(!m.freezeCloth, true);
     }
-    DrawMmdCollision();
+    DrawMmdCloth();
     ImGui::EndDisabled();
     if (MmdOwnsPose()) {
       ImGui::TextDisabled(u8"动作控制中；暂停后可在姿态库保存当前身体姿态");
       if (!m.clip.morphs.empty())
         ImGui::TextDisabled(((m.faceSettings.uniform()||s_faceHierarchy.ready)&&
-                            (!m.faceSettings.uses(face_mixing::Driver::Template)||s_templateBinding.ready)&&
-                            (!m.faceSettings.uses(face_mixing::Driver::Eiem)||SMCSectionReady()))
+                            (!m.faceSettings.uses(face_mixing::Driver::Character)||s_characterBinding.ready||m.faceSettings.fallback)&&
+                            SMCSectionReady())
                                 ? u8"表情系统已就绪"
                                 : u8"表情尚未就绪或骨骼不匹配，身体动作继续播放");
     }
@@ -372,97 +297,72 @@ static void DrawMmdPanel() {
           MmdStop();
       }
     }
-    if (ImGui::CollapsingHeader(u8"表情模板与强度",ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader(u8"角色表情与强度",ImGuiTreeNodeFlags_DefaultOpen)) {
       auto &settings=m.faceSettings;
+      if(m.characterFace) {
+        ImGui::Text(u8"当前角色校准：%s",m.characterFace->label.c_str());
+        if(s_characterBinding.ready)ImGui::Text(u8"可用表情 %d / %d",s_characterBinding.usableCount,int(m.characterFace->morphs.size()));
+        else ImGui::TextWrapped("%s",s_characterBinding.status.empty()?u8"等待当前角色中性脸":s_characterBinding.status.c_str());
+      } else ImGui::TextWrapped(u8"当前角色没有 MMD 表情校准。");
+      if(m.faceLibraryLoading)ImGui::TextDisabled(u8"正在读取角色校准…");
+      if(!m.faceLibraryError.empty())ImGui::TextWrapped(u8"校准读取失败，已保留原数据：%s",m.faceLibraryError.c_str());
+      ImGui::BeginDisabled(MmdOwnsPose()||m.faceLibraryLoading);
+      if(ImGui::SmallButton(u8"重新读取校准"))MmdReloadCharacterFaces();
+      ImGui::EndDisabled();
+      if(ImGui::Checkbox(u8"专属校准缺失时使用固定映射",&settings.fallback)){MmdSaveFaceSettings();MmdReport();}
+      ImGui::TextWrapped(u8"优先使用当前角色的 MMD 表情；缺失或无法适配的轨道按此开关处理。部分形状只能近似还原。");
       float percent=settings.strength*100;
       if(ImGui::SliderFloat(u8"整体表情强度",&percent,0,200,"%.0f%%"))settings.strength=percent*.01f;
       if(ImGui::IsItemDeactivatedAfterEdit())MmdSaveFaceSettings();
       ImGui::SameLine();
       if(ImGui::SmallButton(u8"复位全部强度")){settings.strength=1;settings.gain.fill(1);MmdSaveFaceSettings();}
       if(ImGui::BeginTable("##faceregions",3,ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn(u8"部位",0,.65f);
-        ImGui::TableSetupColumn(u8"映射方式",0,1.7f);
+        ImGui::TableSetupColumn(u8"部位",0,.65f);ImGui::TableSetupColumn(u8"映射方式",0,1.7f);
         ImGui::TableSetupColumn(u8"独立强度",0,1.f);ImGui::TableHeadersRow();
         for(int r=0;r<face_mixing::RegionCount;++r) {
           ImGui::PushID(r);ImGui::TableNextRow();ImGui::TableNextColumn();
-          ImGui::TextUnformatted(face_mixing::Label(r));ImGui::TableNextColumn();
-          ImGui::SetNextItemWidth(-1);
-          int mode=settings.driver[r]==face_mixing::Driver::Template?0:1;
-          if(ImGui::Combo("##source",&mode,u8"通用模板映射\0游戏表情映射\0")) {
-            settings.driver[r]=mode==0?face_mixing::Driver::Template:face_mixing::Driver::Eiem;
-            MmdSaveFaceSettings();MmdReport();
+          ImGui::TextUnformatted(face_mixing::Label(r));ImGui::TableNextColumn();ImGui::SetNextItemWidth(-1);
+          int mode=int(settings.driver[r]);
+          if(ImGui::Combo("##source",&mode,u8"角色专属映射\0固定表情映射\0关闭\0")) {
+            settings.driver[r]=static_cast<face_mixing::Driver>(mode);MmdSaveFaceSettings();MmdReport();
           }
-          ImGui::TableNextColumn();ImGui::SetNextItemWidth(-1);
-          float regionPercent=settings.gain[r]*100;
+          ImGui::TableNextColumn();ImGui::SetNextItemWidth(-1);float regionPercent=settings.gain[r]*100;
           if(ImGui::SliderFloat("##strength",&regionPercent,0,200,"%.0f%%"))settings.gain[r]=regionPercent*.01f;
-          if(ImGui::IsItemDeactivatedAfterEdit())MmdSaveFaceSettings();
-          ImGui::PopID();
+          if(ImGui::IsItemDeactivatedAfterEdit())MmdSaveFaceSettings();ImGui::PopID();
         }
         ImGui::EndTable();
       }
-      if(ImGui::SmallButton(u8"恢复默认分区")) {
-        settings.driver=face_mixing::Settings{}.driver;MmdSaveFaceSettings();MmdReport();
+      if(ImGui::SmallButton(u8"全部使用角色专属映射")) {
+        settings.driver.fill(face_mixing::Driver::Character);MmdSaveFaceSettings();MmdReport();
       }
-      if(ImGui::SmallButton(u8"还原 0.4.38 通用模板")) {
-        settings.driver.fill(face_mixing::Driver::Template);
-        settings.strength=1;settings.gain.fill(1);MmdSaveFaceSettings();MmdReport();
-      }
-      if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"所有区域使用通用模板，整体与分区强度复位到 100%%；保留手动轨道映射。");
-      ImGui::TextWrapped(u8"默认所有部位使用游戏表情映射，可按部位手动切换为通用模板。模式与强度均可在播放 / 暂停时调整。最终强度 = 整体 × 区域；眼神方向仍由动作控制。");
-      if(!settings.uniform()&&!s_faceHierarchy.ready)
-        ImGui::TextWrapped(u8"分区表情正在等待中性脸骨架；骨架就绪后自动生效。");
-      if(settings.driver[face_mixing::Cheeks]==face_mixing::Driver::Eiem)
-        ImGui::TextWrapped(u8"游戏表情映射的脸颊随原有口型通道变化，没有独立鼓腮通道。");
-      if(settings.uses(face_mixing::Driver::Template)) {
-        const auto &b=s_templateBinding;
-        if(b.ready) {
-          ImGui::Text(u8"模板骨骼：眉毛 %d / 眼睑 %d / 嘴唇 %d / 脸颊 %d",b.brows,b.lids,b.lips,b.cheeks);
-          if(!b.brows||!b.lips||!b.cheeks)ImGui::TextWrapped(u8"部分区域缺少可用骨骼，对应模板将跳过。");
-        } else ImGui::TextWrapped(u8"等待中性脸与骨架。若持续不可用，此角色可能缺少模板所需眼睑骨骼；可将相应区域切换为游戏表情映射。");
-        ImGui::TextWrapped(u8"按角色脸部尺寸生成眉毛、眼睑和嘴部形变；ω / 三角嘴为骨骼近似，不包含瞳孔、牙齿显隐或材质特效。");
-      }
+      ImGui::TextWrapped(u8"整体和部位强度可以在播放或暂停时调整；眼神方向仍由动作控制。");
     }
-    if (ImGui::CollapsingHeader(u8"表情映射")) {
-      static int editSource=1;
-      ImGui::Combo(u8"编辑映射表",&editSource,u8"通用模板映射\0游戏表情映射\0");
+    if(ImGui::CollapsingHeader(u8"表情映射")) {
+      static int editSource=0;ImGui::Combo(u8"编辑映射表",&editSource,u8"角色专属映射\0固定表情映射\0");
       bool native=editSource==1;
-      ImGui::TextWrapped(u8"两套映射分别保存；是否生效由上方各区域的映射方式决定。游戏表情映射未提供的口型 / 嘴角形状不会自动改用模板。");
-      ImGui::BeginDisabled(MmdOwnsPose());
-      bool changed = false;
-      for (auto &kv : m.morphMap) {
-        int &slider=native?kv.second.nativeSlider:kv.second.slider;
-        float &gain=native?kv.second.nativeGain:kv.second.gain;
-        ImGui::PushID(kv.first.c_str());
-        ImGui::TextUnformatted(kv.first.c_str());
-        ImGui::SetNextItemWidth(185);
-        const char *label = slider < 0
-                                ? u8"忽略 / 不支持"
-                                : (native?SMCSliderLabel(slider):face_template::Definitions()[slider].label);
-        if (ImGui::BeginCombo("##target", label)) {
-          if (ImGui::Selectable(u8"忽略 / 不支持", slider < 0)) {
-            slider = -1;
-            changed = true;
+      ImGui::TextWrapped(u8"角色专属映射按角色分别保存。可将动作中的自定义名称绑定到该角色已有表情。");
+      ImGui::BeginDisabled(MmdOwnsPose()||(!native&&!m.characterFace));bool changed=false;
+      for(auto &kv:m.morphMap) {
+        int &slider=native?kv.second.nativeSlider:kv.second.slider;float &gain=native?kv.second.nativeGain:kv.second.gain;
+        ImGui::PushID(kv.first.c_str());ImGui::TextUnformatted(kv.first.c_str());ImGui::SetNextItemWidth(185);
+        bool valid=slider>=0&&(native?slider<SMCSliderCount():m.characterFace&&slider<int(m.characterFace->morphs.size()));
+        const char *label=!valid?u8"未指定 / 不支持":native?SMCSliderLabel(slider):m.characterFace->morphs[slider].name.c_str();
+        if(ImGui::BeginCombo("##target",label)) {
+          if(ImGui::Selectable(u8"未指定 / 不支持",slider<0)){slider=-1;changed=true;}
+          int count=native?SMCSliderCount():m.characterFace?int(m.characterFace->morphs.size()):0;
+          for(int i=0;i<count;++i) {
+            if(!native&&!m.characterFace->morphs[i].supported)continue;
+            const char *name=native?SMCSliderLabel(i):m.characterFace->morphs[i].name.c_str();
+            if(ImGui::Selectable(name,slider==i)){slider=i;changed=true;}
           }
-          for (int i = 0; i < (native?SMCSliderCount():int(face_template::Count)); i++)
-            if (ImGui::Selectable(native?SMCSliderLabel(i):face_template::Definitions()[i].label, slider == i)) {
-              slider = i;
-              changed = true;
-            }
           ImGui::EndCombo();
         }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(130);
-        changed |= ImGui::SliderFloat("##gain", &gain, 0, 2, "%.2f");
-        if(!native&&kv.second.slider>=0&&s_templateBinding.ready&&
-            !face_template::Supported(s_templateBinding,kv.second.slider))
-          ImGui::TextDisabled(u8"当前角色缺少对应骨骼");
+        ImGui::SameLine();ImGui::SetNextItemWidth(130);changed|=ImGui::SliderFloat("##gain",&gain,0,2,"%.2f");
+        if(!native&&valid&&m.characterFace->morphs[slider].residual>.1f)
+          ImGui::TextDisabled(u8"此表情部分形状为近似");
         ImGui::PopID();
       }
-      if (changed) {
-        MmdSaveMappings(native);
-        MmdReport();
-      }
-      ImGui::EndDisabled();
+      if(changed){MmdSaveMappings(native);MmdReport();}ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader(u8"导入报告")) {
       if (m.report.empty())

@@ -6,11 +6,77 @@
 
 #include "imgui.h"
 #include "game/morph.h"
+#include "game/freeze.h"
 #include "game/smc_morph.h"
 
 #include <cstring>
 
 static char g_morphFilter[64] = "";
+static char g_mmdFaceFilter[128] = "";
+
+static void DrawMmdFaceSection() {
+  SMCManualPrepare();
+  auto &face=s_manualFace;
+  bool playing=MmdOwnsPose();
+  bool ready=SMCSectionReady()&&s_faceBonesCaptured&&s_driveBaseReady&&!s_captureNeutral;
+  ImGui::BeginChild("##mmd-face-list",ImVec2(0,0),false);
+  ImGui::TextWrapped(face.profile?u8"当前角色：%s":u8"当前角色暂无专属表情，使用固定映射",face.profile?face.profile->label.c_str():"");
+  if(playing)ImGui::TextWrapped(u8"播放器正在控制表情，停止后可手动调节。");
+  else if(!g_frozen) {
+    ImGui::TextWrapped(u8"先冻结角色，再调节表情；无需载入动作。");
+    ImGui::BeginDisabled(!CharAnimatorAlive());
+    if(ImGui::Button(u8"冻结并编辑"))FreezeCharacter();
+    ImGui::EndDisabled();
+  } else if(!ready)ImGui::TextWrapped(u8"正在准备角色表情，请稍候。");
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##mmd-face-search",u8"搜索表情",g_mmdFaceFilter,sizeof(g_mmdFaceFilter));
+  ImGui::BeginDisabled(playing||!g_frozen||!ready);
+  ImGui::Checkbox(u8"缺失时使用固定映射",&face.fallback);
+  ImGui::SetNextItemWidth((std::max)(80.f,ImGui::GetContentRegionAvail().x-94.f));
+  float strength=face.strength*100;
+  if(ImGui::SliderFloat(u8"整体强度",&strength,0,200,"%.0f%%",ImGuiSliderFlags_AlwaysClamp)) {face.strength=strength*.01f;face.applied=true;}
+  if(ImGui::Button(u8"全部归零"))face.clear();
+  ImGui::SameLine();ImGui::TextDisabled(u8"可叠加多个表情");
+  ImGui::EndDisabled();
+  const char *groups[]={"",u8"眉毛",u8"眼睛",u8"嘴部",u8"其他"};
+  for(int group=1;group<=4;++group) {
+    int visible=0;
+    for(int i=0;i<int(face.controls.size());++i) {
+      const auto &c=face.controls[i];auto label=mmd_face_controls::Label(c.name,c.panel,i);
+      if(c.panel==group&&(!g_mmdFaceFilter[0]||strstr(label.c_str(),g_mmdFaceFilter)||strstr(c.name.c_str(),g_mmdFaceFilter)))++visible;
+    }
+    if(!visible)continue;
+    ImGui::PushID(group);
+    if(ImGui::CollapsingHeader(groups[group],ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::BeginDisabled(playing||!g_frozen||!ready);
+      if(ImGui::SmallButton(u8"本组归零"))face.clear(group);
+      ImGui::EndDisabled();
+      for(int i=0;i<int(face.controls.size());++i) {
+        const auto &c=face.controls[i];auto label=mmd_face_controls::Label(c.name,c.panel,i);
+        if(c.panel!=group||(g_mmdFaceFilter[0]&&!strstr(label.c_str(),g_mmdFaceFilter)&&!strstr(c.name.c_str(),g_mmdFaceFilter)))continue;
+        int source=SMCManualSource(c);
+        ImGui::PushID(i);
+        ImGui::TextUnformatted(label.c_str());
+        if(ImGui::IsItemHovered()) {
+          ImGui::BeginTooltip();ImGui::Text(u8"原始名称：%s",c.name.c_str());
+          ImGui::TextUnformatted(source==1?u8"角色专属映射":source==2?u8"固定映射":u8"当前没有可用映射");
+          if(c.morph>=0&&face.profile&&!face.profile->morphs[c.morph].reason.empty())
+            ImGui::TextWrapped("%s",face.profile->morphs[c.morph].reason.c_str());
+          ImGui::EndTooltip();
+        }
+        if(!source){ImGui::SameLine();ImGui::TextDisabled(u8"（不可用）");}
+        ImGui::BeginDisabled(playing||!g_frozen||!ready||!source);
+        float value=face.weights[i];
+        ImGui::SetNextItemWidth((std::max)(60.f,ImGui::GetContentRegionAvail().x-48.f));
+        if(ImGui::SliderFloat("##weight",&value,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp))face.set(i,value);
+        ImGui::SameLine();if(ImGui::SmallButton(u8"归零"))face.set(i,0);
+        ImGui::EndDisabled();ImGui::PopID();
+      }
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+}
 
 // SMC（游戏原生表情，参照 EIEM smc_face.h）区块：口型 + 表情滑条 0-1
 static void DrawSMCSection() {
@@ -51,18 +117,20 @@ static void DrawSMCSection() {
 
   ImGui::BeginChild("##smclist", ImVec2(0, 0), false);
   int count = SMCSliderCount();
+  auto catalog=SMCManualCatalog();
   for (int i = 0; i < count; i++) {
-    const char *label = SMCSliderLabel(i);
+    auto label=mmd_face_controls::Label(catalog[i].name,catalog[i].panel,i);
     float v = SMCSliderValue(i);
     ImGui::PushID(i);
-    if (ImGui::SliderFloat(label, &v, 0.0f, 1.0f, "%.2f"))
+    if (ImGui::SliderFloat(label.c_str(), &v, 0.0f, 1.0f, "%.2f"))
       SMCSliderSet(i, v);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"原始通道：%s",SMCSliderLabel(i));
     ImGui::PopID();
   }
   ImGui::EndChild();
 }
 
-static void DrawMorphPanel() {
+static void DrawGameMorphPanel() {
   DrawSMCSection();
   if (s_blendShapes.empty()) {
     ImGui::TextDisabled(
@@ -109,4 +177,16 @@ static void DrawMorphPanel() {
   if (meshOpen)
     ImGui::Unindent();
   ImGui::EndChild();
+}
+
+static void DrawMorphPanel() {
+  int mode=s_mmdFaceMode?1:0;
+  ImGui::SetNextItemWidth(-1);
+  if(ImGui::Combo("##face-mode",&mode,u8"游戏模式\0MMD 模式\0"))SMCManualMode(mode==1);
+  if(s_mmdFaceMode)DrawMmdFaceSection();
+  else {
+    ImGui::BeginDisabled(MmdOwnsPose());
+    DrawGameMorphPanel();
+    ImGui::EndDisabled();
+  }
 }

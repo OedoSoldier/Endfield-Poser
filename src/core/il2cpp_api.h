@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+#include "runtime_lifetime.h"
 #include <windows.h>
 #include "MinHook.h"
 
@@ -242,7 +243,7 @@ static void *FindComponentTypeQuery(void *klass,const char *name,bool multiple) 
   return nullptr;
 }
 static void *AttachRuntimeThread() {
-  if (!g_runtimeReady.load(std::memory_order_acquire)) return nullptr;
+  if (RuntimeClosing() || !g_runtimeReady.load(std::memory_order_acquire)) return nullptr;
   __try {
     if (!il2cpp_domain_get || !il2cpp_thread_attach || !il2cpp_thread_detach) return nullptr;
     void *domain = il2cpp_domain_get();
@@ -250,24 +251,24 @@ static void *AttachRuntimeThread() {
   } __except (1) { return nullptr; }
 }
 static void DetachRuntimeThread(void *thread) {
-  __try { if (thread && il2cpp_thread_detach) il2cpp_thread_detach(thread); }
+  __try { if (thread && !g_runtimeTornDown.load() && il2cpp_thread_detach) il2cpp_thread_detach(thread); }
   __except (1) {}
 }
 struct RuntimeThreadScope {
   void *owned = nullptr;
-  bool ready = false;
+  bool ready = false, admitted = false;
   RuntimeThreadScope() {
-    if (!g_runtimeReady.load(std::memory_order_acquire)) return;
+    if (!g_runtimeReady.load(std::memory_order_acquire) || !(admitted=g_runtimeAdmission.enter())) return;
     ready = CurrentRuntimeThread() != nullptr;
     if (!ready) { owned = AttachRuntimeThread(); ready = owned != nullptr; }
   }
-  ~RuntimeThreadScope() { DetachRuntimeThread(owned); }
+  ~RuntimeThreadScope() { DetachRuntimeThread(owned); if(admitted) g_runtimeAdmission.leave(); }
   RuntimeThreadScope(const RuntimeThreadScope &) = delete;
   RuntimeThreadScope &operator=(const RuntimeThreadScope &) = delete;
 };
 
 static void *Invoke(void *method, void *obj, void **params = nullptr) {
-  if (!method)
+  if (!method || RuntimeClosing())
     return nullptr;
   __try {
     void *exc = nullptr;

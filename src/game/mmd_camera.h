@@ -135,8 +135,11 @@ static void Pump(void *camera) {
 // The native game uses instance void TailLateTick(float), including MethodInfo.
 using TailFn=void(__fastcall *)(void*,float,void*);
 static TailFn original=nullptr;
+static void (*framePulse)() = nullptr;
 static void __fastcall Tail(void *self,float dt,void *method) {
   original(self,dt,method);
+  if (RuntimeClosing()) return;
+  if (framePulse) framePulse();
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
   if (!lock.owns_lock()) {
     // The editor may hold the pose lock while drawing. Reapply the last camera

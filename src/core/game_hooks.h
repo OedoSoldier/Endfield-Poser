@@ -511,7 +511,7 @@ static void HookedSetMainCharacter(void *self, void *entity, bool flag, void *me
   __try {
     if (g_originalSetMainCharacter)
       g_originalSetMainCharacter(self, entity, flag, method);
-    QueueCharacterSelection(self, entity);
+    if (!RuntimeClosing()) QueueCharacterSelection(self, entity);
   } __finally {
     InterlockedDecrement(&g_characterSwitchDepth);
   }

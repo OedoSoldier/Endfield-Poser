@@ -21,7 +21,7 @@
 #include "editor/panel_library.h"
 
 static int g_webPort = 18923;
-static volatile bool g_webRunning = false;
+static std::atomic<bool> g_webRunning = false;
 
 // ---- 简易 HTTP 响应 ----
 static void HttpReply(SOCKET c, const char *ctype, const std::string &body) {
@@ -78,7 +78,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
     int n = snprintf(head, sizeof(head), "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", payload.size());
     send(c, head, n, 0); send(c, payload.data(), (int)payload.size(), 0); return;
   }
-  const bool readOnly = path=="/" || path=="/index.html" || path=="/api/status" || path=="/api/mmd/status" || path=="/api/bones" || path=="/api/allbones" || (path=="/api/pose" && body.empty());
+  const bool readOnly = path=="/" || path=="/index.html" || path=="/api/status" || path=="/api/mmd/status" || path=="/api/bones" || path=="/api/allbones" || path=="/api/face" || (path=="/api/pose" && body.empty());
   if(MmdOwnsPose() && !readOnly) {
     const char* payload="{\"ok\":false,\"err\":\"MMD playback owns the pose; stop playback before editing\"}";
     char head[256];int n=snprintf(head,sizeof(head),"HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",strlen(payload));
@@ -107,33 +107,14 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if (path == "/api/mmd/status") {
     auto &m=g_mmd;
-    nlohmann::json clothDetails=nlohmann::json::array(),capsuleDetails=nlohmann::json::array(),bbcDetails=nlohmann::json::array(),garmentDetails=nlohmann::json::array();
-    for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active && cloth.garment.garment) {
-      const auto &e=cloth.garment;nlohmann::json legs=nlohmann::json::array();
-      for(const auto &leg:e.legs)legs.push_back({{"submitted",leg.listed},{"effective",leg.effective},
-        {"radius",leg.radius},{"padding",leg.padding},{"unsupported",leg.unavailable},
-        {"bone_length",Len(leg.endpoint)}});
-      garmentDetails.push_back({{"name",cloth.name},{"status",e.status},{"ready",e.ready},
-        {"max_distance_enabled",e.maxDistance},{"backstop_enabled",e.backstop},
-        {"connection_mode",e.connection},{"legs",legs}});
+    nlohmann::json clothDetails=nlohmann::json::array();
+    for(int n=0;n<s_cloth.count;++n) {
+      const auto &i=s_cloth.instances[n];
+      clothDetails.push_back({{"name",i.name},{"phase",int(i.startup.phase)},
+        {"status",i.startup.reason},{"weight",i.last.weight},{"animation_pose_ratio",i.last.ratio},
+        {"running",i.last.state.running},{"active",i.last.state.active},
+        {"culled",i.last.state.culled},{"skirt",i.skirt}});
     }
-    for(const auto &cloth:g_bbcPlaybackCloths)if(cloth.active)bbcDetails.push_back({
-      {"name",cloth.name},{"compatible",cloth.compatible},{"running",cloth.running},
-      {"skip_writing",cloth.skip},{"enabled",cloth.enabled},{"lod_culled",cloth.culled},
-      {"weight",cloth.weight},{"blend",cloth.blend},{"animation_pose_ratio",cloth.poseRatio},
-      {"mode_effective",cloth.mode},{"original_weight",cloth.scalars[0].original},
-      {"original_blend",cloth.scalars[3].original}});
-    for(auto &cloth:g_skirtCloths) clothDetails.push_back({{"name",cloth.name},
-      {"mode_original",cloth.originalMode},{"mode_requested",cloth.currentMode},
-      {"status",cloth.modeStatus},{"simulate_weight",cloth.simulateWeight},
-      {"animation_pose_ratio",cloth.animationPoseRatio},{"blend_weight",cloth.blendWeight},
-      {"running",cloth.running},{"skip_writing",cloth.skipWriting},{"enabled",cloth.enabled},
-      {"lod_culled",cloth.culled},{"mode_effective",cloth.effectiveMode},
-      {"runtime_weight",cloth.runtimeWeight},{"runtime_blend",cloth.runtimeBlend}});
-    for(auto &cap:g_skirtCapsules) capsuleDetails.push_back({{"attachment",cap.attachment},
-      {"center",{cap.center.x,cap.center.y,cap.center.z}},{"axis",cap.axis},
-      {"reverse",cap.reverse},{"aligned",cap.aligned},
-      {"original_size",{cap.originalSize.x,cap.originalSize.y,cap.originalSize.z}}});
     HttpJson(c, {{"active",MmdOwnsPose()},{"loading",m.loading},{"preview",m.preview},
       {"state",int(m.timeline.state)},{"frame",m.timeline.seconds*30.},
       {"last_frame",m.timeline.duration*30},{"speed",m.timeline.speed},{"loop",m.timeline.loop},
@@ -144,20 +125,10 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"camera_callback_age",mmd_camera::lastCallback < 0 ? -1.0 : MmdNow()-mmd_camera::lastCallback},
       {"camera_applied",mmd_camera::applied},{"camera_restore_pending",!mmd_camera::request.active&&mmd_camera::lease.camera!=nullptr},
       {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
-      {"ground_contact",m.contact.enabled},{"ground_scene",m.contact.scene},
-      {"ground_status",m.groundProbe.status},
-      {"ground_fresh",MmdNow()-m.groundSampleTime<.3},
-      {"ground_left",m.contactResult.active[0]},{"ground_right",m.contactResult.active[1]},
-      {"ground_residual",m.contactResult.penetration},{"ground_limited",m.contactResult.limited},
-      {"skirt_collision",g_skirtCollisionEnabled},{"skirt_status",g_skirtStatus},
-      {"skirt_garments",g_skirtCloths.size()},{"skirt_examined",g_skirtExamined},
-      {"skirt_adjusted",g_skirtMatched},{"skirt_unsupported",g_skirtUnsupported},
-      {"skirt_edge",g_skirtEdgeCollision},{"skirt_details",clothDetails},{"skirt_capsules",capsuleDetails},
-      {"skirt_geometry",g_skirtGeometryOverride},
-      {"bbc_enabled",g_bbcSyncEnabled},{"bbc_hook",g_bbcHookReady},{"bbc_direct_transforms",g_bbcDirectTransforms},
-      {"bbc_full_simulation",g_bbcFullSimulation},{"bbc_details",bbcDetails},
-      {"bbc_leg_coverage",g_bbcLegCoverage},{"bbc_leg_padding",g_bbcLegPadding},{"bbc_garments",garmentDetails},
-      {"bbc_status",g_bbcStatus},{"bbc_frames",g_bbcFrames},{"bbc_restore_pending",g_bbcSaved&&!g_bbcRequested.load()},
+      {"cloth_mode","native"},{"cloth_requested",s_clothRequested},
+      {"cloth_active",s_cloth.active},{"cloth_failed",s_cloth.failed},
+      {"cloth_restore_pending",s_cloth.releasing || (!s_clothRequested && s_cloth.active)},
+      {"cloth_hip_radius",s_skirtHipRadiusDelta.load()},{"cloth_details",clothDetails},
       {"freeze_cloth",m.freezeCloth},
       {"calibration",m.calibrationStatus},
       {"character_ready",MmdCharacterReady()},
@@ -175,6 +146,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"music_duration",m.audio.clip() ? m.audio.clip()->duration() : 0},
       {"game_frame_sync",g_frameDiagnostics.gameDriven},
       {"frame_source",g_frameDiagnostics.source},
+      {"game_thread",g_frameGameThreadId.load()},{"play_pending",s_mmdStartRequest.active},
       {"update_hz",g_frameDiagnostics.hz},{"max_gap_ms",g_frameDiagnostics.maxGapMs},
       {"max_update_ms",g_frameDiagnostics.maxCostMs},{"busy_skips",g_frameDiagnostics.busy},
       {"calibrated",m.profileAnimator == g_charAnimator &&
@@ -182,15 +154,28 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"model",CurrentCharModelKey()},{"file",m.file},{"report",m.report},
       {"hidden_props",m.session.active ? m.session.props.size() : 0},
       {"smc_ready",SMCSectionReady()},{"bone_tracks",m.clip.bones.size()},
-      {"face_templates",m.faceSettings.uses(face_mixing::Driver::Template)},
+      {"native_face_paused",s_smcAutomation.confirmed},
+      {"face_mode","character"},{"face_fallback",m.faceSettings.fallback},
       {"face_strength",m.faceSettings.strength},{"face_regions",face_mixing::Write(m.faceSettings)["regions"]},
-      {"face_template_ready",s_templateBinding.ready},
-      {"face_template_bones",s_templateBinding.controlled},
-      {"face_template_brows",s_templateBinding.brows},
-      {"face_template_lids",s_templateBinding.lids},
-      {"face_template_lips",s_templateBinding.lips},
+      {"face_profile",m.characterFace?m.characterFace->key:""},
+      {"face_profile_ready",s_characterBinding.ready},{"face_profile_matched",s_characterBinding.matched},
+      {"face_profile_usable",s_characterBinding.usableCount},{"face_profile_error",s_characterBinding.error},
+      {"face_library_count",m.faceLibrary.size()},{"face_library_loading",m.faceLibraryLoading},
+      {"face_library_error",m.faceLibraryError},
       {"morph_tracks",m.clip.morphs.size()}});
     return;
+  }
+  if(path=="/api/face") {
+    nlohmann::json bones=nlohmann::json::array(),missing=nlohmann::json::array();
+    for(int i=0;i<int(s_faceNodes.size());++i) {
+      const auto &b=s_faceNodes[i];auto v=b.neutral.position();
+      bones.push_back({{"name",b.name},{"parent",b.parent},{"position",{v.x,v.y,v.z}},
+        {"region",s_faceRegions[i]},{"matrix",b.neutral.m}});
+    }
+    if(s_characterProfile)for(int i=0;i<int(s_characterBinding.slots.size());++i)
+      if(s_characterBinding.slots[i]<0)missing.push_back(s_characterProfile->bones[i].name);
+    HttpJson(c,{{"model",CurrentCharModelKey()},{"generation",s_faceGeneration},{"ready",s_characterBinding.ready},
+      {"status",s_characterBinding.status},{"bones",bones},{"missing",missing}});return;
   }
   if (path == "/api/allbones") {
     // 全骨骼（含手指/配饰等），供 Blender 桥接构建完整 Armature
@@ -565,8 +550,8 @@ static DWORD WINAPI WebServerThread(LPVOID) {
   }
   listen(s, 8);
   Log("[WEB] UI server: http://127.0.0.1:%d", g_webPort);
-  g_webRunning = true;
-  while (g_webRunning) {
+  g_webRunning = !RuntimeClosing();
+  while (g_webRunning && !RuntimeClosing()) {
     // 非阻塞 accept：500ms 超时轮询，g_webRunning 置假后可干净退出
     fd_set rfds;
     FD_ZERO(&rfds);
@@ -590,7 +575,7 @@ static DWORD WINAPI WebServerThread(LPVOID) {
 }
 
 static void StartWebServer() {
-  if (g_webRunning)
+  if (RuntimeClosing() || g_webRunning)
     return;
   CreateThread(nullptr, 0, WebServerThread, nullptr, 0, nullptr);
 }

@@ -377,4 +377,20 @@ struct Timeline {
     seconds = 0;
   }
 };
+// UI transport requests are consumed on the game thread before cloth capture.
+// Preserve a seek/pause that arrives while playback is waiting for that thread.
+struct DeferredStart {
+  bool active=false, paused=false;
+  double seconds=NAN;
+  void play() {active=true;paused=false;seconds=NAN;}
+  void seek(double value) {active=true;paused=true;seconds=value;}
+  void pause() {if(active) paused=true;}
+  void cancel() {*this={};}
+  void apply(Timeline &timeline, double now) const {
+    if (!active) return;
+    if (std::isfinite(seconds)) timeline.seek(seconds,now);
+    if (paused) timeline.pause(now);
+    else timeline.play(now);
+  }
+};
 } // namespace mmd

@@ -6,8 +6,6 @@
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
 #include "math/mmd_adaptation.h"
-#include "game/mmd_ground_probe.h"
-#include "game/bbc_playback.h"
 #include "game/mmd_camera.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
@@ -401,7 +399,6 @@ struct MmdSession {
   Quat rootRot;
   mmd::Matrix anchorWorld;
   bool anchorWorldValid=false;
-  float planeHeight=0;
   std::vector<MmdSavedTransform> transforms;
   std::shared_ptr<GripReferences> references;
   std::vector<MmdSavedComponent> components;
@@ -425,8 +422,18 @@ struct MmdLoadResult {
   nlohmann::json adaptation;
   std::shared_ptr<const mmd::AudioClip> music;
 };
+struct MmdFaceLibraryResult {
+  std::vector<std::shared_ptr<const character_face::Profile>> profiles;
+  std::string error;
+};
 struct MmdPlayer {
-  bool faceSettingsLoaded=false;
+  bool faceSettingsLoaded=false,faceLibraryStarted=false,faceLibraryLoading=false;
+  std::vector<std::shared_ptr<const character_face::Profile>> faceLibrary;
+  std::shared_ptr<const character_face::Profile> characterFace;
+  std::future<MmdFaceLibraryResult> faceLoader;
+  std::string faceLibraryError,faceModel;
+  uint64_t faceSelectionGeneration=0;
+  bool faceSelectionReady=false;
   face_mixing::Settings faceSettings;
   nlohmann::json faceSavedMappings=nlohmann::json::object();
   nlohmann::json faceSavedNativeMappings=nlohmann::json::object();
@@ -442,13 +449,6 @@ struct MmdPlayer {
   int sourcePreset = 0; // 0: A-pose, 1: extracted T-pose; manual selection
   mmd::IkMode ikMode = mmd::IkMode::FollowMotion;
   mmd::MotionAmplitude amplitude;
-  mmd::ContactOptions contact;
-  mmd::ContactResult contactResult;
-  MmdGroundProbe groundProbe;
-  std::array<mmd::GroundPlane,2> groundPlanes;
-  std::array<Vec3,2> groundRequest{},groundSampleAt{};
-  std::array<bool,2> groundRequestValid{false,false};
-  double groundSampleTime=-1e30, groundNextQuery=0;
   mmd::RetargetProfile profile;
   mmd::Retargeter mapper;
   mmd::Timeline timeline;
@@ -469,7 +469,11 @@ struct MmdPlayer {
   int profileRevision = -1;
   void *profileAnimator = nullptr;
 };
-static MmdPlayer g_mmd;
+// Process-lifetime owner: its futures and XAudio voices must not be destroyed
+// by the CRT under the DLL loader lock after Windows has stopped other threads.
+// Normal plugin disable still performs MmdStop and joins imports explicitly.
+static MmdPlayer &g_mmd = *new MmdPlayer;
+static mmd::DeferredStart s_mmdStartRequest;
 static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
   return g_mmd.cameraFile.empty() ? g_mmd.clip.cameras : g_mmd.cameraTrack;
 }
@@ -492,52 +496,7 @@ static void MmdPublishCamera() {
     mmd::PlaceCamera(mmd::SampleCamera(keys,m.timeline.seconds*30,m.cameraSettings.cuts),
       m.cameraSettings,s.anchorWorld.position(),s.cameraBasis,delta,m.scale)});
 }
-static void MmdBbcPrepare(bool stepped);
-static void MmdProbeGround() {
-  auto &m=g_mmd;
-  if(DWORD(InterlockedCompareExchange(&g_gameLogicThreadId,0,0))!=GetCurrentThreadId()) return;
-  if(!m.session.active || m.preview || !m.contact.enabled || !m.contact.scene ||
-     m.session.animator!=g_charAnimator || m.session.revision!=s_bonesRev ||
-     !UnityObjAlive(m.session.animator) || !UnityObjAlive(m.session.root) ||
-     CharacterSwitchInProgress()) return;
-  double now=MmdNow();
-  if(now<m.groundNextQuery) return;
-  m.groundNextQuery=now+.05; // bounded 20 Hz scene queries; pose still samples each frame
-  __try {
-    for(int side=0;side<2;++side) {
-      m.groundPlanes[side]={};
-      if(m.groundRequestValid[side])
-        m.groundProbe.sample(m.groundRequest[side],m.session.root,m.groundPlanes[side]);
-      m.groundSampleAt[side]=m.groundRequest[side];
-    }
-    m.groundSampleTime=now;
-  } __except(1) {
-    m.groundPlanes={};
-    m.groundProbe.status=u8"地面查询异常，已停用场景探测";
-    g_smcSceneObserver=nullptr;
-  }
-}
-static void MmdApplyContacts() {
-  auto &m=g_mmd;auto &s=m.session;auto &p=m.mapper.output;
-  m.contactResult={};m.groundRequestValid={false,false};
-  if(!m.contact.enabled || !s.anchorWorldValid) return;
-  std::array<mmd::GroundPlane,2> planes;
-  std::array<bool,2> allowed{true,true};
-  for(int side=0;side<2;++side) {
-    int foot=m.profile.roles[5+side];
-    if(foot<0 || !p.write[foot]) {allowed[side]=false;continue;}
-    for(int role:{1+side,3+side,5+side,19+side})
-      for(int h=0;h<s_humanBoneCount;++h)
-        if(s_humanBones[h].humanBone==role && s_humanBones[h].locked) allowed[side]=false;
-    Vec3 at=mmd::TransformPoint(s.anchorWorld,p.worldPos[foot]+p.rootOffset);
-    m.groundRequest[side]=at;m.groundRequestValid[side]=allowed[side];
-    if(m.contact.scene) {
-      Vec3 delta=at-m.groundSampleAt[side];delta.y=0;
-      if(MmdNow()-m.groundSampleTime<.3 && Len(delta)<.25f) planes[side]=m.groundPlanes[side];
-    } else planes[side]={{at.x,s.planeHeight,at.z},{0,1,0},true};
-  }
-  m.contactResult=mmd::ApplyGroundContact(m.profile,p,s.anchorWorld,planes,m.contact,allowed);
-}
+
 static void MmdSyncAudio() {
   auto &m = g_mmd;
   try {
@@ -618,95 +577,134 @@ static UINT_PTR CALLBACK MmdDialogHook(HWND window, UINT message, WPARAM,
   return 0;
 }
 static void MmdStop();
+static void MmdReport();
+static void MmdSaveFaceSettings();
 static void MmdLoadFaceSettings() {
   auto &m=g_mmd;if(m.faceSettingsLoaded)return;m.faceSettingsLoaded=true;
   try {
-    std::ifstream f(MmdConfigDirectory()/L"face-templates.json");
+    auto path=MmdConfigDirectory()/L"character-face-settings.json";
+    bool legacy=!std::filesystem::exists(path);
+    std::ifstream f(legacy?MmdConfigDirectory()/L"face-templates.json":path);
     if(!f)return;
-    nlohmann::json j;f>>j;
-    auto settings=face_mixing::Read(j);
-    auto mappings=j.value("mappings",nlohmann::json::object());
-    if(!mappings.is_object())throw std::runtime_error("Invalid face template mappings");
-    m.faceSettings=settings;m.faceSavedMappings=std::move(mappings);
-  } catch(const std::exception &e) {m.status=e.what();Log("[FACE] settings load failed: %s",e.what());}
+    nlohmann::json j;f>>j;m.faceSettings=face_mixing::Read(j);
+    if(!legacy) {
+      auto mappings=j.value("mappings",nlohmann::json::object());
+      if(!mappings.is_object())throw std::runtime_error("Invalid character face mappings");
+      m.faceSavedMappings=std::move(mappings);
+    }
+    if(legacy)MmdSaveFaceSettings();
+  } catch(const std::exception &e){m.faceLibraryError=e.what();Log("[FACE] settings load failed: %s",e.what());}
 }
 static void MmdSaveFaceSettings() {
   try {
     auto dir=MmdConfigDirectory();std::filesystem::create_directories(dir);
-    auto path=dir/L"face-templates.json",temp=dir/L"face-templates.json.tmp";
-    nlohmann::json j=face_mixing::Write(g_mmd.faceSettings);
-    j["mappings"]=g_mmd.faceSavedMappings;
+    auto path=dir/L"character-face-settings.json",temp=dir/L"character-face-settings.json.tmp";
+    auto j=face_mixing::Write(g_mmd.faceSettings);j["mappings"]=g_mmd.faceSavedMappings;
     {std::ofstream f(temp,std::ios::binary|std::ios::trunc);f<<j.dump(2);f.flush();
-      if(!f)throw std::runtime_error("Could not write face template settings");}
+      if(!f)throw std::runtime_error("Could not write character face settings");}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
-      throw std::runtime_error("Could not replace face template settings");
-  } catch(const std::exception &e){g_mmd.status=e.what();Log("[FACE] settings save failed: %s",e.what());}
+      throw std::runtime_error("Could not replace character face settings");
+  } catch(const std::exception &e){g_mmd.faceLibraryError=e.what();}
 }
 static void MmdSaveMappings(bool native) {
   if(!native) {
-    for(auto &kv:g_mmd.morphMap)
-      g_mmd.faceSavedMappings[kv.first]={{"template",kv.second.slider>=0?
-        face_template::Definitions()[kv.second.slider].key:""},{"gain",kv.second.gain}};
+    if(!g_mmd.characterFace)return;
+    auto &saved=g_mmd.faceSavedMappings[g_mmd.characterFace->key];
+    for(auto &kv:g_mmd.morphMap)saved[kv.first]={{"morph",kv.second.slider>=0?
+      g_mmd.characterFace->morphs[kv.second.slider].name:""},{"gain",kv.second.gain}};
     MmdSaveFaceSettings();return;
   }
   try {
-    nlohmann::json j = g_mmd.faceSavedNativeMappings;
-    for (auto &kv : g_mmd.morphMap)
-      j[kv.first] = {{"slider", kv.second.nativeSlider}, {"gain", kv.second.nativeGain}};
-    auto dir = MmdConfigDirectory();
-    std::filesystem::create_directories(dir);
+    nlohmann::json j=g_mmd.faceSavedNativeMappings;
+    for(auto &kv:g_mmd.morphMap)j[kv.first]={{"slider",kv.second.nativeSlider},{"gain",kv.second.nativeGain}};
+    auto dir=MmdConfigDirectory();std::filesystem::create_directories(dir);
     auto path=dir/L"morph-mapping.json",temp=dir/L"morph-mapping.json.tmp";
     {std::ofstream f(temp,std::ios::binary|std::ios::trunc);f<<j.dump(2);f.flush();
-      if(!f)throw std::runtime_error("Could not write game expression mappings");}
+      if(!f)throw std::runtime_error("Could not write fixed expression mappings");}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
-      throw std::runtime_error("Could not replace game expression mappings");
+      throw std::runtime_error("Could not replace fixed expression mappings");
     g_mmd.faceSavedNativeMappings=std::move(j);
-  } catch (const std::exception &e) {
-    g_mmd.status = e.what();
-  }
+  } catch(const std::exception &e){g_mmd.faceLibraryError=e.what();}
 }
 static void MmdMapMorphs() {
-  MmdLoadFaceSettings();
-  auto &m = g_mmd;
-  m.morphMap.clear();
+  MmdLoadFaceSettings();auto &m=g_mmd;m.morphMap.clear();
   nlohmann::json saved;
-  try {
-    std::ifstream f(MmdConfigDirectory() / L"morph-mapping.json");
-    if (f)
-      f >> saved;
-  } catch (...) {
-  }
+  try {std::ifstream f(MmdConfigDirectory()/L"morph-mapping.json");if(f)f>>saved;}catch(...){}
   m.faceSavedNativeMappings=saved.is_object()?saved:nlohmann::json::object();
-  const char *vowels[] = {u8"あ", u8"い", u8"う", u8"え", u8"お"};
-  for (auto &kv : m.clip.morphs) {
+  const char *vowels[]={u8"あ",u8"い",u8"う",u8"え",u8"お"};
+  for(auto &kv:m.clip.morphs) {
     MmdMorphMapping map;
-    {
-      map.slider=face_template::Find(kv.first);
+    if(m.characterFace) {
+      auto target=kv.first;
       try {
-        if(m.faceSavedMappings.contains(kv.first)) {
-          const auto &item=m.faceSavedMappings[kv.first];
-          map.slider=face_template::Find(item.value("template",std::string{}));
-          map.gain=face_template::Clamp(item.value("gain",1.f),0,2);
+        const auto &all=m.faceSavedMappings;
+        if(all.contains(m.characterFace->key)&&all[m.characterFace->key].contains(kv.first)) {
+          const auto &v=all[m.characterFace->key][kv.first];target=v.value("morph",target);
+          map.gain=face_geometry::Clamp(v.value("gain",1.f),0,2);
         }
-      } catch(...) {}
+      }catch(...){}
+      map.slider=character_face::FindMorph(*m.characterFace,target);
     }
-    for (int i = 0; i < 5; i++)
-      if (kv.first == vowels[i])
-        map.nativeSlider = i;
-    for (int i = 0; i < s_extraMorphCount; i++)
-      if (kv.first == mmd::Name(s_extraMorphs[i].vmdNameUtf8))
-        map.nativeSlider = 5 + i;
-    try {
-      if (saved.contains(kv.first)) {
-        map.nativeSlider = saved[kv.first].value("slider", map.nativeSlider);
-        map.nativeGain = mmd::Clamp(saved[kv.first].value("gain", 1.f), 0, 2);
-      }
-    } catch (...) {
-    }
-    if (map.nativeSlider < -1 || map.nativeSlider >= SMCSliderCount())
-      map.nativeSlider = -1;
-    m.morphMap[kv.first] = map;
+    for(int i=0;i<5;++i)if(kv.first==vowels[i])map.nativeSlider=i;
+    for(int i=0;i<s_extraMorphCount;++i)if(kv.first==mmd::Name(s_extraMorphs[i].vmdNameUtf8))map.nativeSlider=5+i;
+    try {if(saved.contains(kv.first)){map.nativeSlider=saved[kv.first].value("slider",map.nativeSlider);
+      map.nativeGain=face_geometry::Clamp(saved[kv.first].value("gain",1.f),0,2);}}catch(...){}
+    if(map.nativeSlider < -1||map.nativeSlider>=SMCSliderCount())map.nativeSlider=-1;
+    m.morphMap[kv.first]=map;
   }
+}
+static void MmdReloadCharacterFaces() {
+  auto &m=g_mmd;if(m.faceLibraryLoading||MmdOwnsPose())return;
+  m.faceLibraryStarted=true;m.faceLibraryLoading=true;m.faceLibraryError.clear();
+  auto directory=MmdConfigDirectory()/L"character-faces";
+  m.faceLoader=std::async(std::launch::async,[directory] {
+    MmdFaceLibraryResult result;
+    try {
+      if(!std::filesystem::exists(directory))return result;
+      std::vector<std::filesystem::path> paths;
+      for(const auto &entry:std::filesystem::directory_iterator(directory)) {
+        auto name=entry.path().filename().u8string();
+        if(entry.is_regular_file()&&name.size()>=10&&name.compare(name.size()-10,10,".face.json")==0)paths.push_back(entry.path());
+        if(paths.size()>256)throw std::runtime_error("Too many character face profiles");
+      }
+      std::sort(paths.begin(),paths.end());uintmax_t total=0;
+      for(const auto &path:paths) {
+        auto bytes=std::filesystem::file_size(path);total+=bytes;
+        if(bytes>16*1024*1024||total>128*1024*1024)throw std::runtime_error("Character face library too large");
+        std::ifstream f(path,std::ios::binary);nlohmann::json j;f>>j;
+        result.profiles.push_back(std::make_shared<const character_face::Profile>(character_face::Read(j)));
+      }
+      std::stable_sort(result.profiles.begin(),result.profiles.end(),[](const auto &a,const auto &b) {
+        if(a->key!=b->key)return a->key<b->key;
+        return a->label.size()<b->label.size();
+      });
+    }catch(const std::exception &e){result.profiles.clear();result.error=e.what();}
+    return result;
+  });
+}
+static void MmdPollCharacterFaces() {
+  auto &m=g_mmd;bool changed=false,selectionChanged=false;
+  if(!m.faceLibraryStarted)MmdReloadCharacterFaces();
+  if(m.faceLibraryLoading&&m.faceLoader.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+    auto result=m.faceLoader.get();m.faceLibraryLoading=false;m.faceLibraryError=result.error;
+    if(result.error.empty()){m.faceLibrary=std::move(result.profiles);changed=true;}
+  }
+  auto key=character_face::ModelKey(CurrentCharModelKey());
+  if(changed||key!=m.faceModel||m.faceSelectionGeneration!=s_faceGeneration||m.faceSelectionReady!=s_faceHierarchy.ready) {
+    selectionChanged=true;
+    auto previous=m.characterFace;m.faceModel=key;m.characterFace.reset();float best=1e30f;
+    for(auto &profile:m.faceLibrary)if(profile->key==key) {
+      if(!m.characterFace)m.characterFace=profile;
+      if(s_faceHierarchy.ready) {
+        auto binding=character_face::Bind(*profile,key,s_faceNodes,s_faceHierarchy);
+        if(binding.ready&&binding.error<best){best=binding.error;m.characterFace=profile;}
+      }
+    }
+    m.faceSelectionGeneration=s_faceGeneration;m.faceSelectionReady=s_faceHierarchy.ready;
+    if(changed||previous!=m.characterFace)MmdMapMorphs();
+  }
+  SMCFaceSelectProfile(m.characterFace,CurrentCharModelKey());
+  if(selectionChanged)MmdReport();
 }
 static void MmdReport() {
   auto &m = g_mmd;
@@ -725,18 +723,20 @@ static void MmdReport() {
       m.report.push_back(u8"映射的动作轨道不存在：" + kv.second + u8" → " + kv.first);
   for (const auto &name : evaluation.unmapped)
     m.report.push_back(u8"未映射或不影响人体的骨骼: " + name);
-  for (auto &kv : m.morphMap) {
-    if (kv.second.slider < 0 && kv.second.nativeSlider < 0) {
-      auto type = m.rig.morphTypes.find(kv.first);
-      m.report.push_back((type != m.rig.morphTypes.end() && type->second == 8
-                              ? u8"不支持材质表情: "
-                              : u8"未映射表情: ") +
-                         kv.first);
-    }
-    else if(kv.second.slider>=0&&kv.second.nativeSlider<0) {
-      int region=face_mixing::TemplateRegion(kv.second.slider);
-      if(m.faceSettings.driver[region]==face_mixing::Driver::Eiem)
-        m.report.push_back(std::string(face_mixing::Label(region))+u8"使用游戏表情映射，未匹配该轨道："+kv.first);
+  if(!m.characterFace)m.report.push_back(m.faceSettings.fallback?
+    u8"当前角色没有专属表情校准，将使用固定映射":u8"当前角色没有专属表情校准，固定映射兜底已关闭");
+  else if(!s_characterBinding.ready)m.report.push_back(m.faceSettings.fallback?
+    u8"专属校准尚未匹配当前骨架，将使用固定映射":u8"专属校准尚未匹配当前骨架，固定映射兜底已关闭");
+  for(auto &kv:m.morphMap) {
+    if(kv.second.slider<0) {
+      if(kv.second.nativeSlider<0||!m.faceSettings.fallback)m.report.push_back(u8"未映射表情: "+kv.first);
+      else m.report.push_back(u8"专属校准未覆盖，使用固定映射: "+kv.first);
+    } else {
+      const auto &morph=m.characterFace->morphs[kv.second.slider];
+      if(!morph.supported)m.report.push_back(kv.first+u8"："+morph.reason);
+      else if(s_characterBinding.ready&&kv.second.slider<int(s_characterBinding.usable.size())&&!s_characterBinding.usable[kv.second.slider])
+        m.report.push_back(kv.first+u8"：游戏面部缺少校准所需控制点");
+      else if(morph.residual>.1f)m.report.push_back(kv.first+u8"：骨骼近似，部分源形变无法完整还原");
     }
   }
 }
@@ -768,8 +768,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
   if (kind == 4) {
     saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
     saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
-    saved["collision"] = mmd::CollisionJson({m.contact,g_skirtCollisionEnabled,
-      g_skirtTaperOn,g_skirtHipRadiusDelta,g_skirtRadiusA,g_skirtLengthScale,g_skirtEdgeCollision,g_bbcSyncEnabled,g_skirtGeometryOverride,g_bbcFullSimulation,g_bbcLegCoverage,g_bbcLegPadding});
+    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load()});
     saved["requires_pmx"] = m.reference;
     // Portable source structure check, never store a required local PMX path.
     if (m.reference) {
@@ -842,7 +841,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
         int pose; mmd::IkMode ik;
         mmd::ReadAdaptation(result.adaptation, pose, ik);
         mmd::ReadAmplitude(result.adaptation);
-        mmd::ReadCollision(result.adaptation);
+        mmd::ReadNativeCloth(result.adaptation);
       } else if (kind == 2)
         result.rig = mmd::ReadPmx(bytes, mmd::Decode);
       else {
@@ -914,17 +913,11 @@ static void MmdPollLoad() {
       int pose; mmd::IkMode ik;
       auto a = mmd::ReadAdaptation(j, pose, ik);
       auto amplitude = mmd::ReadAmplitude(j);
-      auto collision = mmd::ReadCollision(j);
+      auto cloth = mmd::ReadNativeCloth(j);
       if (MmdApplyAdaptation(a, pose)) {
         m.amplitude = amplitude;
-        m.contact=collision.ground;g_skirtCollisionEnabled=collision.skirt;
-        g_skirtTaperOn=collision.taper;g_skirtHipRadiusDelta=collision.hip;
-        g_skirtRadiusA=collision.radius;g_skirtLengthScale=collision.length;
-        g_skirtEdgeCollision=collision.edge;
-        g_bbcSyncEnabled=collision.bbc;g_skirtGeometryOverride=collision.geometry;
-        g_bbcFullSimulation=collision.fullSimulation;
-        g_bbcLegCoverage=collision.legCoverage;g_bbcLegPadding=collision.legPadding;
-        SkirtMarkDirty();
+        s_skirtHipRadiusDelta.store(cloth.hipRadius);
+        s_skirtDirty.store(true);
         m.ikMode = ik; m.adaptationFile = r.file;
         m.status = u8"适配预设已载入：" + r.file;
       }
@@ -1037,15 +1030,6 @@ static void MmdCaptureSession() {
     } else s.cameraBasis=mmd::Rotation(s.anchorWorld);
   }
   if (!s.bodyOwned) return;
-  s.planeHeight=1e9f;
-  if(s.anchorWorldValid) for(int role:{5,6,19,20}) {
-    int i=m.profile.roles[role];
-    if(i>=0) s.planeHeight=(std::min)(s.planeHeight,mmd::TransformPoint(s.anchorWorld,m.profile.bones[i].restPos).y-m.contact.sole);
-  }
-  if(s.planeHeight==1e9f) s.planeHeight=s.anchorWorld.position().y;
-  m.groundPlanes={};m.groundRequestValid={false,false};
-  m.groundSampleTime=-1e30;m.groundNextQuery=0;
-  g_smcSceneObserver=MmdProbeGround;
   for (auto &b : s_allBones) {
     retain(b.transform);
     s.transforms.push_back({b.transform, GetBoneLocalPos(b.transform),
@@ -1075,7 +1059,14 @@ static void MmdCaptureSession() {
       s.components.push_back({c, MmdEnabled(c)});
     }
   g_freezeAccessories = m.freezeCloth;
-  BbcPlaybackBegin();
+  if (!m.preview && !m.freezeCloth) {
+    for (int i=0; i<s_humanBoneCount; ++i) if (s_humanBones[i].humanBone==Head) {
+      float h=GetBoneWorldPos(s_humanBones[i].transform).y-GetBoneWorldPos(s.root).y;
+      s_clothCharacterHeight=std::isfinite(h)&&h>.1f&&h<5.f?h:1.245f;
+      break;
+    }
+    ClothRequestPlayback(true, !g_frozen);
+  }
   if (g_frozen && !m.freezeCloth)
     SetAllPhysicsEnabled(true, true);
   if (!g_frozen)
@@ -1085,10 +1076,6 @@ static void MmdCaptureSession() {
     SetAllPhysicsEnabled(false, true);
   }
   MmdHideProps(true);
-  g_bbcPreparePose=MmdBbcPrepare;
-  g_bbcObserve=BbcPlaybackObserve;
-  g_bbcMaintenance=BbcPlaybackMaintain;
-  g_bbcRequested.store(!m.preview && !m.freezeCloth);
 }
 static void MmdStop() {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
@@ -1096,11 +1083,8 @@ static void MmdStop() {
   auto &s = m.session;
   m.timeline.stop();
   mmd_camera::Stop();
-  g_bbcRequested.store(false);
-  BbcPlaybackEnd();
-  g_smcSceneObserver=nullptr;
-  m.groundProbe.release();m.groundPlanes={};m.groundRequestValid={false,false};
-  m.groundSampleTime=-1e30;m.contactResult={};
+  ClothRequestPlayback(false);
+  s_mmdStartRequest.cancel();
   m.audio.close();
   SMCMotionPublish({});
   InterlockedExchange(&g_mmdOwnsPose, 0);
@@ -1131,8 +1115,6 @@ static void MmdStop() {
     g_frozen = s.wasFrozen;
     g_freezeAccessories = s.freezeAccessories;
     g_animatorWasEnabled = s.animatorWasEnabled;
-    if (ownerAlive && !s.wasFrozen)
-      RestoreSkirtColliders();
     s_accessoryBones = s.accessories;
     s_accessoryChains = s.chains;
     if (ownerAlive) CapturePoseSnapshot();
@@ -1176,7 +1158,6 @@ static void MmdApplyFrame() {
   double frame = m.timeline.seconds * 30.;
   if (!s.bodyOwned) {MmdPublishCamera();return;}
   m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude);
-  MmdApplyContacts();
   const auto &p = m.mapper.output;
   MmdRawPose(s.root, s.rootPos + s.rootRot * p.rootOffset, s.rootRot);
   for (size_t i = 0; i < p.write.size(); i++) {
@@ -1202,17 +1183,19 @@ static void MmdApplyFrame() {
   face.animator = s.animator;
   face.generation=s_faceGeneration;
   face.settings=m.faceSettings;
-  for (auto &kv : m.morphMap) {
+  face.profile=m.characterFace;
+  for(auto &kv:m.morphMap) {
     float sample=mmd::SampleMorph(m.clip.morphs.at(kv.first),frame);
-    if (kv.second.slider >= 0) {
-        int id=kv.second.slider;
-        // Synonyms describe the same pose. Max prevents duplicate aliases
-        // (e.g. smile + mouth-corner-up) from doubling its displacement.
-        face.expressions[id]=(std::max)(face.expressions[id],face_template::Clamp(
-          sample*kv.second.gain,0,1));
+    int id=kv.second.slider;
+    bool calibrated=m.characterFace&&s_characterProfile==m.characterFace&&s_characterBinding.ready&&
+      id>=0&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id];
+    if(calibrated)face.expressions[id]=(std::max)(face.expressions[id],face_geometry::Clamp(sample*kv.second.gain,0,1));
+    int native=kv.second.nativeSlider;
+    if(native>=0) {
+      float value=sample*kv.second.nativeGain;
+      face.weights[native]=face_geometry::Clamp(face.weights[native]+value,0,1);
+      if(!calibrated)face.fallbackWeights[native]=face_geometry::Clamp(face.fallbackWeights[native]+value,0,1);
     }
-    if(kv.second.nativeSlider>=0)face.weights[kv.second.nativeSlider]=
-      mmd::Clamp(face.weights[kv.second.nativeSlider]+sample*kv.second.nativeGain,0,1);
   }
   for (int e = 0; e < 2; e++) {
     int idx = m.profile.roles[21 + e];
@@ -1226,17 +1209,22 @@ static void MmdApplyFrame() {
   SMCMotionPublish(face);
   MmdPublishCamera();
 }
-static void MmdBbcPrepare(bool stepped) {
-  auto &m=g_mmd;
-  if(!m.session.active || !m.session.bodyOwned || m.preview || m.freezeCloth) {g_bbcRequested.store(false);return;}
-  // The native scheduling switch fences last frame before this pose is read.
-  // If another game callback sampled already, resubmit that same time's pose.
-  if(!stepped) {SkirtTick();MmdApplyFrame();}
+static bool MmdClothMayAdjustAnchor(void *transform) {
+  if (!transform || transform==g_mmd.session.root) return false;
+  for (int i=0;i<s_humanBoneCount;++i) if (s_humanBones[i].transform==transform) return false;
+  for (const auto &b:s_accessoryBones) if (b.transform==transform && b.locked) return false;
+  for (size_t i=0;i<s_allBones.size() && i<g_mmd.mapper.output.write.size();++i)
+    if (s_allBones[i].transform==transform && g_mmd.mapper.output.write[i]) return false;
+  return true;
 }
 static bool MmdStart() {
   auto &m = g_mmd;
-  if (m.loading || m.preview || !MmdHasContent())
-    return false;
+  if (m.loading || m.preview || !MmdHasContent()) return false;
+  // Capture cloth originals before suppressing animation, on the Unity thread.
+  if (!ClothOnMainThread()) {
+    s_mmdStartRequest.play();m.status=u8"等待游戏线程开始播放";return false;
+  }
+  s_mmdStartRequest.cancel();
   if (!MmdCharacterReady()) {
     MmdStop();
     m.status = u8"正在等待当前角色骨架，请稍后重试或点击刷新骨骼";
@@ -1267,12 +1255,24 @@ static bool MmdStart() {
       m.scale);
   return true;
 }
+static void MmdSeekOrStart(double seconds) {
+  if (!g_mmd.session.active && !MmdStart()) {
+    if (s_mmdStartRequest.active) s_mmdStartRequest.seek(seconds);
+    return;
+  }
+  MmdSeek(seconds);MmdApplyFrame();
+}
 static void MmdTick() {
   try {
     auto &m = g_mmd;
     MmdLoadFaceSettings();
+    MmdPollCharacterFaces();
     MmdPollLoad();
-    g_bbcRequested.store(m.session.active && m.session.bodyOwned && !m.preview && !m.freezeCloth);
+    if (s_mmdStartRequest.active && ClothOnMainThread()) {
+      const auto request=s_mmdStartRequest;
+      if (MmdStart()) request.apply(m.timeline,MmdNow());
+    }
+    ClothRequestPlayback(m.session.active && m.session.bodyOwned && !m.preview && !m.freezeCloth);
     if (m.session.active && (!MmdCharacterReady() ||
                              m.session.animator != g_charAnimator ||
                              m.session.revision != s_bonesRev ||
@@ -1284,6 +1284,7 @@ static void MmdTick() {
       m.timeline.tick(MmdNow());
       MmdApplyFrame();
     }
+    ClothService(m.session.active && !m.preview, MmdClothMayAdjustAnchor);
     MmdSyncAudio();
     if (m.session.active)
       MmdHideProps();
@@ -1308,14 +1309,13 @@ static void MmdPlaybackCommand(int command) {
       return;
     if (command == 0) {
       MmdStart();
+    } else if (command == 1 && s_mmdStartRequest.active) {
+      s_mmdStartRequest.pause();
     } else if (command == 1 && MmdOwnsPose()) {
       m.timeline.pause(MmdNow());
       m.status = u8"已暂停，保持当前姿态";
     } else if (command == 3) {
-      if (!m.session.active && !MmdStart())
-        return;
-      MmdSeek(0);
-      MmdApplyFrame();
+      MmdSeekOrStart(0);
       m.status = u8"已回到动作首帧，暂停中";
     }
     MmdSyncAudio();
@@ -1335,8 +1335,8 @@ static void MmdBeginCalibration() {
     m.status = u8"正在等待当前角色骨架，请稍后重试或点击刷新骨骼";
     return;
   }
-  MmdCaptureSession();
   m.preview = true;
+  MmdCaptureSession();
   auto p = MmdCurrentProfile();
   Vec3 up = Conj(GetBoneWorldRot(m.session.root)) * Vec3{0, 1, 0};
   if (!mmd::MakeCalibrationTPose(p, up)) {

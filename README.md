@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**源码版本：0.4.42 · 预编译版本：0.4.41（预发布）**
+**当前版本：0.4.48（Windows x64 预发布）**
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.41) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.48) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.41-win64.zip`。`source.zip` 和 **Source code** 是源码。
+1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.48-win64.zip`。`source.zip` 和 **Source code** 是源码。
 2. 退出游戏，将安装包完整解压。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装或更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -23,13 +23,14 @@
 |---|---|
 | 手工摆姿 | 按 **P** 冻结，选择骨骼并调整，在姿态库保存 |
 | 播放动作 | 勾选 **MMD 播放器**，打开 VMD，完成校准后播放 |
-| 调整表情 | 在 **表情模板与强度** 中选择各部位的映射和强度 |
+| 手动调整表情 | 在 **表情** 面板切换 **MMD 模式**，冻结角色后调节中文滑条 |
+| 调整动作中的表情 | 在 **角色表情与强度** 中选择各部位的映射和强度 |
 | 配合音乐、镜头 | 分别展开 **音乐同步**、**MMD 镜头** 选择文件 |
 | 隐藏面板拍摄 | 按 **L**；动作和音乐继续播放 |
 
-播放快捷键、窗口拖动和姿态保存见[快速教程](docs/tutorial.md)。动作幅度、IK、碰撞和特殊骨骼适配见[MMD 播放指南](docs/mmd-player.md)。需要在 Blender 中摆姿时，可使用[可选桥接插件](tools/blender/endfield_poser_bridge/README.md)。
+播放快捷键、窗口拖动和姿态保存见[快速教程](docs/tutorial.md)。动作幅度、IK、衣物物理和特殊骨骼适配见[MMD 播放指南](docs/mmd-player.md)。需要在 Blender 中摆姿时，可使用[可选桥接插件](tools/blender/endfield_poser_bridge/README.md)。
 
-0.4.42 修正了分区表情互相影响的问题，并新增 **还原 0.4.38 通用模板** 按钮。默认仍为游戏表情映射；此修复目前需使用源码构建，尚未包含在 0.4.41 安装包中。
+当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
 ## 常见问题
 
@@ -39,7 +40,7 @@
 | 换人后不能播放 | 等待角色加载，再尝试 **刷新骨骼** 和重新校准 |
 | 播放时不能手动摆姿 | 先点 **停止并恢复**；暂停时仍由播放器控制 |
 | 腿部僵硬、动作夸张 | 手动对照 IK 开关，调整动作幅度；见[适配方法](docs/mmd-player.md#动作幅度与-ik) |
-| 衣服或脚底穿模 | 尝试[碰撞辅助](docs/mmd-player.md#地面与裙摆碰撞辅助)，效果取决于角色和动作 |
+| 衣服或脚底穿模 | 调整[衣物物理与高度](docs/mmd-player.md#衣物物理)，效果取决于角色和动作 |
 
 遇到异常时先确认版本，再提供复现步骤和 `plugin/poser_log.txt` 中的相关片段。发送日志前请移除个人路径等信息。
 
@@ -51,12 +52,15 @@
 |---|---|
 | 设置、快捷键 / 窗口布局 | `plugin/poser_config.txt` / `plugin/poser_layout.ini` |
 | 姿态库 | `plugin/poses/` |
-| 角色校准、表情设置、适配预设 | `plugin/mmd/` |
+| 角色表情校准 | `plugin/mmd/character-faces/` |
+| 身体校准、表情设置、适配预设 | `plugin/mmd/` |
 | 安装备份 | `plugin/poser-backups/` |
 
 ## 从源码构建
 
 安装 Visual Studio 或 Build Tools 的 **MSVC x64 C++ 工具**和 **Windows SDK**，运行 `build.bat`，成功后运行 **安全安装.bat**。普通用户直接下载安装包即可。
+
+需要制作安装包时，构建后运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/package.ps1`。ZIP 输出到 `dist/`，自动包含内置表情校准、安装向导和使用说明。
 
 ## 免责声明
 
@@ -65,6 +69,8 @@
 **不得使用本工具制作、修改、播放、发布或传播违反鹰角官方创作限制的产物。用户自行承担使用及相关创作、传播的一切后果；在适用法律允许的最大范围内，作者、维护者及贡献者不承担相应责任，依法不得免责的情形除外。** 使用前请阅读[用户协议与免责声明](docs/user-agreement.md)，并确认所用动作、模型参考、镜头和音乐的授权。
 
 ## 项目与许可
+
+MMD 表情参考自[茶叶味香皂](https://space.bilibili.com/3546783156276148)制作的《明日方舟：终末地》MMD 模型，感谢其模型制作与分享。模型及游戏资产的权利归各自权利人所有，使用相关素材请遵守原作者的使用规则。
 
 本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，按 [AGPL-3.0](LICENSE) 提供。依赖许可证保存在 [licenses](licenses/) 中。
 

@@ -20,6 +20,7 @@
 static bool g_animatorWasEnabled = true;
 // 冻结选项：勾选后连飘带/裙子/头发等从骨一起冻结；默认关 = 从骨保持实时演算。
 static bool g_freezeAccessories = false;
+static void (*g_onFreezeReleased)() = nullptr;
 
 // ---- FinalIK / 游戏 IK 组件抑制（参照 {EIEM} trojan.h 采集逻辑，AGPL-3.0）----
 // 冻结时把角色根上会写骨骼的 IK/动画组件一并禁用，解冻恢复。
@@ -202,7 +203,6 @@ static void MaintainFreeze() {
   if (CharacterSwitchInProgress()) return;
   MaintainFrozenGrips();
   if (!g_frozen || !CharAnimatorAlive() || g_captureEntity != g_mainCharEntity) return;
-  SkirtTick();
   if (g_freezeAccessories) {
     MaintainAccessoryPhysicsFreeze();
     ApplyAccessorySnapshot();
@@ -227,8 +227,6 @@ static void FreezeCharacter() {
   //    （之前这个调用缺失，导致四肢一直被游戏 IK 写回、一改就弹回去）
   SetIKComponentsEnabled(false);
   Log("[POSER] Freeze: writers suppressed");
-  SkirtBegin();
-  Log("[POSER] Freeze: skirt begin");
   if (g_freezeAccessories) {
     SetAllPhysicsEnabled(false);
     ApplyAccessorySnapshot(); // 物理禁用后立刻把从骨钉到冻结瞬间姿势，避免回落默认
@@ -241,13 +239,12 @@ static void FreezeCharacter() {
 static void UnfreezeCharacter() {
   if (!g_frozen) { ReleaseGripFor(g_charAnimator); return; }
   g_frozen = false; // Stop all maintenance before restoring component state.
+  if (g_onFreezeReleased) g_onFreezeReleased();
   ReleaseGripFor(g_charAnimator);
   if (CharAnimatorAlive()) {
     if (g_freezeAccessories) SetAllPhysicsEnabled(true);
-    RestoreSkirtColliders();
   }
   ResetFreezeWriters();
-  ResetSkirtState();
   Log("[POSER] Unfrozen");
 }
 

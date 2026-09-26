@@ -81,6 +81,7 @@ function Set-FileAtomically([string]$Source, [string]$Destination) {
 }
 
 try {
+    . (Join-Path $PSScriptRoot 'character_face_resources.ps1')
     if (-not $SourceRoot) { $SourceRoot = Join-Path $PSScriptRoot '..' }
     if (-not $GameDir) {
         Write-Host 'Endfield Poser - 安装 / 更新 / 卸载'
@@ -127,9 +128,30 @@ try {
     $operations = [Collections.Generic.List[object]]::new()
     $newFiles = [Collections.Generic.List[object]]::new()
     $payload = [Collections.Generic.List[object]]::new()
+    $resourceManifestRel = 'plugin\mmd\character-faces-install.json'
+    $resourceFiles = @{}
+    $resourceWrites = 0
+    $resourceKept = 0
 
     if ($Action -eq 'Install') {
         $sourceDir = (Resolve-Path -LiteralPath $SourceRoot).ProviderPath
+        # A separate receipt survives uninstall along with calibration data.
+        # Never adopt a different existing file or overwrite user edits.
+        $resources = @(Get-PoserFaceResources $sourceDir)
+        $resourceManifestPath = Get-Target $resourceManifestRel
+        if (Test-Path -LiteralPath $resourceManifestPath) {
+            $receipt = Get-Content -LiteralPath $resourceManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($receipt.product -ne 'Endfield Poser character faces' -or $receipt.schema -ne 1) {
+                throw 'Unrecognized face resource installation record.'
+            }
+            foreach ($entry in $receipt.files) {
+                if ($entry.name -cnotmatch '^[a-z0-9_]{1,128}-[a-f0-9]{12}\.face\.json$' -or
+                    $entry.installed_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or $resourceFiles.ContainsKey($entry.name)) {
+                    throw 'Invalid face resource installation record.'
+                }
+                $resourceFiles[$entry.name] = $entry
+            }
+        }
         foreach ($relative in $ownedNames) {
             $source = Join-Path $sourceDir $relative
             if ($relative -ne 'plugin\poser.dll' -and -not (Test-Path -LiteralPath $source)) {
@@ -178,6 +200,26 @@ try {
         foreach ($relative in $oldFiles.Keys) {
             if ($relative -notin @($newFiles | ForEach-Object { $_.path })) { $newFiles.Add($oldFiles[$relative]) }
         }
+        foreach ($item in $resources) {
+            $relative = 'plugin\mmd\character-faces\' + $item.name
+            $destination = Get-Target $relative
+            if ([IO.Path]::GetFullPath($item.source) -eq $destination) { throw 'Source and destination face profile must differ.' }
+            $exists = Test-Path -LiteralPath $destination -PathType Leaf
+            $currentHash = if ($exists) { Get-Sha $destination } else { $null }
+            $managed = $resourceFiles.ContainsKey($item.name) -and
+                $currentHash -eq $resourceFiles[$item.name].installed_sha256
+            if ($exists -and $currentHash -ne $item.hash -and -not $managed) {
+                ++$resourceKept
+                Write-Warning "保留自定义角色表情校准，未覆盖：$($item.name)"
+                continue
+            }
+            if (-not $exists -or $currentHash -ne $item.hash) {
+                $operations.Add(@{ path = $relative; source = $item.source; hash = $item.hash })
+                ++$resourceWrites
+            }
+            $resourceFiles[$item.name] = @{ name = $item.name; installed_sha256 = $item.hash }
+        }
+        $operations.Add(@{ path = $resourceManifestRel; source = $null; manifest = $true })
         $operations.Add(@{ path = $manifestRel; source = $null; manifest = $true })
     } else {
         if ($oldFiles.Count -eq 0) {
@@ -231,6 +273,12 @@ try {
         } else { $snapshots[$op.path] = $null }
     }
     if ($Action -eq 'Install') {
+        $resourceRecord = @{ product = 'Endfield Poser character faces'; schema = 1;
+            files = @($resourceFiles.Values | Sort-Object name) }
+        $resourceRecordPath = Get-Target ($backupRel + '\new-character-faces-install.json')
+        [IO.Directory]::CreateDirectory((Split-Path -Path $resourceRecordPath -Parent)) | Out-Null
+        $resourceRecord | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resourceRecordPath -Encoding UTF8
+        $operations[$operations.Count - 2].source = $resourceRecordPath
         $record = @{ product = 'Endfield Poser'; schema = 1; files = @($newFiles.ToArray()); installed_at = (Get-Date -Format o) }
         $recordPath = Get-Target ($backupRel + '\new-install.json')
         [IO.Directory]::CreateDirectory((Split-Path -Path $recordPath -Parent)) | Out-Null
@@ -264,9 +312,10 @@ try {
         }
         throw $failure
     }
-    Write-Host "完成：$Action。配置、布局、校准、预设和姿态均保留。"
+    Write-Host "完成：$Action。配置、布局、自定义校准、预设和姿态均保留。"
     Write-Host "备份目录：$(Get-Target $backupRel)"
     if ($Action -eq 'Install') {
+        Write-Host "角色表情校准：内置 $($resources.Count) 份，复制或更新 $resourceWrites 份，保留冲突文件 $resourceKept 份。"
         Write-Host '安装完成后启动游戏；启动方式见 README。L 面板；P 冻结；Ctrl+F5/F6/F7/F8 播放/暂停/停止/重置。'
     }
 } catch {

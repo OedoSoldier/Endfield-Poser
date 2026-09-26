@@ -15,26 +15,27 @@ static double FrameNow() {
 static std::atomic<bool> g_frameRunning{false};
 static std::atomic<double> g_lastRenderTick{-1e30};
 static std::atomic<double> g_nextIndependentTick{0};
-static std::atomic<double> g_lastBbcTick{-1e30};
 static std::atomic<unsigned> g_frameBusy{0};
+static std::atomic<DWORD> g_frameGameThreadId{0};
 static HANDLE g_frameWorker = nullptr, g_frameStop = nullptr;
 static void *g_frameCountMethod = nullptr;
 static poser::FrameCadence g_frameCadence;
 struct FrameDiagnostics {
   double hz = 0, maxGapMs = 0, maxCostMs = 0;
   bool gameDriven = false;
-  int source = 0; // 0 independent, 1 built-in camera, 2 SRP, 3 native BBC
+  int source = 0; // 0 independent, 1 camera, 2 SRP, 3 character update, 4 camera manager
   unsigned busy = 0;
 };
+static void (*g_gameMaintenance)() = nullptr; // main-thread release jobs, including while disabled
 static FrameDiagnostics g_frameDiagnostics; // protected by g_poseMutex
 static bool RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
-  if (!g_frameRunning.load())
+  if (RuntimeClosing() || (!g_frameRunning.load() && !(fromGame && g_gameMaintenance)))
     return false;
   double now = FrameNow();
-  if(fromGame && source==3) g_lastBbcTick.store(now);
-  if(fromGame && source!=3 && now-g_lastBbcTick.load()<.25) return false;
-  if (fromGame)
+  if (fromGame) {
     g_lastRenderTick.store(now);
+    g_frameGameThreadId.store(GetCurrentThreadId());
+  }
   // Never block Unity waiting for the editor or for worker IL2CPP invocations.
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
   if (!lock.owns_lock()) {
@@ -42,19 +43,23 @@ static bool RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
       ++g_frameBusy;
     return false;
   }
-  if (!g_frameRunning.load())
-    return false;
   static thread_local bool nested = false;
   if (nested)
-    return false;
-  if (fromGame ? !g_frameCadence.gameDue(frame)
-               : !g_frameCadence.fallbackDue(now, g_lastRenderTick.load()))
     return false;
   struct Guard {
     bool &v;
     Guard(bool &b) : v(b) { v = true; }
     ~Guard() { v = false; }
   } guard(nested);
+  // Attach only during an actual fallback tick, after acquiring the lock.
+  // Never keep a managed thread alive while the worker sleeps or waits.
+  if (!fromGame && !g_frameCadence.fallbackDue(now,g_lastRenderTick.load())) return false;
+  RuntimeThreadScope runtime;
+  if (!runtime.ready) return false;
+  if (fromGame && g_gameMaintenance) g_gameMaintenance();
+  if (!g_frameRunning.load()) return false;
+  if (fromGame ? !g_frameCadence.gameDue(frame)
+               : !g_frameCadence.fallbackDue(now, g_lastRenderTick.load())) return false;
   static double window = 0, gap = 0, cost = 0;
   static unsigned count = 0;
   if (std::isfinite(g_frameCadence.lastStep))
@@ -91,11 +96,11 @@ static int ReadUnityFrameCount() {
 using CameraPreCullFn = void(__fastcall *)(void *, void *);
 static CameraPreCullFn g_originalPreCull = nullptr;
 static void SampleGameRenderFrame(int source) {
-  if (!g_frameRunning.load())
+  if (!g_frameRunning.load() && !g_gameMaintenance)
     return;
   try {
     int frame = ReadUnityFrameCount();
-    if (frame >= 0)
+    if (frame >= 0 || !g_frameRunning.load())
       RunFrameTick(true, frame, source);
   } catch (...) {
     Log("[FRAME] game callback failed; keeping independent fallback");
@@ -182,16 +187,11 @@ static void InstallFrameHook() {
       int(ok), int(srp));
 }
 static DWORD WINAPI FrameWorker(LPVOID) {
-  RuntimeThreadScope runtime;
-  if (!runtime.ready) {
-    Log("[FRAME] worker runtime attachment failed");
-    return 0;
-  }
   HANDLE timer = CreateWaitableTimerExW(
       nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
   if (!timer)
     timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
-  while (g_frameRunning.load()) {
+  while (g_frameRunning.load() && !RuntimeClosing()) {
     try {
       RunFrameTick(false);
     } catch (...) {
@@ -219,7 +219,7 @@ static DWORD WINAPI FrameWorker(LPVOID) {
   return 0;
 }
 static void StartGameFrameDriver() {
-  if (g_frameRunning.load())
+  if (RuntimeClosing() || g_frameWorker || g_frameRunning.load())
     return;
   g_frameStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!g_frameStop) {
@@ -228,7 +228,6 @@ static void StartGameFrameDriver() {
   }
   g_frameCadence = {};
   g_lastRenderTick.store(-1e30);
-  g_lastBbcTick.store(-1e30);
   g_frameRunning.store(true);
   g_frameWorker = CreateThread(nullptr, 0, FrameWorker, nullptr, 0, nullptr);
   if (!g_frameWorker)
@@ -239,7 +238,11 @@ static void StopGameFrameDriver() {
   if (g_frameStop)
     SetEvent(g_frameStop);
   if (g_frameWorker) {
-    WaitForSingleObject(g_frameWorker, INFINITE);
+    DWORD joined=WaitForSingleObject(g_frameWorker,RuntimeClosing()?1500:INFINITE);
+    if (joined!=WAIT_OBJECT_0) {
+      Log("[EXIT] frame worker still finishing; handles retained, no forced termination");
+      return;
+    }
     CloseHandle(g_frameWorker);
     g_frameWorker = nullptr;
   }
@@ -248,5 +251,5 @@ static void StopGameFrameDriver() {
     g_frameStop = nullptr;
   }
   // A callback that already entered must finish before restoring the actor.
-  std::lock_guard<std::recursive_mutex> barrier(g_poseMutex);
+  if (!RuntimeClosing()) { std::lock_guard<std::recursive_mutex> barrier(g_poseMutex); }
 }

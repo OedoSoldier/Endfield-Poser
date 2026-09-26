@@ -1,4 +1,4 @@
-﻿param([switch]$RunTests)
+param([switch]$RunTests)
 
 $ErrorActionPreference = 'Stop'
 
@@ -136,31 +136,32 @@ Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(
   @{ Name = 'test_user_agreement'; Src = 'tests\test_user_agreement.cpp' },
   @{ Name = 'test_agreement_ui'; Src = 'tests\test_agreement_ui.cpp' },
+  @{ Name = 'test_runtime_shutdown'; Src = 'tests\test_runtime_shutdown.cpp' },
   @{ Name = 'test_runtime_bootstrap'; Src = 'tests\test_runtime_bootstrap.cpp' },
   @{ Name = 'test_plugin_paths'; Src = 'tests\test_plugin_paths.cpp' },
   @{ Name = 'test_layered_readback'; Src = 'tests\test_layered_readback.cpp' },
   @{ Name = 'test_overlay_device'; Src = 'tests\test_overlay_device.cpp' },
   @{ Name = 'test_quat';      Src = 'tests\test_quat.cpp' },
+  @{ Name = 'test_native_cloth'; Src = 'tests\test_native_cloth.cpp' },
+  @{ Name = 'test_cloth_runtime'; Src = 'tests\test_cloth_runtime.cpp' },
   @{ Name = 'test_ik';        Src = 'tests\test_ik.cpp' },
   @{ Name = 'test_pose_file'; Src = 'tests\test_pose_file.cpp' },
   @{ Name = 'test_mmd'; Src = 'tests\test_mmd.cpp' },
-  @{ Name = 'test_mmd_contact'; Src = 'tests\test_mmd_contact.cpp' },
   @{ Name = 'test_mmd_camera'; Src = 'tests\test_mmd_camera.cpp' },
   @{ Name = 'test_mmd_camera_runtime'; Src = 'tests\test_mmd_camera_runtime.cpp' },
-  @{ Name = 'test_cloth_collision'; Src = 'tests\test_cloth_collision.cpp' },
-  @{ Name = 'test_ground_probe'; Src = 'tests\test_ground_probe.cpp' },
   @{ Name = 'test_mmd_transport'; Src = 'tests\test_mmd_transport.cpp' },
   @{ Name = 'test_mmd_audio'; Src = 'tests\test_mmd_audio.cpp' },
   @{ Name = 'test_frame_driver'; Src = 'tests\test_frame_driver.cpp' },
-  @{ Name = 'test_bbc_frame'; Src = 'tests\test_bbc_frame.cpp' },
   @{ Name = 'test_mmd_runtime'; Src = 'tests\test_mmd_runtime.cpp' },
   @{ Name = 'test_character_capture'; Src = 'tests\test_character_capture.cpp' }
   @{ Name = 'test_component_query'; Src = 'tests\test_component_query.cpp' }
   @{ Name = 'test_smc_switch'; Src = 'tests\test_smc_switch.cpp' }
+  @{ Name = 'test_smc_automation'; Src = 'tests\test_smc_automation.cpp' }
   @{ Name = 'test_smc_abi'; Src = 'tests\test_smc_abi.cpp' }
-  @{ Name = 'test_face_templates'; Src = 'tests\test_face_templates.cpp' }
+  @{ Name = 'test_character_faces'; Src = 'tests\test_character_faces.cpp' }
   @{ Name = 'test_face_mixing'; Src = 'tests\test_face_mixing.cpp' }
   @{ Name = 'test_face_runtime'; Src = 'tests\test_face_runtime.cpp' }
+  @{ Name = 'test_mmd_face_controls'; Src = 'tests\test_mmd_face_controls.cpp' }
 )
 foreach ($t in $tests) {
   if (-not (Test-Path -LiteralPath $t.Src)) { throw "Missing local test source: $($t.Src)" }

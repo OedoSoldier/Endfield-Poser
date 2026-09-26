@@ -864,12 +864,10 @@ static const ImWchar *PoserGlyphRanges(ImFontAtlas *atlas) {
 
 static DWORD GuiThreadBody(LPVOID) {
   g_guiTraceMask = 0;
-  // 附加到 IL2CPP 域：GUI 线程每帧会经 DrawPoserGui->GameFrameTick 触碰游戏对象，
-  // 不附加会让 GC 从"未知线程"收集托管对象，触发 fatal error 崩溃。
-  // RuntimeThreadScope in the entry point releases registration on every exit.
+  // Runtime registration is scoped to editor operations, never GPU/message waits.
   // 游戏启动较慢：先轮询等 Unity 主窗口出现（最多 60 秒），再回退任意窗口
   g_gameHwnd = nullptr;
-  for (int i = 0; i < 60 && !g_gameHwnd; i++) {
+  for (int i = 0; i < 60 && !g_gameHwnd && g_guiRunning && !RuntimeClosing(); i++) {
     g_gameHwnd = FindGameHwnd();
     if (!g_gameHwnd)
       Sleep(1000);
@@ -1003,7 +1001,7 @@ static DWORD GuiThreadBody(LPVOID) {
   ZeroMemory(&msg, sizeof(msg));
   bool s_panelShown = false;
   ULONGLONG nextDrawTick=0;
-  while (g_guiRunning) {
+  while (g_guiRunning && !RuntimeClosing()) {
     if (g_extPollFn)
       g_extPollFn(); // 控制文件轮询（面板隐藏时也执行）
     while (PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
@@ -1181,14 +1179,8 @@ static DWORD GuiThreadBody(LPVOID) {
 }
 
 static DWORD WINAPI GuiThread(LPVOID arg) {
-  RuntimeThreadScope runtime;
-  if (!runtime.ready) {
-    Log("[GUI] game runtime attachment failed");
-    g_guiRunning = false;
-    return 0;
-  }
   try {
-    Log("[GUI] attached to IL2CPP domain");
+    Log("[GUI] runtime registration scoped to editor operations");
     return GuiThreadBody(arg);
   } catch (...) {
     Log("[GUI] native thread interrupted; releasing runtime registration");
@@ -1201,7 +1193,7 @@ static DWORD WINAPI GuiThread(LPVOID arg) {
 }
 
 static void StartGuiThread() {
-  if (g_guiRunning) return;
+  if (RuntimeClosing() || g_guiRunning) return;
   g_guiRunning = true;
   if (!g_hotkeyPollRun) {
     g_hotkeyPollRun = 1;
