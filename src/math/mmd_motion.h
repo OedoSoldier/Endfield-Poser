@@ -395,6 +395,12 @@ struct Timeline {
   PlayState state = PlayState::Stopped;
   double seconds = 0, duration = 0, speed = 1, lastNow = 0;
   bool loop = false;
+  // Preparation owns the clock, independently of the user's play/pause choice.
+  bool clockHeld = false;
+  void holdClock(bool held,double now) {
+    if(clockHeld!=held)lastNow=now;
+    clockHeld=held;
+  }
   void play(double now) {
     if (seconds >= duration && duration > 0)
       seconds = 0;
@@ -404,7 +410,7 @@ struct Timeline {
   void tick(double now) {
     double dt = (std::max)(0.0, now - lastNow);
     lastNow = now;
-    if (state != PlayState::Playing)
+    if (clockHeld || state != PlayState::Playing)
       return;
     seconds += dt * speed;
     if (seconds >= duration) {
@@ -428,6 +434,7 @@ struct Timeline {
   }
   void stop() {
     state = PlayState::Stopped;
+    clockHeld = false;
     seconds = 0;
   }
 };

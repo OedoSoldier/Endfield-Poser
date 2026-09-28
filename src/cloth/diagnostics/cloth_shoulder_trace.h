@@ -15,7 +15,9 @@ struct ClothShoulderEvidence {
   int visibleMesh=0;
   bool widthMesh=false;
   bool prepared=false;
-} static s_clothShoulderEvidence;
+};
+static ClothActorBank<ClothShoulderEvidence> s_clothShoulderEvidenceActors;
+#define s_clothShoulderEvidence (s_clothShoulderEvidenceActors.Get())
 static void ClothShoulderEvidenceClear() {
   ClothShoulderDriverCancel();
   auto &s=s_clothShoulderEvidence;
@@ -24,7 +26,7 @@ static void ClothShoulderEvidenceClear() {
 }
 static bool ClothShoulderEvidenceWatching() {
   const auto &s=s_clothShoulderEvidence;
-  return s.prepared&&s_clothAutoEnabled.load(std::memory_order_acquire)&&ClothOwns(s.owner);
+  return s.prepared&&ClothEnhancementSetting().load(std::memory_order_acquire)&&ClothOwns(s.owner);
 }
 static void ClothShoulderEvidencePrepare(const eiem_cloth_asset::Generated &generated,
     const eiem_cloth_asset::Query &query,const std::vector<ClothAutoMeshRef> &meshes) {

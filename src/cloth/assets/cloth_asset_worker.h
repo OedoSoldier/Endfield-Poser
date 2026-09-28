@@ -1,5 +1,6 @@
 #pragma once
 #include "cloth_asset_cache.h"
+#include <mutex>
 namespace eiem_cloth_asset {
 struct Job {
   std::atomic<bool> cancel{false},done{false};
@@ -7,9 +8,10 @@ struct Job {
   uint32_t backend=0;uintptr_t character=0;
   std::wstring dataRoot;Query query;
   std::shared_ptr<Generated> result;
-  std::string error;
+  std::string error,cacheKey;
   uint64_t elapsedMs=0,indexMs=0,generationMs=0;
   bool cacheHit=false;
+  bool foreground=false;
 };
 struct InstalledSource {
   std::unique_ptr<Vfs> vfs;
@@ -21,10 +23,12 @@ struct InstalledSource {
   }
 };
 inline InstalledSource &Installed(){static InstalledSource value;return value;}
-inline void WarmInstalled(const std::wstring &root){Installed().Ready(root);}
+inline std::mutex &InstalledMutex(){static std::mutex mutex;return mutex;}
+inline void WarmInstalled(const std::wstring &root){std::lock_guard<std::mutex> lock(InstalledMutex());Installed().Ready(root);}
 inline bool JobMatches(const Job &j,uint64_t session,uint64_t generation,unsigned command,uint32_t backend=0,uintptr_t character=0){return j.session==session&&j.generation==generation&&j.command==command&&j.backend==backend&&j.character==character&&!j.cancel.load(std::memory_order_acquire);}
-inline void RunJob(Job &job){const auto start=GetTickCount64();try{
-    static ContentCache cache;auto &source=Installed();source.Ready(job.dataRoot,&job.cancel);job.indexMs=GetTickCount64()-start;auto &v=*source.vfs;const auto key=QueryKey(job.query,job.dataRoot,v.indices);
+inline void RunJob(Job &job){std::lock_guard<std::mutex> lock(InstalledMutex());const auto start=GetTickCount64();try{
+    CheckCancel(&job.cancel);
+    static ContentCache cache;auto &source=Installed();source.Ready(job.dataRoot,&job.cancel);job.indexMs=GetTickCount64()-start;auto &v=*source.vfs;const auto key=QueryKey(job.query,job.dataRoot,v.indices);job.cacheKey=key;
     job.result=cache.Find(key,[&](const std::string &path){return Digest(v.Read(path));});
     if(job.result){Need(v.StillCurrent(),"auto-source-updated-during-cache-validation");job.cacheHit=true;}
     else {CheckCancel(&job.cancel);job.result=std::make_shared<Generated>(Generate(v,*source.manifest,job.query));cache.Put(key,job.result);}
@@ -36,8 +40,9 @@ inline void RunJob(Job &job){const auto start=GetTickCount64();try{
 }
 struct ThreadInput {std::shared_ptr<Job> job;HMODULE module=nullptr;};
 static DWORD WINAPI AssetWorker(void *raw){HMODULE module=nullptr;{
-    SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
-    std::unique_ptr<ThreadInput> input(static_cast<ThreadInput*>(raw));module=input->module;RunJob(*input->job);
+    std::unique_ptr<ThreadInput> input(static_cast<ThreadInput*>(raw));
+    SetThreadPriority(GetCurrentThread(),input->job->foreground?THREAD_PRIORITY_NORMAL:THREAD_PRIORITY_BELOW_NORMAL);
+    module=input->module;RunJob(*input->job);
   }
   FreeLibraryAndExitThread(module,0);
 }

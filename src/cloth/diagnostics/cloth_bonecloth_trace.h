@@ -8,7 +8,9 @@ struct ClothBonePoseTicket {
   int frame=-1;
   double playhead=NAN;
   char stage[80]{};
-} static s_clothBonePoseTicket;
+};
+static ClothActorBank<ClothBonePoseTicket> s_clothBonePoseTicketActors;
+#define s_clothBonePoseTicket (s_clothBonePoseTicketActors.Get())
 static bool ClothBoneSolverEligible(const ClothBoneRuntime &s);
 static void ClothBoneSolverPoseSubmitted(const char *stage,double playhead) {
   if(!ClothOnMainThread() || !ClothOwns(s_cloth.owner)) return;
@@ -26,13 +28,15 @@ struct ClothBoneSolverTrace {
   unsigned command=0, captures=0, logged=0;
   unsigned pollIntervalMs=250;
   bool fullTextSuppressed=false;
+  bool blendedOutputLogged=false;
   unsigned pauseSeen=0,pauseRemaining=0,pauseRecords=0;
   uint64_t pauseNextMs=0,pauseExpiresMs=0,lastPauseLogMs=0;
-  double lastReadbackMs=0,lastObserverMs=0;
+  double lastReadbackMs=0,lastObserverMs=0,windowMaxObserverMs=0;
   uint64_t pollMs=0, logMs=0, healthMs=0;
   int frame=-1;
 };
-static std::array<ClothBoneSolverTrace,eiem_cloth_rebuild::BatchCapacity> s_clothBoneSolver{};
+static ClothActorBank<std::array<ClothBoneSolverTrace,eiem_cloth_rebuild::BatchCapacity>> s_clothBoneSolverActors;
+#define s_clothBoneSolver (s_clothBoneSolverActors.Get())
 static bool ClothBoneSolverEligible(const ClothBoneRuntime &s) {
   return s.lease && s.pending && !s.stopRequested && !s.failed &&
       s.tx.phase==eiem_cloth_rebuild::Phase::Active && s.teamModeConfirmed &&
@@ -45,14 +49,13 @@ static void ClothBoneSolverClear(int slot) {
   s.contact.budget={};s.contact.failed=s.contact.outputFailed=false;s.contact.lastFrame=-1;
   strcpy_s(s.contact.issue,"awaiting-current-profile-completed-state");
   s.command=s.captures=s.logged=0;s.pollMs=s.logMs=s.healthMs=0;s.frame=-1;s.budget={};
-  s.pollIntervalMs=250;s.fullTextSuppressed=false;s.lastReadbackMs=s.lastObserverMs=0;
+  s.pollIntervalMs=250;s.fullTextSuppressed=false;s.lastReadbackMs=s.lastObserverMs=s.windowMaxObserverMs=0;
+  s.blendedOutputLogged=false;
   s.pauseSeen=s_clothBonePauseEvidence.load(std::memory_order_acquire);
   s.pauseRemaining=s.pauseRecords=0;s.pauseNextMs=s.pauseExpiresMs=s.lastPauseLogMs=0;
 }
-static bool ClothBoneSolverFullLogDue(const ClothBoneSolverTrace &s,uint64_t now) {
-  if(!s_clothVerboseDiagnostics.load()) return false;
-  const uint64_t interval=s.fullTextSuppressed?15000:2000;
-  return s.logged<128 && (!s.logged || now-s.logMs>=interval);
+static bool ClothBoneSolverInitialLogDue(const ClothBoneSolverTrace &s) {
+  return s_clothVerboseDiagnostics.load() && !s.logged;
 }
 static void ClothBoneSolverRefreshPause(ClothBoneSolverTrace &s,uint64_t now) {
   const auto requested=s_clothBonePauseEvidence.load(std::memory_order_acquire);
@@ -76,6 +79,7 @@ static bool ClothBoneSolverCaptureDue(const ClothBoneSolverTrace &s,int frame,ui
 static void ClothBoneSolverCost(int slot,double readbackMs,double observerMs) {
   auto &s=s_clothBoneSolver[slot];const auto &b=s_clothBoneSlots[slot];
   s.lastReadbackMs=readbackMs;s.lastObserverMs=observerMs;
+  if(std::isfinite(observerMs))s.windowMaxObserverMs=(std::max)(s.windowMaxObserverMs,observerMs);
   if(!s.budget.Observe(observerMs)) return;
   s.budget.overruns=0;
   const unsigned previous=s.pollIntervalMs;
@@ -187,7 +191,7 @@ static bool ClothBoneSolverEdges(int slot,void *team,const ClothContactSample &s
       !ClothContactManager("get_VMesh","BeyondDynamicBone.VirtualMeshManager",mesh) ||
       !ClothInputArrayOpen(mesh,"edges","Unity.Mathematics.int2",edges) ||
       !ClothInputArrayOpen(mesh,"edgeTeamIdArray","System.Int16",teams) ||
-      !ClothInputChunkRead(team,"proxyEdgeChunk",edges.length,chunk,512) ||
+      !ClothInputChunkRead(team,"proxyEdgeChunk",edges.length,chunk,ClothBoneMaxEdges) ||
       chunk.count!=int(b.registeredEdges.size()) || chunk.start>teams.length || chunk.count>teams.length-chunk.start) return false;
   for(int n=0;n<chunk.count;++n) {
     int pair[2]{};int16_t owner=0;
@@ -273,12 +277,12 @@ static bool ClothBoneLocalDistancePolicy(int slot,const ClothContactSample &samp
     return ClothBoneLocalRefuse(slot,"local-distance-effective-stiffness-mismatch");
   if(!std::isfinite(attenuation)) return ClothBoneLocalRefuse(slot,"local-distance-effective-attenuation-invalid");
   if(ClothBoneElasticRequested(b) && !ClothBoneElasticMatches(b,box))
-    return ClothBoneLocalRefuse(slot,"tight-elastic-effective-tether-or-bending-mismatch");
+    return ClothBoneLocalRefuse(slot,"cloth-elastic-effective-tether-or-bending-mismatch");
   if((ClothBoneAttachmentRequested(b) || b.local.attachmentConfigured) && !ClothBoneAttachmentMatches(b,1,box))
     return ClothBoneLocalRefuse(slot,"paired-waist-effective-output-policy-mismatch");
   if(!b.local.distanceParametersReadback) {
     b.local.distanceParametersReadback=true;
-    if(b.local.recipe->distanceCurve)Log("[CLOTH-AUTO] stage=distance-policy-confirmed frame=%d team=%d sourceCurveRetained=1 samples=16 nativeVelocityAttenuation=%g reference=%s",sample.frame,b.team[1],attenuation,b.local.recipe->RetainsSourceReference()?"source-retained":"natural");
+    if(b.local.recipe->distanceCurve)Log("[CLOTH-AUTO] stage=distance-policy-confirmed frame=%d team=%d sourceCurveRetained=%d samples=16 nativeVelocityAttenuation=%g reference=%s",sample.frame,b.team[1],!b.local.recipe->resampledPanel,attenuation,b.local.recipe->RetainsSourceReference()?"source-retained":"natural");
     else Log("[CLOTH-BONE-LOCAL] stage=distance-policy-confirmed frame=%d team=%d effectiveStiffness=%g samples=16 nativeVelocityAttenuation=%g reference=natural",
         sample.frame,b.team[1],b.local.recipe->distanceStiffness,attenuation);
     if(ClothBoneElasticRequested(b)) Log("[CLOTH-BONE-ELASTIC] stage=Team-confirmed frame=%d team=%d generation=%llu session=%llu distance=%g stretchThreshold=%g bending=%g compression=%g conversions=%u visualVerified=0",
@@ -297,7 +301,7 @@ static bool ClothBoneLocalDistances(int slot,void *team,const ClothContactSample
       !ClothInputArrayOpen(distance,"indexArray","System.UInt32",starts) ||
       !ClothInputArrayOpen(distance,"dataArray","System.UInt16",data) ||
       !ClothInputArrayOpen(distance,"distanceArray","System.Single",lengths) ||
-      !ClothInputChunkRead(team,"distanceStartChunk",starts.length,sc) || sc.count!=sample.particles ||
+      !ClothInputChunkRead(team,"distanceStartChunk",starts.length,sc,ClothContactParticles) || sc.count!=sample.particles ||
       !ClothInputChunkRead(team,"distanceDataChunk",data.length,dc,4096) || dc.count<=0 || dc.count>4096 ||
       dc.start>lengths.length || dc.count>lengths.length-dc.start) {
     Log("[CLOTH-BONE-LOCAL] stage=distance-array-refused frame=%d team=%d indexLength=%d dataLength=%d lengthLength=%d indexChunk=%d/%d dataChunk=%d/%d",
@@ -305,6 +309,9 @@ static bool ClothBoneLocalDistances(int slot,void *team,const ClothContactSample
     return ClothBoneLocalRefuse(slot,"local-distance-arrays-or-chunks-unconfirmed");
   }
   std::vector<int> cross(l.recipe->crossCount);int negative=0,entries=0;
+  const bool traceDistances=ClothBoneLongPanelBending(b);
+  std::vector<std::vector<std::pair<uint16_t,float>>> distanceRows;
+  if(traceDistances)distanceRows.resize(sc.count);
   if(cross.size()!=l.crossRest.size()) return ClothBoneLocalRefuse(slot,"local-cross-distance-recipe-mismatch");
   for(int n=0;n<sc.count;++n) {
     uint32_t packed=0;
@@ -332,6 +339,7 @@ static bool ClothBoneLocalDistances(int slot,void *team,const ClothContactSample
         return ClothBoneLocalRefuse(slot,"local-distance-neighbor-or-length-invalid");
       }
       ++entries;if(rest<0) ++negative;
+      if(traceDistances)distanceRows[n].push_back({neighbor,rest});
       for(size_t pair=0;pair<cross.size();++pair) {
         const int a=b.bones[l.recipe->cross[pair][0]].bone.id.instance,c=b.bones[l.recipe->cross[pair][1]].bone.id.instance;
         if((sample.outputs[n].id==a && sample.outputs[neighbor].id==c) ||
@@ -354,6 +362,22 @@ static bool ClothBoneLocalDistances(int slot,void *team,const ClothContactSample
   l.distanceReadback=true;
   Log("[CLOTH-BONE-LOCAL] stage=distance-registered frame=%d team=%d entries=%d nonParentEntries=%d newCrossPairs=%zu reciprocal=1 restLengthsConfirmed=1 nativeArraysReadOnly=1",
       sample.frame,b.team[1],entries,negative,cross.size());
+  if(traceDistances) {
+    Log("[CLOTH-BONE-DISTANCE-BEGIN] slot=%d frame=%d session=%llu generation=%llu command=%u instance=%d team=%d Process=%p privateData=%p particles=%d entries=%d indexChunk=%d/%d dataChunk=%d/%d oncePerRegistration=1 nativeArraysReadOnly=1",
+        slot,sample.frame,b.owner.session,b.owner.generation,b.command,b.bbc.id.instance,b.team[1],
+        CollisionGc(b.process[1]),CollisionGc(b.candidateData),sample.particles,entries,sc.start,sc.count,dc.start,dc.count);
+    for(int n=0;n<sc.count;++n) {
+      std::ostringstream row;row<<std::setprecision(12);
+      row<<"{\"slot\":"<<slot<<",\"frame\":"<<sample.frame<<",\"index\":"<<n<<",\"id\":"<<sample.outputs[n].id
+         <<",\"particle\":"<<sample.points[n].particle<<",\"attribute\":"<<unsigned(sample.points[n].attribute)<<",\"links\":[";
+      for(size_t k=0;k<distanceRows[n].size();++k) {
+        if(k)row<<',';const auto &edge=distanceRows[n][k];
+        row<<'['<<edge.first<<','<<edge.second<<']';
+      }
+      row<<"]}";Log("[CLOTH-BONE-DISTANCE-DATA] %s",row.str().c_str());
+    }
+    Log("[CLOTH-BONE-DISTANCE-END] slot=%d frame=%d particles=%d entries=%d",slot,sample.frame,sample.particles,entries);
+  }
   return true;
 }
 static bool ClothBoneLocalAcceptSurface(int slot,const eiem_cloth_skin::Result &result) {
@@ -402,7 +426,7 @@ static bool ClothBoneLocalSurfaceMatrices(int slot,const ClothContactSample &sam
       sample.frame!=ClothFrame() || !ClothBoneSolverOutputIdentity(b,sample))
     return ClothBoneLocalRefuse(slot,"local-surface-effective-output-mismatch");
   const auto &profile=ClothBoneCandidate(b);
-  if(l.recipe->Total()!=profile.boneCount || profile.boneCount<1 || profile.boneCount>128 ||
+  if(l.recipe->Total()!=profile.boneCount || !ClothBoneIdentityBudget(profile.boneCount,profile.EffectiveCount()) ||
       ((!l.recipe->meshes||l.recipe->meshCount<1)&&!l.recipe->NativeSkinRetained()) || l.recipe->meshCount>16)
     return ClothBoneLocalRefuse(slot,"local-surface-source-layout-mismatch");
   matrices.resize(l.recipe->Total());std::vector<bool> found(matrices.size()),referenced(matrices.size());
@@ -560,21 +584,35 @@ static bool ClothBoneSideInput(const ClothBoneRuntime &b,const ClothContactSampl
   }
   return true;
 }
-static bool ClothBoneColliderWorkEmpty(const ClothContactSample &sample) {
+static bool ClothBoneColliderWorkPending(ClothBoneLocalState &local,const ClothContactSample &sample,
+                                        int &empty,int &populated) {
+  empty=populated=0;
   if(!sample.outputKnown || sample.frame<0 || sample.colliders<1 || sample.colliders>ClothContactColliders ||
       sample.reportedColliders!=sample.colliders || !std::isfinite(sample.blendWeight) ||
       !std::isfinite(sample.simulateWeight) || sample.simulateWeight<=0 ||
       !std::isfinite(sample.lodWeight) || sample.lodWeight<=0 || !sample.validMask || !sample.enableMask)return false;
+  std::array<std::array<int,2>,ClothContactColliders> filled{};
   for(int n=0;n<sample.colliders;++n) {
     const auto &c=sample.shapes[n];
     if(!c.id || !c.transform || (c.flags&(sample.validMask|sample.enableMask))!=(sample.validMask|sample.enableMask))return false;
+    for(int k=0;k<n;++k)if(sample.shapes[k].id==c.id)return false;
     for(float v:c.size)if(!std::isfinite(v))return false;
     if(c.size[0]<=0)return false;
     for(float v:c.center)if(!std::isfinite(v))return false;
-    for(float v:c.radius)if(v!=0)return false;
-    for(double v:c.oldEndpoints)if(v!=0)return false;
-    for(double v:c.nextEndpoints)if(v!=0)return false;
+    bool zero=true;
+    for(float v:c.radius){if(!std::isfinite(v)||v<0)return false;zero&=v==0;}
+    for(double v:c.oldEndpoints){if(!std::isfinite(v))return false;zero&=v==0;}
+    for(double v:c.nextEndpoints){if(!std::isfinite(v))return false;zero&=v==0;}
+    if(zero) {++empty;continue;}
+    const bool sphere=!strcmp(c.componentType,"BeyondBoneSphereCollider");
+    const bool capsule=!strcmp(c.componentType,"BeyondBoneCapsuleCollider");
+    if((!sphere&&!capsule)||c.radius[0]<=0||(capsule&&c.radius[1]<=0))return false;
+    filled[populated++]={c.id,c.transform};
   }
+  if(!empty)return false;
+  for(const auto &prior:local.colliderInputPopulated)
+    if(std::find(filled.begin(),filled.begin()+populated,prior)==filled.begin()+populated)return false;
+  local.colliderInputPopulated.assign(filled.begin(),filled.begin()+populated);
   return true;
 }
 enum class ClothBoneInputReadiness { Failed, Waiting, Ready };
@@ -592,18 +630,52 @@ static ClothBoneInputReadiness ClothBoneLocalInputReadiness(int slot,const Cloth
           now-l.colliderInputWaitStart,int(l.published));
     l.colliderInputReady=true;return ClothBoneInputReadiness::Ready;
   }
-  if(l.colliderInputReady || l.solverFrames || l.published || !ClothBoneColliderWorkEmpty(sample))
+  int empty=0,populated=0;
+  if(l.colliderInputReady || l.solverFrames || l.published || !ClothBoneColliderWorkPending(l,sample,empty,populated))
     return refuse(!body?"local-body-collider-native-input-unconfirmed":"body-side-collider-native-input-unconfirmed");
   if(!l.colliderInputWaitFrames) {
     l.colliderInputWaitStart=now;
-    Log("[CLOTH-BONE-INPUT] stage=awaiting-first-workdata component=%s session=%llu generation=%llu command=%u frame=%d team=%d colliders=%d blendWeight=%g renderPublished=0 maxWaitMs=750 maxFrames=120",
-        b.profile->component,b.owner.session,b.owner.generation,b.command,sample.frame,b.team[1],sample.colliders,sample.blendWeight);
+    Log("[CLOTH-BONE-INPUT] stage=awaiting-first-workdata component=%s session=%llu generation=%llu command=%u frame=%d team=%d colliders=%d pendingColliders=%d populatedColliders=%d blendWeight=%g renderPublished=0 maxWaitMs=750 maxFrames=120",
+        b.profile->component,b.owner.session,b.owner.generation,b.command,sample.frame,b.team[1],sample.colliders,empty,populated,sample.blendWeight);
   }
   if(now>=b.modeDeadline || now-l.colliderInputWaitStart>=750 ||
       (sample.frame!=l.colliderInputWaitFrame && l.colliderInputWaitFrames>=120))
     return refuse("local-collider-first-workdata-timeout");
   if(sample.frame!=l.colliderInputWaitFrame) {l.colliderInputWaitFrame=sample.frame;++l.colliderInputWaitFrames;}
   l.colliderInputPending=true;return ClothBoneInputReadiness::Waiting;
+}
+static bool ClothBoneLocalOutputs(int slot,const ClothContactSample &sample) {
+  const float weight=sample.simulateWeight*sample.lodWeight;
+  if(!sample.outputKnown || sample.particles<1 || sample.particles>ClothContactParticles ||
+      !std::isfinite(sample.simulateWeight) || sample.simulateWeight<0 ||
+      !std::isfinite(sample.lodWeight) || sample.lodWeight<0 || !std::isfinite(weight))
+    return ClothBoneLocalRefuse(slot,"local-output-weight-or-mapping-unavailable");
+  int localCount=0;double maxRaw=0,maxError=0;
+  for(int n=0;n<sample.particles;++n) {
+    const auto &p=sample.points[n];const auto &o=sample.outputs[n];
+    if(!(p.attribute&sample.moveMask)) continue;
+    if((p.attribute&sample.disableMask) || !(o.flags&sample.outputEnableMask) ||
+        !(o.flags&(sample.worldWriteMask|sample.localWriteMask))) {
+      Log("[CLOTH-BONE-LOCAL] stage=output-flags-refused frame=%d particle=%d instance=%d attribute=%u flags=%u",sample.frame,n,o.id,unsigned(p.attribute),unsigned(o.flags));
+      return ClothBoneLocalRefuse(slot,"local-move-output-disabled");
+    }
+    if((o.flags&sample.localWriteMask) && !(o.flags&sample.worldWriteMask)) {
+      ClothContactLocalPoseError error{};
+      if(!ClothContactLocalPoseMatches(o,weight,error)) {
+        Log("[CLOTH-BONE-LOCAL] stage=output-pose-refused frame=%d particle=%d instance=%d inputKnown=%d outputWeight=%.9g rawDistanceSquared=%g expectedDistanceSquared=%g rotationDot=%g expectedPose=native-read-write-interpolation",
+            sample.frame,n,o.id,int(o.localInputKnown),weight,error.rawDistanceSquared,error.distanceSquared,error.rotationDot);
+        return ClothBoneLocalRefuse(slot,"local-completed-output-pose-mismatch");
+      }
+      ++localCount;maxRaw=(std::max)(maxRaw,error.rawDistanceSquared);maxError=(std::max)(maxError,error.distanceSquared);
+    }
+  }
+  auto &trace=s_clothBoneSolver[slot];
+  if(weight>0 && weight<1 && localCount && !trace.blendedOutputLogged) {
+    trace.blendedOutputLogged=true;
+    Log("[CLOTH-BONE-LOCAL] stage=blended-output-confirmed frame=%d team=%d localOutputs=%d outputWeight=%.9g maxRawDistanceM=%g maxExpectedErrorM=%g source=native-ReadTransform localToleranceM=0.0002 visualVerified=0",
+        sample.frame,s_clothBoneSlots[slot].team[1],localCount,weight,std::sqrt(maxRaw),std::sqrt(maxError));
+  }
+  return true;
 }
 static bool ClothBoneLocalObserve(int slot,void *team,const ClothContactSample &sample) {
   auto &b=s_clothBoneSlots[slot];auto &l=b.local;
@@ -613,30 +685,14 @@ static bool ClothBoneLocalObserve(int slot,void *team,const ClothContactSample &
   if(input!=ClothBoneInputReadiness::Ready)return input==ClothBoneInputReadiness::Waiting;
   if(!ClothBoneSolverEdges(slot,team,sample)) return ClothBoneLocalRefuse(slot,"local-registered-edge-readback-mismatch");
   if(!ClothBoneLocalRadius(slot,sample)) return ClothBoneLocalRefuse(slot,"local-radius-readback-mismatch");
-  for(int n=0;n<sample.particles;++n) {
-    const auto &p=sample.points[n];const auto &o=sample.outputs[n];
-    if(!(p.attribute&sample.moveMask)) continue;
-    if((p.attribute&sample.disableMask) || !(o.flags&sample.outputEnableMask) ||
-        !(o.flags&(sample.worldWriteMask|sample.localWriteMask))) {
-      Log("[CLOTH-BONE-LOCAL] stage=output-flags-refused frame=%d particle=%d instance=%d attribute=%u flags=%u",sample.frame,n,o.id,unsigned(p.attribute),unsigned(o.flags));
-      return ClothBoneLocalRefuse(slot,"local-move-output-disabled");
-    }
-    if(o.flags&sample.localWriteMask) {
-      double distance=0,dot=0,aa=0,bb=0;
-      for(int k=0;k<3;++k) {const double d=o.localPosition[k]-o.lastLocalPosition[k];distance+=d*d;}
-      for(int k=0;k<4;++k) {dot+=double(o.localRotation[k])*o.lastLocalRotation[k];aa+=double(o.localRotation[k])*o.localRotation[k];bb+=double(o.lastLocalRotation[k])*o.lastLocalRotation[k];}
-      if(!std::isfinite(distance) || distance>.0002*.0002 || !std::isfinite(dot) || aa<.99 || aa>1.01 || bb<.99 || bb>1.01 || std::abs(dot/std::sqrt(aa*bb))<.99999) {
-        Log("[CLOTH-BONE-LOCAL] stage=output-pose-refused frame=%d particle=%d instance=%d distanceSquared=%g rotationDot=%g normSquared=%g/%g",sample.frame,n,o.id,distance,dot,aa,bb);
-        return ClothBoneLocalRefuse(slot,"local-completed-output-pose-mismatch");
-      }
-    }
-  }
+  if(!ClothBoneLocalOutputs(slot,sample)) return false;
   if(!ClothBoneLocalSurface(slot,team,sample)) return false;
   if(!ClothBoneNativeContactReadback(slot,team)) return ClothBoneLocalRefuse(slot,
       l.readbackIssue?l.readbackIssue:"native-cloth-contact-registration-or-partner-changed");
   if(!ClothBoneContactStartObserve(b,sample.frame))return ClothBoneLocalRefuse(slot,l.readbackIssue?l.readbackIssue:"paired-start-unconfirmed");
   if(l.contactLayered && l.contactStart.phase!=ClothBoneContactStart::Phase::Waiting &&
       l.contactStart.phase!=ClothBoneContactStart::Phase::Ready)return true;
+  if(sample.simulateWeight*sample.lodWeight<=0) return true;
   if(sample.frame!=l.solverFrame) {l.solverFrame=sample.frame;if(l.solverFrames<2) ++l.solverFrames;}
   l.solverConfirmed=l.solverFrames>=2 && (!l.contactConfigured || l.contactConfirmed);
   if(l.bodyCreated && l.solverFrames<=2 && !l.published) Log("[CLOTH-BONE-BODY] stage=native-input-readback frame=%d team=%d collider=%d radius=%g enabled=1 transformInputMapped=1 completedState=1 contactVerified=0 visualVerified=0",
@@ -755,16 +811,27 @@ static void ClothBoneSolverRenderInputs(int slot,unsigned record,int frame) {
 #include "cloth_bonecloth_contact_trace.h"
 #include "cloth_bonecloth_response_trace.h"
 #include "cloth_bonecloth_fit_trace.h"
+static void ClothBoneSolverLogEdges(int slot,unsigned record,int frame,const std::vector<std::array<int,2>> &edges) {
+  for(size_t first=0;first<edges.size();first+=32) {
+    std::ostringstream out;out<<"{\"kind\":\"edges\",\"slot\":"<<slot<<",\"record\":"<<record
+      <<",\"frame\":"<<frame<<",\"index\":"<<first<<",\"pairs\":[";
+    const size_t end=(std::min)(first+32,edges.size());
+    for(size_t n=first;n<end;++n){if(n!=first)out<<',';const auto &e=edges[n];out<<'['<<e[0]<<','<<e[1]<<']';}
+    out<<"]}";Log("[CLOTH-BONE-SOLVER-DATA] %s",out.str().c_str());
+  }
+}
 static void ClothBoneSolverLog(int slot,const ClothContactSample &p,void *team=nullptr) {
   auto &s=s_clothBoneSolver[slot];const auto &b=s_clothBoneSlots[slot];
   const unsigned record=++s.logged;
-  Log("[CLOTH-BONE-SOLVER-BEGIN] slot=%d record=%u session=%llu generation=%llu instance=%d team=%d component=%s profile=%s frame=%d particles=%d colliders=%d outputKnown=%d simulateWeight=%.9g blendWeight=%.9g lodWeight=%.9g moveMask=%u disableMask=%u validMask=%u enableMask=%u worldWriteMask=%u localWriteMask=%u outputEnableMask=%u costMs=%.6g backend=%s owner=%p process=%p serialize=%p scene=%d command=%u sourceFrame=unknown renderDepth=unmeasured",
+  const bool edgesKnown=team && ClothBoneSolverEdges(slot,team,p);
+  Log("[CLOTH-BONE-SOLVER-BEGIN] slot=%d record=%u session=%llu generation=%llu instance=%d team=%d component=%s profile=%s frame=%d particles=%d colliders=%d outputKnown=%d simulateWeight=%.9g blendWeight=%.9g lodWeight=%.9g moveMask=%u disableMask=%u validMask=%u enableMask=%u worldWriteMask=%u localWriteMask=%u outputEnableMask=%u costMs=%.6g backend=%s owner=%p process=%p serialize=%p scene=%d command=%u edgesKnown=%d edges=%zu sourceFrame=unknown renderDepth=unmeasured",
       slot,record,(unsigned long long)s.binding.identity.session,(unsigned long long)s.binding.identity.generation,
       s.binding.identity.cloth,s.binding.identity.team,b.profile->component,ClothBoneCandidate(b).signature,p.frame,p.particles,p.colliders,
       int(p.outputKnown),p.simulateWeight,p.blendWeight,p.lodWeight,p.moveMask,p.disableMask,p.validMask,p.enableMask,
       p.worldWriteMask,p.localWriteMask,p.outputEnableMask,p.costMs,"MMD",
       reinterpret_cast<void*>(s.binding.identity.owner),reinterpret_cast<void*>(s.binding.identity.process),
-      reinterpret_cast<void*>(s.binding.identity.serialize),s.binding.identity.scene,s.command);
+      reinterpret_cast<void*>(s.binding.identity.serialize),s.binding.identity.scene,s.command,
+      int(edgesKnown),edgesKnown?b.registeredEdges.size():size_t(0));
   const auto &pose=s_clothBonePoseTicket;
   const bool poseKnown=pose.owner==b.owner && pose.frame>=0 && pose.frame<=p.frame && p.frame-pose.frame<=1;
   Log("[CLOTH-BONE-SUBMISSION] slot=%d record=%u clothFrame=%d bodyFrame=%d lastSubmittedPlayhead=%.9g bodyStage=%s bodySubmissionIsSimulationTicket=0",
@@ -795,9 +862,15 @@ static void ClothBoneSolverLog(int slot,const ClothContactSample &p,void *team=n
       out<<",\"lastLocalPosition\":";ClothInputJsonArray(out,o.lastLocalPosition,3);
       out<<",\"localRotation\":";ClothInputJsonArray(out,o.localRotation,4);
       out<<",\"lastLocalRotation\":";ClothInputJsonArray(out,o.lastLocalRotation,4);
+      out<<",\"localInputKnown\":"<<(o.localInputKnown?"true":"false");
+      if(o.localInputKnown) {
+        out<<",\"inputLocalPosition\":";ClothInputJsonArray(out,o.inputLocalPosition,3);
+        out<<",\"inputLocalRotation\":";ClothInputJsonArray(out,o.inputLocalRotation,4);
+      }
     }
     out<<'}';Log("[CLOTH-BONE-SOLVER-DATA] %s",out.str().c_str());
   }
+  if(edgesKnown)ClothBoneSolverLogEdges(slot,record,p.frame,b.registeredEdges);
   Log("[CLOTH-BONE-SOLVER-END] slot=%d record=%u frame=%d sourceStepUnknown=1",slot,record,p.frame);
   ClothBoneSolverRenderInputs(slot,record,p.frame);
   if(team) ClothBoneFitTrace(slot,record,team,p);
@@ -832,8 +905,12 @@ static void ClothBoneSolverCapture(int slot,void *manager) {
   LARGE_INTEGER begin{},end{},frequency{};QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&begin);
   uintptr_t access=0;void *getItem=nullptr,*team=nullptr;ClothInputSample input{};
   if(!ClothBoneSolverBind(slot,manager,access,getItem,team,input)) { ClothBoneSolverFail(slot,"current-owner-Team-collider-map-unconfirmed");return; }
-  if(!input.teamKnown || input.culled || input.relative!=0) {
-    const char *reason=!input.teamKnown?"effective-Team-state-unavailable":input.culled?"culled-sample-skipped":"relative-coordinate-sample-skipped";
+  bool lodCulled=true;
+  const bool lodKnown=team && ClothValue(ClothInputMethod(il2cpp_object_get_class(team),"get_IsLODCulled","System.Boolean"),
+      static_cast<char *>(team)+16,lodCulled);
+  if(!input.teamKnown || !lodKnown || input.culled || lodCulled || input.relative!=0) {
+    const char *reason=!input.teamKnown || !lodKnown?"effective-Team-state-unavailable":input.culled?"culled-sample-skipped":
+        lodCulled?"lod-culled-sample-skipped":"relative-coordinate-sample-skipped";
     if(strcmp(s.contact.issue,reason)) Log("[CLOTH-BONE-SOLVER-SKIP] component=%s frame=%d reason=%s",b.profile->component,frame,reason);
     strncpy_s(s.contact.issue,reason,_TRUNCATE);return;
   }
@@ -866,20 +943,22 @@ static void ClothBoneSolverCapture(int slot,void *manager) {
   s.contact.identity=s.binding.identity;s.contact.samples.Push(sample);++s.captures;
   strcpy_s(s.contact.issue,"completed-state-captured-source-step-unattributed");
   const bool pauseLog=ClothBoneSolverPauseLogDue(s,now);
-  if(pauseLog || (!activating && ClothBoneSolverFullLogDue(s,now))) {
+  if(pauseLog || (!activating && ClothBoneSolverInitialLogDue(s))) {
     Log("[CLOTH-BONE-CHECKPOINT] component=%s frame=%d reason=%s pauseRequest=%u fullTextSuppressed=%d nativeSimulationRetained=1",
-        b.profile->component,frame,pauseLog?"pause-request":s.fullTextSuppressed?"sparse-periodic":"periodic",s.pauseSeen,int(s.fullTextSuppressed));
+        b.profile->component,frame,pauseLog?"pause-request":"initial-ready",s.pauseSeen,int(s.fullTextSuppressed));
     s.logMs=now;ClothBoneSolverLog(slot,sample,team);
     if(pauseLog) ClothBoneSolverPauseLogged(s,now);
   }
-  if(s.fullTextSuppressed && (!s.healthMs || now-s.healthMs>=5000)) {
-    s.healthMs=now;
-    Log("[CLOTH-BONE-SOLVER-HEALTH] component=%s session=%llu generation=%llu frame=%d captures=%u particles=%d outputKnown=%d published=%d pollIntervalMs=%u fullTextSuppressed=1 nativeSimulationRetained=1",
-        b.profile->component,(unsigned long long)b.owner.session,(unsigned long long)b.owner.generation,
-        frame,s.captures,sample.particles,int(sample.outputKnown),int(b.local.published),s.pollIntervalMs);
-  }
   QueryPerformanceCounter(&end);
   ClothBoneSolverCost(slot,sample.costMs,double(end.QuadPart-begin.QuadPart)*1000/frequency.QuadPart);
+  if(!activating && (!s.healthMs || now-s.healthMs>=5000)) {
+    s.healthMs=now;
+    Log("[CLOTH-BONE-SOLVER-HEALTH] component=%s session=%llu generation=%llu frame=%d captures=%u particles=%d outputKnown=%d published=%d pollIntervalMs=%u fullTextSuppressed=%d periodicFullLog=0 readbackMs=%g observerMs=%g windowMaxObserverMs=%g nativeSimulationRetained=1",
+        b.profile->component,(unsigned long long)b.owner.session,(unsigned long long)b.owner.generation,
+        frame,s.captures,sample.particles,int(sample.outputKnown),int(b.local.published),s.pollIntervalMs,int(s.fullTextSuppressed),
+        s.lastReadbackMs,s.lastObserverMs,s.windowMaxObserverMs);
+    s.windowMaxObserverMs=0;
+  }
 }
 static bool ClothBoneResponseInputRead(int slot,void *manager,double &positionError,double &rotationDot) {
   auto &s=s_clothBoneSlots[slot];auto &l=s.local.response;auto bbc=ClothTarget(l.consumer);void *process=nullptr,*data=nullptr,*list=nullptr;
@@ -922,6 +1001,7 @@ static void ClothBoneResponseInput(int slot,void *manager) {
   Log("[CLOTH-BONE-RESPONSE] stage=native-input-readback consumer=%s session=%llu generation=%llu command=%u frame=%d innerTeam=%d outerTeam=%d known=%d maxPositionError=%g minRotationDot=%g mappedInputConfirmed=%d observationOnly=1 contactAndVisualConfirmed=0",
       s.local.recipe->responseConsumer,s.owner.session,s.owner.generation,s.command,frame,s.team[1],l.team,int(known),error,dot,int(known&&error<.001&&dot>.9999));
 }
+#include "cloth_ribbon_motion_trace.h"
 static void ClothBoneSolverCompleted(void *manager) {
   if(!ClothOnMainThread() || !s_cloth.active || !s_clothInputHooks || s_clothInputUpdateDepth!=1) return;
   const auto &pose=s_clothBonePoseTicket;
@@ -932,6 +1012,7 @@ static void ClothBoneSolverCompleted(void *manager) {
     __try { ClothBoneSolverCapture(slot,manager); }
     __except(EXCEPTION_EXECUTE_HANDLER) { ClothBoneSolverFail(slot,"completed-state-observer-fault"); }
   }
+  if(s_clothVerboseDiagnostics.load())ClothRibbonMotionTrace();
 }
 static std::string ClothBoneSolverJson() {
   std::ostringstream out;out<<"{\"schema\":1,\"readOnly\":true,\"components\":[";bool first=true;
@@ -942,7 +1023,7 @@ static std::string ClothBoneSolverJson() {
     out<<"{\"component\":"<<CollisionJsonString(b.profile->component)<<",\"profile\":"<<CollisionJsonString(ClothBoneCandidate(b).signature)
        <<",\"captures\":"<<s.captures<<",\"loggedRecords\":"<<s.logged
        <<",\"pollIntervalMs\":"<<s.pollIntervalMs<<",\"fullTextSuppressed\":"<<s.fullTextSuppressed
-       <<",\"fullTextIntervalMs\":"<<(s.fullTextSuppressed?15000:2000)
+       <<",\"fullTextIntervalMs\":0,\"fullTextPolicy\":\"initial-pause-or-failure\""
        <<",\"pauseCheckpoints\":"<<s.pauseRecords<<",\"pausePending\":"<<s.pauseRemaining
        <<",\"lastReadbackAndChecksMs\":"<<CollisionNumber(s.lastReadbackMs)
        <<",\"lastObserverIncludingLogMs\":"<<CollisionNumber(s.lastObserverMs)

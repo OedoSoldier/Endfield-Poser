@@ -69,6 +69,12 @@ struct RigAdaptation {
   // Unity human role -> evaluated source-bone; empty leaves that role alone.
   std::map<int, std::string> roles;
 };
+inline RigAdaptation DefaultRigAdaptation() {
+  RigAdaptation a;
+  a.controlRoot=a.upperBody1=a.waistCancel=a.legD=true;
+  a.parentRoot=a.groove=a.upperBody2=a.shoulderCancel=a.twists=a.ikParents=true;
+  return a;
+}
 inline void ValidateAdaptation(const RigAdaptation &a) {
   if (a.extra.size() > 256 || a.tracks.size() > 8192 || a.roles.size() > 55)
     throw std::runtime_error(u8"适配配置项目过多");

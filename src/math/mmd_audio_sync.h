@@ -14,7 +14,7 @@ inline AudioPlan PlanAudio(const Timeline &t, bool active, bool enabled,
                            double playedSeconds, bool wrapped) {
   AudioPlan p;
   p.seconds = t.seconds - offset;
-  if (!active || !enabled || t.state != PlayState::Playing ||
+  if (!active || !enabled || t.clockHeld || t.state != PlayState::Playing ||
       !std::isfinite(p.seconds) || p.seconds < 0 || p.seconds >= duration)
     return p;
   p.action = !running || wrapped || std::abs(playedSeconds - p.seconds) > .1

@@ -1,4 +1,4 @@
-﻿param([switch]$RunTests)
+﻿param([switch]$RunTests, [switch]$EnableXxmiBridge)
 
 $ErrorActionPreference = 'Stop'
 
@@ -15,10 +15,14 @@ $ErrorActionPreference = 'Stop'
 #   plugin\poser.dll            (main plugin, self-initializing)
 #   plugin\d3dcompiler_47.dll   (DX proxy loader, forwards to System32)
 #   plugin\vulkan-1.dll         (Vulkan proxy loader, forwards to System32)
+# -EnableXxmiBridge writes the optional variant to build\xxmi\plugin instead.
 # -RunTests also builds and runs private local tests, when available.
 
 $root = Join-Path $PSScriptRoot '..'
 Set-Location $root
+$pluginDir = if ($EnableXxmiBridge) { 'build\xxmi\plugin' } else { 'plugin' }
+$bridgeFlag = if ($EnableXxmiBridge) { 1 } else { 0 }
+Write-Host "XXMI bridge: $EnableXxmiBridge; output: $pluginDir"
 if ($RunTests -and -not (Test-Path -LiteralPath 'tests\test_quat.cpp')) {
   throw 'Local tests are unavailable. Omit -RunTests for a public source build.'
 }
@@ -80,7 +84,7 @@ if (-not (Test-Path (Join-Path $sdkBin 'rc.exe'))) {
 }
 $env:PATH = (Split-Path $compiler -Parent) + ';' + $sdkBin + ';' + $env:PATH
 
-New-Item -ItemType Directory -Force -Path 'plugin' | Out-Null
+New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 New-Item -ItemType Directory -Force -Path 'build\tests' | Out-Null
 New-Item -ItemType Directory -Force -Path 'build\obj' | Out-Null
 
@@ -112,7 +116,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Clothing decoder library failed' }
 Write-Host '=== Compiling version resource ==='
 # cl 不处理 .rc；必须先用 rc.exe 编成 .res，再交给链接器
 # （Applepie Manager 用 GetFileVersionInfoA 读它显示插件版本）
-$rcCmdLine = 'rc /nologo /I src /fo build\obj\poser.res src\poser.rc'
+$rcCmdLine = "rc /nologo /D POSER_ENABLE_XXMI_BRIDGE=$bridgeFlag /I src /fo build\obj\poser.res src\poser.rc"
 # rc.exe 会按"输出 vs .rc 文件"的时间戳做增量判断，而版本号在 version.h 里——
 # 只改 version.h 时它不会重编，导致 DLL 版本号停在旧值。先删掉旧 .res 强制重编。
 Remove-Item -LiteralPath 'build\obj\poser.res' -Force -ErrorAction SilentlyContinue
@@ -123,25 +127,25 @@ if (-not (Test-Path 'build\obj\poser.res')) {
 }
 
 Write-Host '=== Building poser.dll ==='
-$poserArgs = "$common /DBROTLI_STATIC /DAPPLEPIE_PLUGIN_IMPL $inc /I deps\brotli\c\include /LD " +
+$poserArgs = "$common /DPOSER_ENABLE_XXMI_BRIDGE=$bridgeFlag /DBROTLI_STATIC /DAPPLEPIE_PLUGIN_IMPL $inc /I deps\brotli\c\include /LD " +
   'src\poser.cpp ' +
   'build\obj\poser.res build\obj\cloth_decoder.lib ' +
   'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp ' +
   'deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp ' +
-  '/Fe:plugin\poser.dll ' +
-  "/link /NODEFAULTLIB:LIBCMT /MAP:plugin\poser.map $sdkLibFlags d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib ole32.lib deps\minhook_lib\lib\libMinHook.x64.lib"
+  "/Fe:$pluginDir\poser.dll " +
+  "/link /NODEFAULTLIB:LIBCMT /MAP:$pluginDir\poser.map $sdkLibFlags d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib ole32.lib deps\minhook_lib\lib\libMinHook.x64.lib"
 Invoke-Cl $poserArgs
-& '.\build\cloth_resources.exe' --repo $root --dll (Join-Path $root 'plugin\poser.dll')
+& '.\build\cloth_resources.exe' --repo $root --dll (Join-Path $root "$pluginDir\poser.dll")
 if ($LASTEXITCODE -ne 0) { throw 'Embedded clothing resource verification failed' }
 
 Write-Host ''
 Write-Host '=== Building d3dcompiler_47.dll (proxy) ==='
-$proxyArgs = "$common /LD src\core\proxy_d3dcompiler.cpp /Fe:plugin\d3dcompiler_47.dll /link $sdkLibFlags"
+$proxyArgs = "$common /LD src\core\proxy_d3dcompiler.cpp /Fe:$pluginDir\d3dcompiler_47.dll /link $sdkLibFlags"
 Invoke-Cl $proxyArgs
 
 Write-Host ''
 Write-Host '=== Building vulkan-1.dll (proxy) ==='
-$vulkanArgs = "$common /LD src\core\proxy_vulkan_full.cpp /Fe:plugin\vulkan-1.dll /link $sdkLibFlags"
+$vulkanArgs = "$common /LD src\core\proxy_vulkan_full.cpp /Fe:$pluginDir\vulkan-1.dll /link $sdkLibFlags"
 Invoke-Cl $vulkanArgs
 
 Write-Host ''
@@ -195,7 +199,8 @@ $tests = @(
 )
 foreach ($t in $tests) {
   if (-not (Test-Path -LiteralPath $t.Src)) { throw "Missing local test source: $($t.Src)" }
-  Invoke-Cl "$common $inc $($t.Src) /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib /link $sdkLibFlags"
+  $testFeature = if ($t.Name -eq 'test_mod_bridge_runtime') { '/DPOSER_ENABLE_XXMI_BRIDGE=1' } else { '' }
+  Invoke-Cl "$common $testFeature $inc $($t.Src) /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib /link $sdkLibFlags"
   & ".\build\tests\$($t.Name).exe"
   if ($LASTEXITCODE -ne 0) { throw "test $($t.Name) failed with exit $LASTEXITCODE" }
 }
@@ -204,10 +209,14 @@ foreach ($t in $tests) {
 
 Write-Host ''
 Write-Host '=== Build OK ==='
-Write-Host '  plugin\poser.dll'
-Write-Host '  plugin\d3dcompiler_47.dll'
-Write-Host '  plugin\vulkan-1.dll'
-Get-ChildItem 'plugin' -Include *.lib,*.exp -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Write-Host "  $pluginDir\poser.dll"
+Write-Host "  $pluginDir\d3dcompiler_47.dll"
+Write-Host "  $pluginDir\vulkan-1.dll"
+Get-ChildItem $pluginDir -Include *.lib,*.exp -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Write-Host ''
-Write-Host 'Deploy with the installation wizard at the repository root, or:'
-Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1 -GameDir "<game directory>"'
+if ($EnableXxmiBridge) {
+  Write-Host 'Optional build only; excluded from release packages. See docs/xxmi-bridge.md for installation.'
+} else {
+  Write-Host 'Deploy with the installation wizard at the repository root, or:'
+  Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1 -GameDir "<game directory>"'
+}

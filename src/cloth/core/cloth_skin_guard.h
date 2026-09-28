@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <vector>
 namespace eiem_cloth_skin {
-static constexpr size_t MaxMatrices=192;
+static constexpr size_t MaxMatrices=384;
 struct Influence { int bone; double point[3]; double weight; };
 struct Sample { int vertex; bool stable; Influence original[4],candidate[4]; };
 struct Edge { int a,b; double rest; };

@@ -1,4 +1,5 @@
 #pragma once
+static bool ClothBoneOwnsAnchor(const ClothAnchor &anchor);
 
 static bool ClothFinitePosition(Vector3 v) {
   return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -119,8 +120,8 @@ static bool ClothResolveAnchorBind(ClothAnchor &a) {
   if (!boneClass || !humanClass) return false;
   return ClothFindBindRecord(skeleton, human, boneClass, humanClass, a);
 }
-static bool ClothAnchorUnderOwner(void *transform) {
-  void *root = nullptr, *animator = ClothTarget(s_cloth.animator);
+static bool ClothUnderAnimator(void *transform,void *animator) {
+  void *root = nullptr;
   if (!animator || !ClothInvoke(s_clothUnity.getTransform, animator, nullptr, root) || !root || transform == root) return false;
   for (int depth = 0; transform && depth < 128; ++depth) {
     if (transform == root) return true;
@@ -129,6 +130,9 @@ static bool ClothAnchorUnderOwner(void *transform) {
     transform = parent;
   }
   return false;
+}
+static bool ClothAnchorUnderOwner(void *transform) {
+  return ClothUnderAnimator(transform,ClothTarget(s_cloth.animator));
 }
 static ClothLife ClothAnchorParentState(const ClothAnchor &a, void *transform) {
   void *parent = nullptr, *saved = nullptr;
@@ -238,6 +242,14 @@ static bool ClothUpdateAnchors(ClothInstance &i, int member, int frame, ClothBon
       if (a.changed) return false;
       a.skipped = true; ClothAnchorLog(a, "SKIP", "motion-owner-exclusion-or-no-owner-guard"); continue;
     }
+    const bool leased = ClothBoneOwnsAnchor(a);
+    if (a.enhancementLeased != leased) {
+      a.enhancementLeased = leased;
+      ClothAnchorLog(a, leased ? "HANDOFF" : "RETURN", leased ?
+          "native-enhancement-owns-root-startup-snapshot-retained" :
+          "native-enhancement-released-original-root-audit-resumed");
+    }
+    if (leased) continue;
     void *roots = nullptr, *result = nullptr, *args[] = {root};
     bool stillMember = ClothField(i.last.serialize, "rootBones", "System.Collections.Generic.List<UnityEngine.Transform>", roots) && roots &&
         ClothInvoke(ClothMethod(il2cpp_object_get_class(roots), "Contains", "System.Boolean", "UnityEngine.Transform"), roots, args, result) && result && ClothUnboxBool(result);

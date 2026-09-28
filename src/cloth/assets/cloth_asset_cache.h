@@ -2,7 +2,7 @@
 #include "cloth_asset_recipe.h"
 
 namespace eiem_cloth_asset {
-constexpr const char *AutoAlgorithm="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-fixed-depth-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-v1-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-clearance-v4-fixed-apron-ordered-volumes-v3-prebuild-v1-bundle-v2-reader-v1-cell-aspect-v1-source-decode-v2-source-waist-panel-point-v1-leg-regions-native-lines-prebuild-closure-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1";
+constexpr const char *AutoAlgorithm="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-fixed-depth-v1-panel-fit-v3-long-skin-envelope-calf-knee-contour-v14-ribbon-width-v1-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-clearance-v4-fixed-apron-ordered-volumes-v3-prebuild-v1-bundle-v2-reader-v1-cell-aspect-v1-source-decode-v2-source-waist-panel-point-v1-leg-regions-native-lines-prebuild-closure-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1-owner-renderer-scope-v1-endminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-lower-v2-pelvis-overlap-v1";
 inline std::string QueryKey(const Query &q,const std::wstring &root,
     const std::vector<std::pair<std::wstring,std::string>> &indices) {
   Bytes bytes;
@@ -20,7 +20,7 @@ inline std::string QueryKey(const Query &q,const std::wstring &root,
   number(q.reservedRenderers.size());for(const auto &r:q.reservedRenderers){text(r.first);text(r.second);}
   return Digest(bytes);
 }
-inline size_t ResultBytes(const Generated &g){size_t n=sizeof(g)+g.key.size()+g.source.size()+g.sourceHash.size()+g.relevantHash.size();
+inline size_t ResultBytes(const Generated &g){size_t n=sizeof(g)+g.liveRenderers.capacity()*sizeof(size_t)+g.key.size()+g.source.size()+g.sourceHash.size()+g.relevantHash.size();
   for(const auto &s:g.sources)n+=128+s.first.size()+s.second.size();for(const auto &r:g.reports)n+=sizeof(r)+r.component.size()+r.reason.size();
   for(const auto &p:g.profiles){n+=sizeof(*p)+p->bones.size()*sizeof(ClothBoneAsset)+p->renderers.size()*sizeof(ClothBoneRendererAsset)+p->colliders.size()*sizeof(ClothBoneColliderAsset);
     for(const auto &s:p->strings)n+=64+s.size();for(const auto &b:p->bindings)n+=64+b.size()*sizeof(ClothBoneBinding);

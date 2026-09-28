@@ -1,4 +1,5 @@
 #pragma once
+#include "../bonecloth/cloth_bonecloth_limits.h"
 #include <array>
 #include <algorithm>
 #include <cstdint>
@@ -18,10 +19,10 @@ static_assert(sizeof(PointContact)==36 && offsetof(PointContact,sign)==10 &&
 struct Face { std::array<int,3> ids{}; int outside=0; };
 struct Surface {
   int team=0,start=0,count=0,faceCount=0;
-  std::array<Face,256> faces{};
+  std::array<Face,ClothBoneMaxFaces> faces{};
   bool pointsOnly=false;
   int activeCount=0;
-  std::array<int,128> active{};
+  std::array<int,ClothBoneMaxParticles> active{};
 };
 struct Ticket {
   uint64_t session=0,generation=0,command=0,process[2]{},data[2]{};
@@ -44,8 +45,8 @@ inline bool Contains(const Surface &s,int particle) {
       std::binary_search(s.active.begin(),s.active.begin()+s.activeCount,particle));
 }
 inline bool Valid(const Surface &s) {
-  if(s.team<=0 || s.team>0xffffff || s.start<0 || s.count<1 || s.count>128 ||
-      s.start>INT32_MAX-s.count || s.faceCount<0 || s.faceCount>256 ||
+  if(s.team<=0 || s.team>0xffffff || s.start<0 || s.count<1 || s.count>ClothBoneMaxParticles ||
+      s.start>INT32_MAX-s.count || s.faceCount<0 || s.faceCount>ClothBoneMaxFaces ||
       (s.pointsOnly?s.faceCount!=0:s.faceCount==0) ||
       s.activeCount<0 || s.activeCount>s.count || (s.pointsOnly?s.activeCount==0:s.activeCount!=0))return false;
   for(int n=0;n<s.activeCount;++n)

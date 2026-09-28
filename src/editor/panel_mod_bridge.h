@@ -1,4 +1,8 @@
 #pragma once
+#include "core/build_features.h"
+#if !POSER_ENABLE_XXMI_BRIDGE
+#error The XXMI bridge panel requires a separate opt-in build.
+#endif
 #include "config.h"
 #include "game/mmd_player.h"
 #include "imgui.h"

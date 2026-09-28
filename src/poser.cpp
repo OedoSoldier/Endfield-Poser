@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "core/build_features.h"
 #include "core/base.h"
 #include "core/il2cpp_api.h"
 #include "core/runtime_bootstrap.h"
@@ -136,12 +137,12 @@ static bool CursorVisible() {
 }
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
-static void PrepareCharacterHandoff() {
+static void PrepareCharacterHandoff(void *nextEntity=nullptr) {
   // Called before replacing any current actor handle, including delayed
   // captures. Save cached values; never query the outgoing skeleton for them.
   void *oldAnimator = g_charAnimator;
   bool oldAlive = CharAnimatorAlive();
-  MmdCharacterChanging();
+  MmdCharacterChanging(nextEntity);
   SaveCharStateOnSwitch();
   UnfreezeCharacter();
   ReleaseGripFor(oldAnimator);
@@ -347,7 +348,9 @@ static void DrawPoserGuiBody() {
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
       ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);
+#if POSER_ENABLE_XXMI_BRIDGE
     DrawModBridgeConflictNotice();
+#endif
     if (ImGui::CollapsingHeader(u8"快捷键设置")) {
       DrawHotkeySetting(u8"\u547c\u51fa / \u9690\u85cf\u9762\u677f",
                         "gui_toggle_key", &g_guiToggleVK, &g_guiToggleCtrl, 1);
@@ -545,7 +548,19 @@ void DrawPoserGui() {
     TakeLeftClick();
     return;
   }
-  DrawPoserGuiBody();
+  if(g_overlayPanelsDraw)DrawPoserGuiBody();
+  else {g_inputHoverGizmo=false;g_inputDragging=false;TakeLeftClick();}
+  const int countdown=g_mmdCountdownDisplay.load(std::memory_order_acquire);
+  if(countdown>0) {
+    char label[16]{};snprintf(label,sizeof(label),"%d",countdown);
+    auto font=ImGui::GetFont();const float size=ImGui::GetFontSize()*4;
+    auto extent=font->CalcTextSizeA(size,FLT_MAX,0,label);
+    auto screen=ImGui::GetIO().DisplaySize;
+    ImVec2 at((screen.x-extent.x)*.5f,screen.y*.25f);
+    auto draw=ImGui::GetForegroundDrawList();
+    draw->AddText(font,size,ImVec2(at.x+3,at.y+3),IM_COL32(0,0,0,220),label);
+    draw->AddText(font,size,at,IM_COL32(255,255,255,255),label);
+  }
 }
 
 // 外部控制（PostMessage WM_APP+90 触发，绕过反作弊输入拦截）：
@@ -603,7 +618,7 @@ static void OnGuiShutdownRestore() {
   const ULONGLONG deadline=GetTickCount64()+1000;
   while (GetTickCount64()<deadline) {
     { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
-      if (!s_cloth.active && !s_cloth.releasing) return; }
+      if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring()) return; }
     Sleep(10);
   }
   Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
@@ -771,9 +786,12 @@ static DWORD WINAPI InitThread(LPVOID) {
   OpenLog(PoserFilePath(L"poser_log.txt").c_str());
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
       POSER_VERSION, __DATE__, __TIME__);
+  Log("[BUILD] %s", POSER_BUILD_FEATURES);
   LoadPoserConfig();
   poser_gaze::LoadProfiles();
+#if POSER_ENABLE_XXMI_BRIDGE
   ModBridgeStartup();
+#endif
   ClothInitializeHost();
   poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
@@ -826,7 +844,9 @@ static DWORD WINAPI InitThread(LPVOID) {
     DWORD observed=g_frameGameThreadId.load();
     return observed?observed:(g_gameHwnd?GetWindowThreadProcessId(g_gameHwnd,nullptr):0);
   };
-  g_gameMaintenance = []() { ClothService(); };
+  s_clothHostEnabled=[](){return g_pluginEnabled;};
+  s_clothHostIdle=[](){return !MmdOwnsPose()&&!MmdSquadBusy()&&!g_mmd.preview;};
+  g_gameMaintenance = []() { ClothServiceActors(); };
   InstallFrameHook();
   mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）

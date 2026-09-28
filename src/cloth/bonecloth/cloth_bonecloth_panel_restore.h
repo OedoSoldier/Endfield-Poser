@@ -1,6 +1,6 @@
 #pragma once
 template<size_t N> static int ClothBonePanelReturnTargets(const ClothBoneRuntime &s,std::array<int,N> &indices) {
-  int coatInputs[6]{};const int coatCount=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
+  int coatInputs[16]{};const int coatCount=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
   if(coatCount) {
     if(N<size_t(coatCount)||!ClothBoneCoatPoseSize(s))return -1;
     for(int k=0;k<coatCount;++k)indices[k]=coatInputs[k];return coatCount;
@@ -20,7 +20,7 @@ template<size_t N> static int ClothBonePanelReturnTargets(const ClothBoneRuntime
 }
 static bool ClothBonePanelReturnMember(const ClothBoneRuntime &s,int n) {
   if(!s.profile||n<0||s.bones.size()<=size_t(n))return false;
-  int coatInputs[6]{};const int coatCount=eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs);
+  int coatInputs[16]{};const int coatCount=eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs);
   if(coatCount){for(int k=0;k<coatCount;++k)if(n==coatInputs[k])return s.bones[n].inputCaptured;return false;}
   if(!s.local.recipe)return false;
   if(s.local.recipe->sourceShortSkin)return (eiem_cloth_asset::SourceShortWaist(*s.profile,n)||eiem_cloth_asset::SourceShortRelease(*s.profile,n))&&s.bones[n].inputCaptured;
@@ -31,7 +31,7 @@ static bool ClothBonePanelReturnMember(const ClothBoneRuntime &s,int n) {
 }
 static bool ClothBoneCapturePanelReturn() {
   auto &s=ClothBoneState();auto &l=s.local;
-  int coatInputs[6]{};const int coat=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
+  int coatInputs[16]{};const int coat=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
   if((!coat&&(!l.created||!l.recipe||!l.recipe->SourcePoseLease()))||!s.tx.candidate.issued||l.panelReturnCaptured)return true;
   if(coat){if(!ClothBoneCoatPoseSize(s))return false;bool captured=false;for(int k=0;k<coat;++k)captured|=s.bones[coatInputs[k]].inputCaptured;if(!captured)return true;}
   else if((l.recipe->sourceApronFit||l.recipe->sourceShortSkin||(s.profile&&eiem_cloth_asset::SourceChenPanel(*s.profile)))&&!s.bones.empty()&&!s.bones[0].inputCaptured)return true;
@@ -52,7 +52,7 @@ static bool ClothBoneCapturePanelReturn() {
 }
 static bool ClothBonePlanPanelReturn(int slot) {
   auto &s=ClothBoneState();auto &l=s.local;
-  int coatInputs[6]{};const int coat=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
+  int coatInputs[16]{};const int coat=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
   if(slot!=2||(!coat&&(!l.created||!l.recipe||!l.recipe->SourcePoseLease())))return true;
   if(!s.tx.candidate.issued||!s.tx.disposeCandidateIssued)return true;
   if(coat){if(!ClothBoneCoatPoseSize(s))return false;bool captured=false;for(int k=0;k<coat;++k)captured|=s.bones[coatInputs[k]].inputCaptured;if(!captured)return true;}

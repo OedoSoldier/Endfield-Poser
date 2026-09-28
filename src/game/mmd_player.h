@@ -1,4 +1,5 @@
 #pragma once
+#include "core/build_features.h"
 #include "game/char_state.h"
 #include "game/mmd_io.h"
 #include "game/mmd_audio.h"
@@ -9,8 +10,12 @@
 #include "game/mmd_avatar.h"
 #include "game/mmd_terrain.h"
 #include "math/mmd_adaptation.h"
+#include "math/mmd_countdown.h"
+#include "core/mmd_countdown_hud.h"
 #include "game/mmd_camera.h"
+#if POSER_ENABLE_XXMI_BRIDGE
 #include "game/mod_bridge.h"
+#endif
 #include "game/mmd_camera_settings.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
@@ -338,9 +343,9 @@ struct MmdPlayer {
   mmd::CameraSettings cameraSettings;
   mmd::CameraPresetStore cameraPresets;
   std::string cameraTrackId;
-  mmd::RigDefinition rig = mmd::StandardRig();
+  mmd::RigDefinition rig = mmd::AdaptRig(mmd::StandardRig(),mmd::DefaultRigAdaptation());
   mmd::RigDefinition baseRig = mmd::StandardRig();
-  mmd::RigAdaptation adaptation;
+  mmd::RigAdaptation adaptation=mmd::DefaultRigAdaptation();
   int adaptationRevision = 0;
   std::string adaptationFile;
   int sourcePreset = 0; // 0: A-pose, 1: extracted T-pose; manual selection
@@ -349,6 +354,9 @@ struct MmdPlayer {
   mmd::RetargetProfile profile;
   mmd::Retargeter mapper;
   mmd::Timeline timeline;
+  mmd::PlaybackCountdown countdown;
+  bool countdownEnabled=false;
+  int countdownSeconds=3;
   mmd::AudioPlayer audio;
   bool musicEnabled = true;
   float musicVolume = .7f, musicOffset = 0;
@@ -382,11 +390,30 @@ struct MmdSquadBridge {
   bool (*busy)() = nullptr;
   void (*selectSingle)() = nullptr;
   bool (*hotkeyTarget)() = nullptr;
+  void (*characterChanging)(void *) = nullptr;
 };
 static MmdSquadBridge g_mmdSquadBridge;
 static bool MmdSquadOwnsPose() {return g_mmdSquadBridge.active && g_mmdSquadBridge.active();}
 static bool MmdSquadBusy() {return g_mmdSquadBridge.busy && g_mmdSquadBridge.busy();}
 static mmd::DeferredStart s_mmdStartRequest;
+static void *s_mmdStartEntity=nullptr;
+static double s_mmdStartDeadline=0;
+static void *MmdSelectedEntity() {
+  AcquireSRWLockShared(&g_pendingCharacterLock);
+  void *entity=g_pendingSelection?g_pendingEntity:g_captureEntity;
+  ReleaseSRWLockShared(&g_pendingCharacterLock);
+  return entity;
+}
+static void MmdQueueStart(bool replace=false) {
+  if(replace||!s_mmdStartRequest.active) {
+    s_mmdStartRequest.play();s_mmdStartEntity=MmdSelectedEntity();s_mmdStartDeadline=MmdNow()+15.;
+  } else if(!s_mmdStartDeadline) {
+    s_mmdStartEntity=MmdSelectedEntity();s_mmdStartDeadline=MmdNow()+15.;
+  }
+}
+static void MmdCancelStart() {
+  s_mmdStartRequest.cancel();s_mmdStartEntity=nullptr;s_mmdStartDeadline=0;
+}
 static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
   return g_mmd.cameraFile.empty() ? g_mmd.clip.cameras : g_mmd.cameraTrack;
 }
@@ -441,6 +468,7 @@ static void MmdSyncAudio() {
   }
 }
 static void MmdSeek(double seconds) {
+  g_mmd.countdown.cancel();g_mmdCountdownDisplay.store(0);
   ++g_mmd.session.terrain.epoch;
   g_mmd.timeline.seek(seconds, MmdNow());
   MmdSyncAudio();
@@ -508,7 +536,7 @@ static UINT_PTR CALLBACK MmdDialogHook(HWND window, UINT message, WPARAM,
   }
   return 0;
 }
-static void MmdStop();
+static void MmdStop(void *nextEntity=nullptr);
 static void MmdReport();
 static void MmdSaveFaceSettings();
 static void MmdLoadFaceSettings() {
@@ -660,7 +688,9 @@ static void MmdReport() {
   else if(!s_characterBinding.ready)m.report.push_back(m.faceSettings.fallback?
     u8"专属校准尚未匹配当前骨架，将使用固定映射":u8"专属校准尚未匹配当前骨架，固定映射兜底已关闭");
   for(auto &kv:m.morphMap) {
+#if POSER_ENABLE_XXMI_BRIDGE
     if(ModBridgeUsesMorph(kv.first)){m.report.push_back(u8"用于 mod 联动: "+kv.first);continue;}
+#endif
     if(kv.second.slider<0) {
       if(kv.second.nativeSlider<0||!m.faceSettings.fallback)m.report.push_back(u8"未映射表情: "+kv.first);
       else m.report.push_back(u8"专属校准未覆盖，使用固定映射: "+kv.first);
@@ -1024,17 +1054,21 @@ static void MmdCaptureSession() {
   }
   MmdHideProps(true);
 }
-static void MmdStop() {
+static void MmdStop(void *nextEntity) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
-  if(g_mmdSquadBridge.stop)g_mmdSquadBridge.stop();
+  if(nextEntity&&g_mmdSquadBridge.characterChanging)g_mmdSquadBridge.characterChanging(nextEntity);
+  else if(g_mmdSquadBridge.stop)g_mmdSquadBridge.stop();
   auto &m = g_mmd;
   auto &s = m.session;
   m.timeline.stop();
+  m.countdown.cancel();g_mmdCountdownDisplay.store(0);
   mmd_camera::Stop();
   ClothRequestPlayback(false);
-  s_mmdStartRequest.cancel();
+  MmdCancelStart();
   m.audio.close();
+#if POSER_ENABLE_XXMI_BRIDGE
   ModBridgeRelease();
+#endif
   SMCMotionPublish({});
   poser_gaze::Release(false);
   InterlockedExchange(&g_mmdOwnsPose, 0);
@@ -1087,14 +1121,29 @@ static void MmdStop() {
   m.status = u8"已停止并恢复播放前状态";
   Log("[MMD] stopped/restored actor=%p", s.animator);
 }
-static void MmdCharacterChanging() {
-  MmdStop();
+static void MmdCharacterChanging(void *nextEntity=nullptr) {
+  // A click made for the incoming selection must survive its delayed Animator
+  // capture. Requests belonging to the outgoing actor never carry over.
+  const auto request=s_mmdStartRequest;const auto target=s_mmdStartEntity;
+  const auto deadline=s_mmdStartDeadline;
+  const bool pending=request.active&&target&&target==nextEntity&&MmdNow()<deadline&&
+      (target!=g_mainCharEntity||!g_mmd.session.active);
+  MmdStop(nextEntity);
+  if(pending) {s_mmdStartRequest=request;s_mmdStartEntity=target;s_mmdStartDeadline=deadline;}
   auto &m = g_mmd;
   m.profileRevision = -1;
   m.profileAnimator = nullptr;
   m.profile = mmd::RetargetProfile{};
   m.calibrationStatus = u8"角色已切换，等待新角色骨架；原角色校准仍保存在文件中";
   m.status = u8"切换角色已停止动作，等待新角色骨架";
+}
+static bool MmdClothMayAdjustAnchor(void *transform);
+static void MmdCountdownUpdate(bool ready) {
+  auto &m=g_mmd;const auto now=MmdNow();
+  const bool cloth=g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration);
+  m.countdown.update(now,ready&&!cloth,m.timeline.state==mmd::PlayState::Playing);
+  g_mmdCountdownDisplay.store(m.countdown.display(),std::memory_order_release);
+  m.timeline.holdClock(cloth||m.countdown.active,now);
 }
 static void MmdApplyFrame() {
   if(!ClothOnMainThread())return;
@@ -1108,7 +1157,8 @@ static void MmdApplyFrame() {
     return;
   }
   double frame = m.timeline.seconds * 30.;
-  if (!s.bodyOwned) {MmdPublishCamera();return;}
+  if (!s.bodyOwned) {MmdPublishCamera();MmdCountdownUpdate(true);return;}
+  if(ClothBlockFirstBodyPose("single-preparation",MmdClothMayAdjustAnchor)) {MmdCountdownUpdate(false);return;}
   m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude);
   auto &p = m.mapper.output;
   auto world=s.anchorWorld*mmd::TRS(p.rootOffset,{});
@@ -1164,8 +1214,13 @@ static void MmdApplyFrame() {
     }
   }
   SMCMotionPublish(face);
+#if POSER_ENABLE_XXMI_BRIDGE
   ModBridgeFrame(m.clip, frame);
+#endif
+  ClothService(true,MmdClothMayAdjustAnchor,frame);
+  m.timeline.holdClock(g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration)||m.countdown.active,MmdNow());
   MmdPublishCamera();
+  MmdCountdownUpdate(true);
 }
 static bool MmdClothMayAdjustAnchor(void *transform) {
   if (!transform || transform==g_mmd.session.root) return false;
@@ -1181,14 +1236,23 @@ static bool MmdStart() {
   if (m.loading || m.preview || !MmdHasContent()) return false;
   // Capture cloth originals before suppressing animation, on the Unity thread.
   if (!ClothOnMainThread()) {
-    s_mmdStartRequest.play();m.status=u8"等待游戏线程开始播放";return false;
+    MmdQueueStart(true);m.status=u8"等待游戏线程开始播放";return false;
   }
-  s_mmdStartRequest.cancel();
+  if(s_mmdStartRequest.active&&s_mmdStartDeadline&&
+      (MmdNow()>=s_mmdStartDeadline||(s_mmdStartEntity&&s_mmdStartEntity!=MmdSelectedEntity()))) {
+    MmdCancelStart();m.status=u8"角色选择已改变或等待超时，请重新播放";return false;
+  }
+  if(ClothSquadRestoring()) {
+    MmdQueueStart();
+    m.status=u8"等待多人衣物增强恢复";return false;
+  }
   if (!MmdCharacterReady()) {
-    MmdStop();
-    m.status = u8"正在等待当前角色骨架，请稍后重试或点击刷新骨骼";
+    if(m.session.active)MmdStop();
+    MmdQueueStart();
+    m.status = u8"正在等待所选角色骨架，就绪后自动开始播放";
     return false;
   }
+  MmdCancelStart();
   if (m.session.active) {
     m.timeline.play(MmdNow());
     return true;
@@ -1205,6 +1269,9 @@ static bool MmdStart() {
   if (!m.clip.bones.empty() && m.autoScale)
     m.scale = m.mapper.suggestedScale;
   MmdCaptureSession();
+  m.countdown.arm(m.countdownEnabled,m.countdownSeconds);
+  if(m.countdown.active)m.timeline.seconds=0;
+  m.timeline.holdClock(g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration)||m.countdown.active,MmdNow());
   InterlockedExchange(&g_mmdOwnsPose, 1);
   MmdUpdateDuration();
   m.timeline.play(MmdNow());
@@ -1227,7 +1294,9 @@ static void MmdTick() {
     MmdLoadFaceSettings();
     MmdPollCharacterFaces();
     MmdPollLoad();
+#if POSER_ENABLE_XXMI_BRIDGE
     ModBridgeService();
+#endif
     MmdSelectCameraSettings();
     if(m.calibrateRequested&&ClothOnMainThread()&&!m.session.active&&!MmdSquadBusy()) {
       m.calibrateRequested=false;MmdPrepareProfile();
@@ -1235,7 +1304,11 @@ static void MmdTick() {
     if(g_mmdSquadBridge.tick && g_mmdSquadBridge.tick())return;
     if (s_mmdStartRequest.active && ClothOnMainThread()) {
       const auto request=s_mmdStartRequest;
-      if (MmdStart()) request.apply(m.timeline,MmdNow());
+      if (MmdStart()) {
+        if(std::isfinite(request.seconds)) {m.countdown.cancel();g_mmdCountdownDisplay.store(0);}
+        if(request.paused)m.countdown.pause();
+        request.apply(m.timeline,MmdNow());
+      }
     }
     ClothRequestPlayback(m.session.active && m.session.bodyOwned && !m.preview && !m.freezeCloth);
     if (m.session.active && (!MmdCharacterReady() ||
@@ -1245,11 +1318,12 @@ static void MmdTick() {
       MmdStop();
       return;
     }
+    m.timeline.holdClock(g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration)||m.countdown.active,MmdNow());
     if (MmdOwnsPose()) {
       m.timeline.tick(MmdNow());
       MmdApplyFrame();
     }
-    ClothService(m.session.active && !m.preview, MmdClothMayAdjustAnchor, m.timeline.seconds * 30.0);
+    ClothService();
     MmdSyncAudio();
     if (m.session.active)
       MmdHideProps();
@@ -1282,6 +1356,7 @@ static void MmdPlaybackCommand(int command, bool allowSquad = true) {
     } else if (command == 1 && s_mmdStartRequest.active) {
       s_mmdStartRequest.pause();
     } else if (command == 1 && MmdOwnsPose()) {
+      m.countdown.pause();
       m.timeline.pause(MmdNow());
       m.status = u8"已暂停，保持当前姿态";
     } else if (command == 3) {

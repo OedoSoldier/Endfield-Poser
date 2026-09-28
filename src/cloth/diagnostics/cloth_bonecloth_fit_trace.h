@@ -3,6 +3,13 @@ struct ClothBoneFitReference {
   int rootParticle=-1;double basic[3]{},referenceDistance=0,outputDistance=0,ratio=0;
   bool ratioKnown=false;
 };
+static bool ClothBoneFitInitialScale(void *team,float (&scale)[3]) {
+  float value[3]{};
+  if(!ClothOnMainThread() || !team ||
+      !ClothInputTeamField(team,"initScale","Unity.Mathematics.float3",value))return false;
+  for(float v:value)if(!std::isfinite(v) || v==0)return false;
+  memcpy(scale,value,sizeof(value));return true;
+}
 static bool ClothBoneFitRootDistances(const double (&point)[3],const double (&root)[3],
                                      const double (&basic)[3],const double (&rootBasic)[3],ClothBoneFitReference &out) {
   double current=0,reference=0;
@@ -27,9 +34,9 @@ static bool ClothBoneFitReferences(void *simulation,void *team,int expectedTeam,
       !ClothInputArrayOpen(simulation,"teamIdArray","System.Int16",particleTeams) ||
       !ClothBonePairContainerOpen(simulation,"stepBasicPositionBuffer","Unity.Collections.NativeArray<Unity.Mathematics.double3>","Unity.Mathematics.double3",basic) ||
       !ClothValue(SurfaceMethod(basic.cls,"get_IsCreated","System.Boolean"),&basic.value,created) || !created ||
-      !ClothInputChunkRead(team,"proxyCommonChunk",teams.length,vc) || vc.count!=sample.particles ||
+      !ClothInputChunkRead(team,"proxyCommonChunk",teams.length,vc,ClothContactParticles) || vc.count!=sample.particles ||
       vc.start>roots.length || vc.count>roots.length-vc.start ||
-      !ClothInputChunkRead(team,"particleChunk",particleTeams.length,pc) || pc.count!=vc.count ||
+      !ClothInputChunkRead(team,"particleChunk",particleTeams.length,pc,ClothContactParticles) || pc.count!=vc.count ||
       pc.start>basic.length || pc.count>basic.length-pc.start)return false;
   std::vector<ClothBoneFitReference> values(pc.count);std::vector<int> rootIndices(pc.count);
   int16_t owner=0;
@@ -81,7 +88,7 @@ static bool ClothBoneFitTraceImpl(int slot,unsigned record,void *team,const Clot
   const char *types[]{"System.Int16","Unity.Mathematics.double3","Unity.Mathematics.quaternion"};
   ClothInputChunk chunk{};
   if(!ClothContactArrays(simulation,arrays,names,types,3) ||
-      !ClothInputChunkRead(team,"particleChunk",arrays[0].length,chunk) ||
+      !ClothInputChunkRead(team,"particleChunk",arrays[0].length,chunk,ClothContactParticles) ||
       !ClothContactRange(chunk,arrays,3,ClothContactParticles) || chunk.count!=sample.particles) return false;
   auto box=ClothInputArrayBox(parameters,b.team[1]);
   float radius[16]{},distance[16]{},maxDistance[16]{},backstop[16]{},attenuation=0,ratio=0,scale=0,backstopRadius=0,stiffness=0;
@@ -140,6 +147,7 @@ static bool ClothBoneFitTraceImpl(int slot,unsigned record,void *team,const Clot
   if(!ClothBoneSolverEligible(b) || !ClothInputIdentity(true,binding) || sample.frame!=ClothFrame()) return false;
   ClothBoneTetherParameters tether{};float bending=0;
   const bool elasticKnown=ClothBoneElasticParameters(box,tether,bending);
+  float initialScale[3]{};const bool initialScaleKnown=ClothBoneFitInitialScale(team,initialScale);
   std::ostringstream out;out<<std::setprecision(12);
   out<<"{\"slot\":"<<slot<<",\"record\":"<<record<<",\"frame\":"<<sample.frame<<",\"team\":"<<binding.identity.team
      <<",\"particles\":"<<sample.particles<<",\"animationPoseRatio\":"<<ratio<<",\"scaleRatio\":"<<scale
@@ -152,7 +160,9 @@ static bool ClothBoneFitTraceImpl(int slot,unsigned record,void *team,const Clot
   out<<",\"elasticParametersKnown\":"<<(elasticKnown?"true":"false");
   if(elasticKnown) out<<",\"tetherCompression\":"<<tether.compression<<",\"tetherStretch\":"<<tether.stretch<<",\"bendingStiffness\":"<<bending;
   out<<",\"stepBasicReferenceKnown\":"<<(referenceKnown?"true":"false")
-     <<",\"simulationTicketKnown\":false,\"renderDepthMeasured\":false}";
+     <<",\"initialScaleKnown\":"<<(initialScaleKnown?"true":"false");
+  if(initialScaleKnown) {out<<",\"initScale\":";ClothInputJsonArray(out,initialScale,3);}
+  out<<",\"simulationTicketKnown\":false,\"renderDepthMeasured\":false}";
   Log("[CLOTH-BONE-FIT-BEGIN] %s",out.str().c_str());
   for(size_t n=0;n<points.size();++n) {
     const auto &p=points[n];

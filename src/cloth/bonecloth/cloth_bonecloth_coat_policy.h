@@ -1,13 +1,37 @@
 #pragma once
+static bool ClothBoneOriginalCoverageCoat(const ClothBoneRuntime &s) {
+  const auto p=s.profile;const auto r=s.local.recipe;
+  return p&&eiem_cloth_asset::SourceUpperCoatFront(*p)&&
+      p->boneCount==47&&p->rootCount==7&&!p->loop&&s.local.requested&&r&&p->generatedLocal==r&&
+      r->NativePanelsOnly()&&r->CoatCalfCoverage()&&r->separatedPanels==3&&
+      s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
+}
 static bool ClothBoneForkCoat(const ClothBoneRuntime &s) {
   const auto p=s.profile;
   if(ClothBoneSeparatedCoatRecipe(s))return s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
+  if(ClothBoneOriginalCoverageCoat(s))return true;
+  if(p&&s.local.requested&&s.local.recipe&&s.local.recipe==p->generatedLocal&&s.local.recipe->ForkCoatBodyOnly()&&
+      eiem_cloth_asset::SourceForkCoatFront(*p))return s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
   return p&&((p->runtimeForkCoat&&p->runtimeGenerated&&p->runtimeFixedForks&&p->nativeGraphOrder)||eiem_cloth_asset::SourceInactiveCoat(*p))&&
       p->nativeGraphCount>0&&!p->loop&&
       ((!p->generatedLocal&&!s.local.requested)||(s.local.requested&&s.local.recipe==p->generatedLocal&&
       p->generatedLocal&&p->generatedLocal->CoatWaistSkinOnly()&&eiem_cloth_asset::SourceInactiveCoat(*p)))&&
       !p->inputAnchorCount&&!p->sourceBranchCount&&
       s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
+}
+static bool ClothBoneLongPanelBending(const ClothBoneRuntime &s) {
+  const auto p=s.profile;const auto r=s.local.recipe;
+  return p&&s.local.requested&&r&&p->generatedLocal==r&&
+      eiem_cloth_asset::SourceSeraphPanel(*p)&&eiem_cloth_asset::SourcePanelContract(*p)&&
+      r->runtimeGenerated&&r->sourcePanelFit&&r->resampledPanel&&r->loop&&
+      r->originalCount==40&&r->originalRoots==8&&r->depth==4&&r->addedCount==ClothLongPanelParticles&&r->rootCount==ClothLongPanelColumns&&
+      r->bendingStiffness==0&&r->tetherStretch==ClothLongPanelTetherStretch&&
+      r->distanceStiffness==ClothLongPanelDistanceStiffness&&
+      !s.supportCreated&&s.oldLines.size()==32;
+}
+static bool ClothBoneSurfaceBendingRequested(const ClothBoneRuntime &s) {
+  return s.profile&&(ClothBoneOriginalCoverageCoat(s)||s.profile->runtimeForkCoat||s.profile->runtimeSeparatedCoat||s.profile->candidateAttributes||
+      (s.local.requested&&s.local.recipe&&s.local.recipe->resampledPanel));
 }
 struct ClothBoneBendingParameters { int method=0;float stiffness=0; };
 static bool ClothBoneBendingRead(void *box,ClothBoneBendingParameters &value,int &none) {
@@ -34,12 +58,12 @@ static bool ClothBoneBendingFrom(void *data,ClothBoneBendingParameters &value,in
   return data&&ClothInvoke(SurfaceMethod(il2cpp_object_get_class(data),"GetClothParameters",
       "BeyondDynamicBone.ClothParameters"),data,nullptr,box)&&ClothBoneBendingRead(box,value,none);
 }
-static bool ClothBoneForkCoatConfigure(void *data,void *original) {
+static bool ClothBoneSurfaceBendingConfigure(void *data,void *original) {
   if(!ClothOnMainThread())return false;
   auto &s=ClothBoneState();
-  if(!s.profile||(!s.profile->runtimeForkCoat&&!s.profile->runtimeSeparatedCoat&&!s.profile->candidateAttributes))return !s.forkCoatBending&&!s.forkCoatSourceBending;
-  if(!ClothBoneForkCoat(s)||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||
-      !ClothOwns(s.owner)||s.stopRequested||s.forkCoatBending||s.forkCoatSourceBending||
+  if(!ClothBoneSurfaceBendingRequested(s))return !s.surfaceBending&&!s.surfaceSourceBending;
+  if((!ClothBoneForkCoat(s)&&!ClothBoneLongPanelBending(s))||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||
+      !ClothOwns(s.owner)||s.stopRequested||s.surfaceBending||s.surfaceSourceBending||
       !data||!original||data==original||data!=CollisionGc(s.candidateData)||original!=CollisionGc(s.data))return false;
   constexpr auto type="BeyondDynamicBone.TriangleBendingConstraint.SerializeData";
   void *source=nullptr,*copy=nullptr,*afterSource=nullptr;
@@ -56,29 +80,31 @@ static bool ClothBoneForkCoatConfigure(void *data,void *original) {
       !ClothField(source,"stiffness","System.Single",afterStiffness)||afterStiffness!=stiffness||
       !ClothBoneBendingFrom(original,after,afterNone)||afterNone!=none||
       after.method!=before.method||after.stiffness!=before.stiffness)return false;
-  s.forkCoatSourceBending=ClothBoneHold(source);s.forkCoatBending=ClothBoneHold(copy);
-  if(!s.forkCoatSourceBending||!s.forkCoatBending)return false;
-  s.forkCoatOriginalStiffness=stiffness;s.forkCoatOriginalMethod=before.method;s.forkCoatNoneMethod=none;
-  Log("[CLOTH-BONE-COAT-POLICY] stage=configured component=%s frame=%d generation=%llu command=%u bodyCollision=Point originalStiffness=%g candidateStiffness=0 effectiveMethod=None sourceUntouched=1 originalRadiusCurve=1 originalSkin=%d waistSkinTransition=%d longitudinalShapeConstraints=retained nativeTeamReadback=pending visualVerified=0",
-      s.profile->component,ClothFrame(),s.owner.generation,s.command,stiffness,
+  s.surfaceSourceBending=ClothBoneHold(source);s.surfaceBending=ClothBoneHold(copy);
+  if(!s.surfaceSourceBending||!s.surfaceBending)return false;
+  s.surfaceOriginalStiffness=stiffness;s.surfaceOriginalMethod=before.method;s.surfaceNoneMethod=none;
+  if(ClothBoneForkCoat(s))Log("[CLOTH-BONE-COAT-POLICY] stage=configured component=%s frame=%d generation=%llu command=%u bodyCollision=%s originalStiffness=%g candidateStiffness=0 effectiveMethod=None sourceUntouched=1 originalRadiusCurve=1 originalSkin=%d waistSkinTransition=%d longitudinalShapeConstraints=retained nativeTeamReadback=pending visualVerified=0",
+      s.profile->component,ClothFrame(),s.owner.generation,s.command,"Point",stiffness,
       !s.local.requested||(s.local.recipe&&s.local.recipe->NativeSkinRetained()),s.local.recipe&&s.local.recipe->CoatWaistSkinOnly());
+  if(ClothBoneLongPanelBending(s))Log("[CLOTH-BONE-LONG-PANEL-POLICY] stage=configured component=%s frame=%d generation=%llu command=%u sourceTriangles=0 candidateTriangles=%d bodyCollision=Edge sourceStiffness=%g candidateStiffness=0 effectiveMethod=None sourceUntouched=1 contourMaterialReadback=pending sourceAngleRetained=1 colliderGeometryUnchanged=1 nativeTeamReadback=pending visualVerified=0",
+      s.profile->component,ClothFrame(),s.owner.generation,s.command,ClothLongPanelFaces,stiffness);
   if(s.profile->runtimeSeparatedCoat)Log("[CLOTH-BONE-COAT-INPUT] stage=configured component=%s releasedInteriorFixed=%d retainedOriginalRoots=%d radiusCurveUnchanged=1 effectiveDepth=native-recomputed bodyGeometryUnchanged=1 skinWrites=0",
       s.profile->component,s.profile->releasedFixedCount,s.profile->rootCount);
   return true;
 }
-static bool ClothBoneForkCoatMatches(const ClothBoneRuntime &s,int slot,void *box) {
+static bool ClothBoneSurfaceBendingMatches(const ClothBoneRuntime &s,int slot,void *box) {
   if(!ClothOnMainThread()||slot<0||slot>2)return false;
-  if(!s.profile||(!s.profile->runtimeForkCoat&&!s.profile->runtimeSeparatedCoat&&!s.profile->candidateAttributes))return !s.forkCoatBending&&!s.forkCoatSourceBending;
-  if(!ClothBoneForkCoat(s))return false;
-  if(!s.forkCoatBending||!s.forkCoatSourceBending)return slot!=1;
+  if(!ClothBoneSurfaceBendingRequested(s))return !s.surfaceBending&&!s.surfaceSourceBending;
+  if(!ClothBoneForkCoat(s)&&!ClothBoneLongPanelBending(s))return false;
+  if(!s.surfaceBending||!s.surfaceSourceBending)return slot!=1;
   if(slot==1&&!ClothOwns(s.owner))return false;
   const auto data=CollisionGc(slot==1?s.candidateData:s.data);
-  const auto expectedObject=CollisionGc(slot==1?s.forkCoatBending:s.forkCoatSourceBending);
-  const float expected=slot==1?0:s.forkCoatOriginalStiffness;
+  const auto expectedObject=CollisionGc(slot==1?s.surfaceBending:s.surfaceSourceBending);
+  const float expected=slot==1?0:s.surfaceOriginalStiffness;
   void *object=nullptr;float serialized=NAN;int none=-1;ClothBoneBendingParameters actual{};
   return data&&expectedObject&&ClothField(data,"triangleBendingConstraint",
       "BeyondDynamicBone.TriangleBendingConstraint.SerializeData",object)&&object==expectedObject&&
       ClothField(object,"stiffness","System.Single",serialized)&&serialized==expected&&
-      ClothBoneBendingRead(box,actual,none)&&none==s.forkCoatNoneMethod&&actual.stiffness==expected&&
-      actual.method==(slot==1?none:s.forkCoatOriginalMethod);
+      ClothBoneBendingRead(box,actual,none)&&none==s.surfaceNoneMethod&&actual.stiffness==expected&&
+      actual.method==(slot==1?none:s.surfaceOriginalMethod);
 }

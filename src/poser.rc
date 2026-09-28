@@ -3,6 +3,7 @@
 // version). Keep this file ASCII-only: rc.exe cannot parse UTF-8 comments.
 #include <windows.h>
 #include "core/version.h"
+#include "core/build_features.h"
 
 #define POSER_RC_STR2(x) #x
 #define POSER_RC_STR(x) POSER_RC_STR2(x)
@@ -32,6 +33,7 @@ BEGIN
             VALUE "OriginalFilename", "poser.dll"
             VALUE "ProductName", "Endfield Poser"
             VALUE "ProductVersion", POSER_RC_VERSION
+            VALUE "Comments", POSER_BUILD_FEATURES
         END
     END
     BLOCK "VarFileInfo"

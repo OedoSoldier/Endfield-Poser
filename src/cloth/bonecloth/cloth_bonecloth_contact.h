@@ -202,20 +202,19 @@ static ClothInputJobHandle *ClothContactSchedule(int kind,ClothInputJobHandle *r
   // No Unity calls here, including during shutdown while native jobs drain.
   if(!s_clothContactJobs.installed || !ClothOnNativeThread() ||
       caller!=s_clothContactJobs.callsites[kind]) return original(result,job,dependency,method);
-  int first=-1,slot=-1;
-  for(int n=0;n<s_clothBoneCount;++n) {
-    auto &s=s_clothBoneSlots[n];auto &l=s.local;
-    if(!s.pending || !s.lease || !l.contactConfigured || l.contactReleased || !l.contactManager) continue;
-    if(first<0) first=n;
-    if(job && l.contactListHeaders[kind]==job->list.data) {slot=n;break;}
+  ClothBoneRuntime *matched=nullptr;bool any=false;
+  for(auto &actor:s_ClothActorBones.values)if(actor)for(auto &s:actor->slots) {
+    auto &l=s.local;
+    if(!s.pending || !s.lease || !l.contactConfigured || l.contactReleased || !l.contactManager)continue;
+    any=true;if(job && l.contactListHeaders[kind]==job->list.data)matched=&s;
   }
-  if(first<0) return original(result,job,dependency,method);
+  if(!any)return original(result,job,dependency,method);
   eiem_cloth_contact_job::Job copy{};
-  const auto patch=slot<0 || !job ? eiem_cloth_contact_job::Patch::Invalid :
-      eiem_cloth_contact_job::BindCount(*job,s_clothBoneSlots[slot].local.contactListHeaders[kind],s_clothContactJobs.lengthOffset,copy);
+  const auto patch=!matched || !job ? eiem_cloth_contact_job::Patch::Invalid :
+      eiem_cloth_contact_job::BindCount(*job,matched->local.contactListHeaders[kind],s_clothContactJobs.lengthOffset,copy);
   if(patch==eiem_cloth_contact_job::Patch::Unchanged) return original(result,job,dependency,method);
   if(patch==eiem_cloth_contact_job::Patch::Repaired) {
-    auto &s=s_clothBoneSlots[slot];auto &l=s.local;
+    auto &s=*matched;auto &l=s.local;
     if(s_clothInputUpdateDepth!=1 && ++l.contactJobDeferredRepairs[kind]==1)
       Log("[CLOTH-BONE-CONTACT-JOB] stage=counter-bound-maintenance-deferred kind=%d nativeList=%p editorLockRequired=0 nativeJobsProtected=1",
           kind,(void*)job->list.data);
@@ -225,8 +224,8 @@ static ClothInputJobHandle *ClothContactSchedule(int kind,ClothInputJobHandle *r
     return original(result,&copy,dependency,method);
   }
   bool report=false;
-  for(int n=0;n<s_clothBoneCount;++n) {
-    auto &s=s_clothBoneSlots[n];if(!s.pending || !s.lease || !s.local.contactConfigured) continue;
+  for(auto &actor:s_ClothActorBones.values)if(actor)for(auto &s:actor->slots) {
+    if(!s.pending || !s.lease || !s.local.contactConfigured || s.local.contactReleased) continue;
     if(!s.failure[0]) {strncpy_s(s.failure,"native-contact-job-input-changed-restoring",_TRUNCATE);report=true;}
     s.failed=true;s.stopRequested=true;
   }
@@ -383,7 +382,7 @@ static bool ClothBoneNativeContactReadback(int slot,void *team) {
   if(!ClothBoneContactMaterialUnchanged(ClothBoneContactExpected(l),effective)) return refuse("native-contact-material-changed");
   const bool ready=reciprocalFaces && sync==p.team && parents.size()==1 && parents[0]==s.team[1] &&
       effective.selfMode==none && effective.syncMode==full &&
-      triangles.count>0 && triangles.count<=512 && otherPoints.count>0 && otherPoints.count<=128 &&
+      triangles.count>0 && triangles.count<=ClothBoneMaxFaces && otherPoints.count>0 && otherPoints.count<=ClothBoneMaxParticles &&
       (flags&(uint64_t(1)<<sourceFlag)) && (otherFlags&(uint64_t(1)<<targetFlag));
   if(!ready) {
     if(!l.contactPendingLogged) {

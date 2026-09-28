@@ -109,12 +109,20 @@ static void HandleRequest(SOCKET c, const std::string &path,
     auto &s=g_squad;nlohmann::json slots=nlohmann::json::array();
     for(int i=0;i<4;++i) {
       auto &slot=s.slots[i];auto *a=s.actors[i].get();
+      ClothActorScope clothScope(unsigned(i)+1);
+      s_collisionInspect.store(true);
+      const auto cloth=CollisionGetUi();
       slots.push_back({{"slot",i+1},{"enabled",slot.enabled},{"member",slot.member},
         {"ready",s.roster.members[i].animator!=nullptr},{"file",slot.file},{"status",slot.status},
         {"calibrated",slot.calibrated},{"calibration",slot.calibration},
         {"active",a!=nullptr},{"bones",a?a->bones.size():0},
         {"terrain_status",a?a->saved.terrain.status:""},{"terrain_root",a?a->saved.terrain.rootOffset:0},
         {"terrain_contacts",a?a->saved.terrain.contacts:0},
+        {"cloth_active",s_cloth.active},{"cloth_failed",s_cloth.failed},
+        {"cloth_preparing",cloth.autoPreparing},{"cloth_restoring",s_cloth.releasing||cloth.boneRestoring},
+        {"cloth_authored",cloth.authoredApplied},{"cloth_connections",cloth.autoConnectionsApplied},
+        {"cloth_skin",cloth.autoSkinApplied},{"cloth_partial",cloth.autoPartialApplied},
+        {"cloth_preserved",cloth.autoPreserved},{"cloth_issue",cloth.boneIssue},
         {"face_ready",a&&a->face&&a->face->smcOwnershipVerified},
         {"offset",{slot.offset.x,slot.offset.y,slot.offset.z}}});
     }
@@ -122,6 +130,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"state",int(s.timeline.state)},{"frame",s.timeline.seconds*30},{"last_frame",s.timeline.duration*30},
       {"status",s.status},{"roster_status",poser_squad::status},{"roster_valid",s.roster.valid},
       {"terrain_enabled",s.terrain.enabled},{"auto_scale",s.autoScale},{"gaze_camera",poser_gaze::motionLock},
+      {"cloth_enhancement_enabled",s_clothSquadAutoEnabled.load()},
       {"origin",{s.anchor.origin.x,s.anchor.origin.y,s.anchor.origin.z}},{"slots",slots}});
     return;
   }
@@ -206,15 +215,32 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if(path=="/api/face") {
     nlohmann::json bones=nlohmann::json::array(),missing=nlohmann::json::array();
+    nlohmann::json expressions=nlohmann::json::array(),native=nlohmann::json::array();
+    const auto &face=s_motionFaceCurrent;
+    if(face.profile)for(int i=0;i<int(face.profile->morphs.size());++i)
+      if(face.expressions[i]!=0)expressions.push_back({{"name",face.profile->morphs[i].name},{"weight",face.expressions[i]}});
+    for(int i=0;i<SMC_NUM_MOUTH+s_extraMorphCount;++i)
+      if(face.weights[i]!=0||face.fallbackWeights[i]!=0)
+        native.push_back({{"name",SMCSliderLabel(i)},{"weight",face.weights[i]},{"fallback",face.fallbackWeights[i]}});
     for(int i=0;i<int(s_faceNodes.size());++i) {
       const auto &b=s_faceNodes[i];auto v=b.neutral.position();
       bones.push_back({{"name",b.name},{"parent",b.parent},{"position",{v.x,v.y,v.z}},
         {"region",s_faceRegions[i]},{"matrix",b.neutral.m}});
+      if(i<s_faceBoneCount) {
+        const auto &rest=s_faceRestPose[i],&evaluated=s_faceBones[i];
+        bones.back()["neutral_local"]={rest.px,rest.py,rest.pz};
+        bones.back()["neutral_rotation"]={rest.rx,rest.ry,rest.rz,rest.rw};
+        bones.back()["evaluated_local"]={evaluated.px,evaluated.py,evaluated.pz};
+        bones.back()["evaluated_rotation"]={evaluated.rx,evaluated.ry,evaluated.rz,evaluated.rw};
+      }
     }
     if(s_characterProfile)for(int i=0;i<int(s_characterBinding.slots.size());++i)
       if(s_characterBinding.slots[i]<0)missing.push_back(s_characterProfile->bones[i].name);
     HttpJson(c,{{"model",CurrentCharModelKey()},{"generation",s_faceGeneration},{"ready",s_characterBinding.ready},
       {"status",s_characterBinding.status},{"bones",bones},{"missing",missing},
+      {"motion",{{"active",SMCMotionActive()},{"evaluated",s_faceBoneEvalOk},
+        {"profile",face.profile?face.profile->key:""},{"settings",face_mixing::Write(face.settings)},
+        {"expressions",expressions},{"native",native}}},
       {"gaze",{{"model",poser_gaze::editor.modelKey},{"pmx_reference",poser_gaze::binding.pmxReference},
         {"estimated_limits",poser_gaze::binding.estimatedLimits},{"settings",eye_gaze::WriteProfile(poser_gaze::ProfileFor())}}}});return;
   }

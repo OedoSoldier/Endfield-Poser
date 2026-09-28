@@ -53,7 +53,9 @@ inline PanelChart MakeApronChart(const std::vector<Point> &world,const std::vect
   return out;
 }
 inline PanelChart MakePanelChart(const std::vector<Point> &world,const std::vector<std::vector<int>> &chains) {
-  Need(chains.size()>=4&&chains.size()<=24&&!world.empty()&&world.size()<=128,"panel-chart-budget");
+  Need(chains.size()>=4&&chains.size()<=24&&!world.empty()&&world.size()<=ClothBoneMaxIdentities,"panel-chart-budget");
+  size_t active=0;for(const auto &chain:chains)active+=chain.size();
+  Need(ClothBoneIdentityBudget(world.size(),active),"panel-chart-active-budget");
   PanelChart chart;Point end{};
   for(const auto &c:chains){Need(c.size()>=2&&c.size()<=16,"panel-chart-chain");
     for(int n:c)Need(n>=0&&size_t(n)<world.size(),"panel-chart-index");

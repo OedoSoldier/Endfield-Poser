@@ -76,8 +76,9 @@ static ClothRef ClothBoneLocalBindingRef(const ClothBoneRuntime &s,int id) {
   return b.bone;
 }
 static bool ClothBoneLocalBindingMapFor(const ClothBoneRuntime &s,const ClothBoneLocalMeshConfig &c,const ClothBoneRendererAsset &a) {
-  const bool retained=s.local.recipe&&s.local.recipe->CoatWaistSkinOnly()&&s.profile&&eiem_cloth_asset::SourceInactiveCoat(*s.profile);
-  if(c.bindingCount<0||c.bindingCount>128||(c.bindingCount==0?!retained:!c.bindingNativeIndices))return false;
+  const bool retained=s.local.recipe&&s.profile&&
+      (s.local.recipe->CoatWaistSkinOnly()&&eiem_cloth_asset::SourceInactiveCoat(*s.profile));
+  if(c.bindingCount<0||c.bindingCount>256||(c.bindingCount==0?!retained:!c.bindingNativeIndices))return false;
   bool paired=false;
   for(int n=0;n<c.bindingCount;++n)if(c.bindingNativeIndices[n]<0) {
     if(!ClothBoneLocalBindingRef(s,c.bindingNativeIndices[n]).handle)return false;paired=true;

@@ -64,7 +64,12 @@ static void DrawMmdAdaptationPanel() {
   if (!m.adaptationFile.empty())
     ImGui::TextWrapped(u8"预设文件：%s", m.adaptationFile.c_str());
 
-  if (ImGui::TreeNode(u8"準標準骨补全（手动选择）")) {
+  if (ImGui::TreeNode(u8"准标准骨补全")) {
+    if(ImGui::SmallButton(u8"全部开启")) {
+      auto next=mmd::DefaultRigAdaptation();next.extra=draft.extra;next.tracks=draft.tracks;next.roles=draft.roles;
+      draft=std::move(next);dirty=true;
+    }
+    ImGui::TextDisabled(u8"默认全部开启，可单独关闭。载入预设时使用预设设置。");
     ImGui::TextWrapped(u8"已有同名骨骼保留原定义。内置骨架已含部分标准骨；此处"
                        u8"也可补全 PMX 参考缺少的骨骼。");
     dirty |= ImGui::Checkbox(u8"全ての親（总父级）", &draft.parentRoot);

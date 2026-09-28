@@ -50,7 +50,9 @@ struct ClothInputTrace : ClothInputBinding {
   unsigned completedBoundaries = 0;
   eiem_cloth_input::Ring<ClothInputSample, 256> body;
   eiem_cloth_input::Ring<ClothInputSample, 64> inputs;
-} static s_clothInput;
+};
+static ClothActorBank<ClothInputTrace> s_clothInputActors;
+#define s_clothInput (s_clothInputActors.Get())
 static void (*s_clothInputHookInstaller)() = nullptr;
 static bool s_clothInputHooks = false;
 static char s_clothInputHookIssue[128]{"not-attempted"};
@@ -241,7 +243,7 @@ static bool ClothInputIdentity(bool checkLists = true, const ClothInputBinding &
       s.identity.owner != s_cloth.owner.character) return false;
   void *animator = ClothTarget(s_cloth.animator);
   int scene = 0;
-  if (!animator || animator != g_charAnimator || !ClothScene(animator, scene) ||
+  if (!animator || animator != ClothHostAnimator() || !ClothScene(animator, scene) ||
       scene != s.identity.scene) return false;
   const auto &ref=s.privateBBC.handle?s.privateBBC:s_cloth.instances[s.index].ref;
   void *bbc = ClothTarget(ref), *process = nullptr, *serialize = nullptr;
@@ -598,7 +600,7 @@ static void ClothInputCompleted(void *manager, void *caller) {
 static void ClothSurfaceBeforeTeam(void *self, void *caller) {
   if (!ClothOnMainThread() || !s_clothSurfaceHook || !s_clothInputHooks ||
       s_clothInputUpdateDepth != 1 || s_clothSurfaceAtBoundary ||
-      caller != s_clothSurfaceTeamCallsite || !ClothBonePending()) return;
+      caller != s_clothSurfaceTeamCallsite || (!ClothBonePending()&&!ClothPrefetchNeedsHooks())) return;
   __try {
     const bool fingerprint = s_clothInputUpdateCode && s_clothSurfaceTeamCode &&
         eiem_cloth_input::Fingerprint(s_clothInputUpdateCode, ClothInputAuditedBytes) == s_clothInputPatchedFingerprint &&
@@ -610,14 +612,18 @@ static void ClothSurfaceBeforeTeam(void *self, void *caller) {
     if (!ClothInvoke(ClothMethod(s_clothInputManagerClass, "get_Team", "BeyondDynamicBone.TeamManager", nullptr, true),
                      nullptr, nullptr, team) || team != self) return;
     s_clothSurfaceAtBoundary = true;
-    __try { ClothBoneBoundary(); }
+    __try { ClothPrefetchBoundary();if(ClothBonePending())ClothBoneBoundary(); }
     __finally { s_clothSurfaceAtBoundary = false; }
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     ClothBoneRelease("lifetime-boundary-native-exception");
   }
 }
 static void __fastcall ClothSurfaceNativeTeamUpdate(void *self, void *method) {
-  ClothSurfaceBeforeTeam(self, _ReturnAddress());
+  void *caller=_ReturnAddress();
+  if(ClothOnMainThread() && s_clothInputUpdateDepth==1)for(unsigned actor=0;actor<ClothActorCount;++actor) {
+    if(!s_clothActors.values[actor])continue;
+    ClothActorScope scope(actor);ClothSurfaceBeforeTeam(self,caller);
+  }
   s_clothSurfaceOriginalTeamUpdate(self, method);
 }
 static void ClothInputUpdateLocked(void *self, void *method) {
@@ -635,6 +641,10 @@ static void __fastcall ClothInputNativeUpdate(void *self, void *method) {
 }
 static ClothInputJobHandle *__fastcall ClothInputNativeValid(ClothInputJobHandle *result,
     void *self, const ClothInputJobHandle *dependency, void *method) {
-  ClothInputCompleted(self, _ReturnAddress());
+  void *caller=_ReturnAddress();
+  if(ClothOnMainThread() && s_clothInputUpdateDepth==1)for(unsigned actor=0;actor<ClothActorCount;++actor) {
+    if(!s_clothActors.values[actor])continue;
+    ClothActorScope scope(actor);ClothInputCompleted(self,caller);
+  }
   return s_clothInputOriginalValid(result, self, dependency, method);
 }

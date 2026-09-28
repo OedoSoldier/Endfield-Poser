@@ -341,11 +341,11 @@ static SurfaceBuildResult SurfaceReadBuildResult(void *process) {
     ReadStrUtf8(name,r.name,sizeof(r.name));
   return r;
 }
-static bool SurfaceReadArray(void *vm, const char *field, const char *type, int stride, std::vector<unsigned char> &out) {
+static bool SurfaceReadArray(void *vm, const char *field, const char *type, int stride, std::vector<unsigned char> &out, int maximum=256) {
   char container[192]{}; _snprintf_s(container, _TRUNCATE, "BeyondDynamicBone.ExSimpleNativeArray<%s>", type);
   void *array = nullptr; int count = -1;
   if (!CollisionField(vm, field, container, array) || !array ||
-      !ClothValue(ClothMethod(il2cpp_object_get_class(array), "get_Count", "System.Int32"), array, count) || count < 0 || count > 256) return false;
+      !ClothValue(ClothMethod(il2cpp_object_get_class(array), "get_Count", "System.Int32"), array, count) || count < 0 || maximum<1 || maximum>1024 || count > maximum) return false;
   auto item = SurfaceMethod(il2cpp_object_get_class(array), "get_Item", type, "System.Int32");
   if (!item) return false;
   out.resize(size_t(count)*stride);

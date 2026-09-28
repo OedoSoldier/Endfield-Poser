@@ -20,14 +20,18 @@ static bool ClothBoneElasticPolicyValid(const ClothBoneLocalRecipe &r) {
       std::isfinite(r.tetherStretch) && r.tetherStretch>.03f && r.tetherStretch<=.75f &&
       std::isfinite(r.bendingStiffness) && r.bendingStiffness>0 && r.bendingStiffness<=1;
 }
-static bool ClothBoneElasticAdjust(ClothBoneTetherParameters &value,float stretch) {
+static bool ClothBoneElasticPolicyValid(const ClothBoneRuntime &s) {
+  return s.local.recipe && (s.local.recipe->resampledPanel ? ClothBoneLongPanelBending(s) :
+      ClothBoneElasticPolicyValid(*s.local.recipe));
+}
+static bool ClothBoneElasticAdjust(ClothBoneTetherParameters &value,float stretch,bool longPanel=false) {
   if(!std::isfinite(value.compression) || value.compression<0 || value.compression>1 ||
       !std::isfinite(value.stretch) || fabsf(value.stretch-.03f)>1e-6f ||
-      !std::isfinite(stretch) || stretch<=.03f || stretch>.75f) return false;
+      !std::isfinite(stretch) || stretch<=.03f ||
+      (longPanel ? stretch!=ClothLongPanelTetherStretch : stretch>.75f)) return false;
   value.stretch=stretch;return true;
 }
-static void ClothBoneElasticConvertAt(ClothBoneTetherParameters *result,void *data,int type,void *method,void *caller) {
-  s_clothTetherConvert(result,data,type,method);
+static void ClothBoneElasticApply(ClothBoneTetherParameters *result,void *data,int type,void *caller) {
   if(!ClothOnMainThread() || !result || !data || caller!=s_clothTetherCallsite || type!=s_clothTetherBoneType) return;
   int found=-1;bool support=false;
   for(size_t n=0;n<s_clothBoneSlots.size();++n) {
@@ -37,14 +41,23 @@ static void ClothBoneElasticConvertAt(ClothBoneTetherParameters *result,void *da
     const bool outer=s.supportTether && CollisionGc(s.supportTether)==data;
     if(!inner && !outer)continue;
     if(found>=0 || inner==outer || !ClothOwns(s.owner) ||
-        (inner && (!ClothBoneElasticRequested(s) || !ClothBoneElasticPolicyValid(*s.local.recipe))) ||
+        (inner && (!ClothBoneElasticRequested(s) || !ClothBoneElasticPolicyValid(s))) ||
         (outer && !ClothBoneSupportElasticRequested(s)))return;
     found=int(n);support=outer;
   }
   if(found<0)return;
   auto &s=s_clothBoneSlots[found];
-  if(ClothBoneElasticAdjust(*result,support?ClothBoneSupportTetherStretch:s.local.recipe->tetherStretch)) {
+  if(ClothBoneElasticAdjust(*result,support?ClothBoneSupportTetherStretch:s.local.recipe->tetherStretch,
+      !support&&ClothBoneLongPanelBending(s))) {
     if(support)++s.supportElasticConversions;else ++s.local.elasticConversions;
+  }
+}
+static void ClothBoneElasticConvertAt(ClothBoneTetherParameters *result,void *data,int type,void *method,void *caller) {
+  s_clothTetherConvert(result,data,type,method);
+  if(!ClothOnMainThread())return;
+  for(unsigned actor=0;actor<ClothActorCount;++actor) {
+    if(!ClothActorEngaged(actor))continue;
+    ClothActorScope scope(actor);ClothBoneElasticApply(result,data,type,caller);
   }
 }
 static void __fastcall ClothBoneElasticConvert(ClothBoneTetherParameters *result,void *data,int type,void *method) {
@@ -78,6 +91,18 @@ static bool ClothBoneElasticMatches(const ClothBoneRuntime &s,void *box) {
       fabsf(actual.stretch-s.local.recipe->tetherStretch)<1e-6f &&
       fabsf(bend-s.local.recipe->bendingStiffness)<1e-6f;
 }
+static bool ClothBoneLongPanelMaterialMatches(const ClothBoneRuntime &s,int slot,void *box) {
+  if(!s.local.requested||!s.local.recipe||!s.local.recipe->resampledPanel)return true;
+  if(!ClothBoneLongPanelBending(s))return false;
+  if(!s.local.elasticTether)return slot!=1;
+  ClothBoneTetherParameters actual{};float bend=0,curve[16]{},attenuation=0;
+  if(slot<0||slot>2||!ClothBoneElasticParameters(box,actual,bend)||
+      !ClothBoneLocalDistanceParameters(box,curve,attenuation)||!std::isfinite(attenuation)||
+      fabsf(actual.compression-s.local.elasticCompression)>1e-6f||
+      fabsf(actual.stretch-(slot==1?ClothLongPanelTetherStretch:.03f))>1e-6f)return false;
+  for(float v:curve)if(!std::isfinite(v)||fabsf(v-(slot==1?ClothLongPanelDistanceStiffness:1.f))>1e-6f)return false;
+  return slot!=1||ClothBoneElasticMatches(s,box);
+}
 static bool ClothBoneElasticConfigure(void *data,void *original) {
   auto &s=ClothBoneState();auto &l=s.local;
   if(!ClothBoneElasticRequested(s))return true;
@@ -86,24 +111,28 @@ static bool ClothBoneElasticConfigure(void *data,void *original) {
   void *oldTether=nullptr,*tether=nullptr,*oldBend=nullptr,*bend=nullptr;
   float compression=0,originalBend=0,after=0;
   if(!ClothOnMainThread() || !ClothOwns(s.owner) || !data || data==original ||
-      !ClothBoneElasticPolicyValid(*l.recipe) || !s_clothElasticInstaller || !s_clothElasticInstaller() ||
+      !ClothBoneElasticPolicyValid(s) || !s_clothElasticInstaller || !s_clothElasticInstaller() ||
       !ClothField(original,"tetherConstraint",type,oldTether) || !oldTether ||
       !ClothField(oldTether,"distanceCompression","System.Single",compression) ||
       !std::isfinite(compression) || compression<0 || compression>1 ||
       !SurfaceCloneField(data,original,"tetherConstraint",type) ||
       !ClothField(data,"tetherConstraint",type,tether) || !tether || tether==oldTether ||
       !ClothField(original,"triangleBendingConstraint",bendType,oldBend) || !oldBend ||
-      !ClothField(oldBend,"stiffness","System.Single",originalBend) || !std::isfinite(originalBend) ||
-      !SurfaceCloneField(data,original,"triangleBendingConstraint",bendType) ||
+      !ClothField(oldBend,"stiffness","System.Single",originalBend) || !std::isfinite(originalBend))return false;
+  const bool longPanel=ClothBoneLongPanelBending(s);
+  if((!longPanel && !SurfaceCloneField(data,original,"triangleBendingConstraint",bendType)) ||
       !ClothField(data,"triangleBendingConstraint",bendType,bend) || !bend || bend==oldBend ||
-      !SurfaceScalar(bend,"stiffness","System.Single",l.recipe->bendingStiffness) ||
+      (longPanel ? bend!=CollisionGc(s.surfaceBending) :
+      !SurfaceScalar(bend,"stiffness","System.Single",l.recipe->bendingStiffness)) ||
       !ClothField(oldBend,"stiffness","System.Single",after) || after!=originalBend) return false;
   l.elasticTether=ClothBoneHold(tether);l.elasticCompression=compression;
   if(!l.elasticTether)return false;
   void *box=nullptr;
   if(!ClothInvoke(SurfaceMethod(il2cpp_object_get_class(data),"GetClothParameters","BeyondDynamicBone.ClothParameters"),data,nullptr,box) ||
-      !ClothBoneElasticMatches(s,box) ||
+      !ClothBoneElasticMatches(s,box) || !ClothBoneLongPanelMaterialMatches(s,1,box) ||
       !ClothField(oldTether,"distanceCompression","System.Single",after) || after!=compression)return false;
+  if(longPanel && (!ClothInvoke(SurfaceMethod(il2cpp_object_get_class(original),"GetClothParameters",
+      "BeyondDynamicBone.ClothParameters"),original,nullptr,box) || !ClothBoneLongPanelMaterialMatches(s,0,box)))return false;
   Log("[CLOTH-BONE-ELASTIC] stage=private-parameters-confirmed generation=%llu session=%llu sourceTether=%p privateTether=%p distance=%g stretchThreshold=%g sourceStretchThreshold=0.03 bending=%g sourceBending=%g compression=%g waistFixedPreserved=1 colliderGeometryUnchanged=1 TeamReadbackPending=1",
       s.owner.generation,s.owner.session,oldTether,tether,l.recipe->distanceStiffness,l.recipe->tetherStretch,
       l.recipe->bendingStiffness,originalBend,compression);

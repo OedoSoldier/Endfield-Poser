@@ -1,4 +1,8 @@
 #pragma once
+#include "core/build_features.h"
+#if !POSER_ENABLE_XXMI_BRIDGE
+#error The XXMI bridge requires a separate opt-in build.
+#endif
 // EFMI mod bridge runtime (experimental). Reads the mod config EFMI loads,
 // writes Mods\EndfieldPoserBridge\EndfieldPoserBridge.ini and answers
 // GetAsyncKeyState for its virtual keys inside EFMI's d3d11.dll only, by

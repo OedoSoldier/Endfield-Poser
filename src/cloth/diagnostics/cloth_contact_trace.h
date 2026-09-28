@@ -1,5 +1,6 @@
 #pragma once
-constexpr int ClothContactParticles = 128, ClothContactColliders = 16;
+#include "../bonecloth/cloth_bonecloth_limits.h"
+constexpr int ClothContactParticles = ClothBoneMaxParticles, ClothContactColliders = 16;
 struct ClothContactParticle {
   int particle = -1, proxy = -1;
   unsigned char attribute = 0;
@@ -20,6 +21,8 @@ struct ClothContactOutput {
   double proxyPosition[3]{}, lastPosition[3]{};
   float proxyRotation[4]{}, lastRotation[4]{}, lastLocalPosition[3]{}, lastLocalRotation[4]{};
   float localPosition[3]{}, localRotation[4]{}, worldRotation[4]{};
+  bool localInputKnown = false;
+  float inputLocalPosition[3]{}, inputLocalRotation[4]{};
   ClothInputPose visible{};
 };
 struct ClothContactSample {
@@ -41,7 +44,9 @@ struct ClothContactTrace {
   int lastFrame = -1;
   bool failed = false, outputFailed = false;
   char issue[128]{"awaiting-support-and-completed-input"};
-} static s_clothContact;
+};
+static ClothActorBank<ClothContactTrace> s_clothContactActors;
+#define s_clothContact (s_clothContactActors.Get())
 static void ClothContactClear() {
   if (!ClothOnMainThread()) return;
   auto &s = s_clothContact;
@@ -104,8 +109,8 @@ static bool ClothContactRead(const ClothInputSample &input, void *teamBox, Cloth
   if (!ClothContactArrays(simulation, pa, pn, pt, 5) || !ClothContactArrays(mesh, va, vn, vt, 3) ||
       !ClothContactArrays(collider, ca, cn, ct, 5)) return ClothContactFail("completed-array-public-getter-unavailable", trace, binding);
   ClothInputChunk pc{}, vc{}, cc{}, tc{};
-  if (!ClothInputChunkRead(teamBox, "particleChunk", pa[0].length, pc) ||
-      !ClothInputChunkRead(teamBox, "proxyCommonChunk", va[0].length, vc) ||
+  if (!ClothInputChunkRead(teamBox, "particleChunk", pa[0].length, pc, ClothContactParticles) ||
+      !ClothInputChunkRead(teamBox, "proxyCommonChunk", va[0].length, vc, ClothContactParticles) ||
       !ClothInputChunkRead(teamBox, "colliderChunk", ca[0].length, cc) ||
       !ClothInputChunkRead(teamBox, "colliderTransformChunk", binding.mapping.length, tc) ||
       !ClothContactRange(pc, pa, 5, ClothContactParticles) || !ClothContactRange(vc, va, 3, ClothContactParticles) ||
@@ -191,6 +196,69 @@ static bool ClothContactOutputMapping(const ClothContactSample &sample) {
   }
   return true;
 }
+static bool ClothContactLocalInputs(void *manager, void *teamBox,
+                                    const ClothInputChunk &chunk, ClothContactSample &sample) {
+  if (!manager || sample.particles<1 || sample.particles>ClothContactParticles) return false;
+  bool culled = true;
+  if (!teamBox || !ClothValue(ClothInputMethod(il2cpp_object_get_class(teamBox),
+      "get_IsLODCulled", "System.Boolean"), static_cast<char *>(teamBox)+16, culled)) return false;
+  for (int n=0; n<sample.particles; ++n) sample.outputs[n].localInputKnown=false;
+  if (culled) return true;
+  ClothInputArray arrays[2]{};
+  const char *names[]{"localPositionArray", "localRotationArray"};
+  const char *types[]{"Unity.Mathematics.float3", "Unity.Mathematics.quaternion"};
+  unsigned char readMask=0;
+  if (!ClothContactMask(il2cpp_object_get_class(manager), "Flag_Read", readMask) ||
+      !ClothContactArrays(manager, arrays, names, types, 2) ||
+      !ClothContactRange(chunk, arrays, 2, ClothContactParticles+1)) return false;
+  for (int n=0; n<sample.particles; ++n) {
+    auto &o=sample.outputs[n];
+    if (o.slot<chunk.start || o.slot-chunk.start>=chunk.count) return false;
+    if (!(o.flags&readMask) || !(o.flags&sample.outputEnableMask)) continue;
+    if (!ClothInputArrayValue(arrays[0], o.slot, types[0], o.inputLocalPosition, sizeof(o.inputLocalPosition)) ||
+        !ClothInputArrayValue(arrays[1], o.slot, types[1], o.inputLocalRotation, sizeof(o.inputLocalRotation))) return false;
+    o.localInputKnown=true;
+  }
+  return true;
+}
+struct ClothContactLocalPoseError {
+  double rawDistanceSquared=0, distanceSquared=0, rotationDot=0;
+};
+static bool ClothContactLocalPoseMatches(const ClothContactOutput &o,float weight,
+                                        ClothContactLocalPoseError &error) {
+  error={};
+  if (!std::isfinite(weight) || weight<0 || (weight<1 && !o.localInputKnown)) return false;
+  const auto norm=[](const float *q) {
+    double value=0;for(int k=0;k<4;++k)value+=double(q[k])*q[k];return value;
+  };
+  const auto unit=[](double n) {return std::isfinite(n) && n>=.99 && n<=1.01;};
+  const double actualNorm=norm(o.localRotation),targetNorm=norm(o.lastLocalRotation);
+  if (!unit(actualNorm) || !unit(targetNorm) || (weight<1 && !unit(norm(o.inputLocalRotation)))) return false;
+  for(int k=0;k<3;++k) {
+    const double actual=o.localPosition[k],target=o.lastLocalPosition[k];
+    const double expected=weight>=1?target:double(o.inputLocalPosition[k])+(target-o.inputLocalPosition[k])*weight;
+    if (!std::isfinite(actual) || !std::isfinite(target) || !std::isfinite(expected)) return false;
+    error.rawDistanceSquared+=(actual-target)*(actual-target);
+    error.distanceSquared+=(actual-expected)*(actual-expected);
+  }
+  double expected[4]{};
+  if(weight>=1) for(int k=0;k<4;++k) expected[k]=o.lastLocalRotation[k];
+  else {
+    double dot=0;for(int k=0;k<4;++k)dot+=double(o.inputLocalRotation[k])*o.lastLocalRotation[k];
+    const double sign=dot<0?-1:1;dot=std::abs(dot);
+    double from=1-weight,to=weight;
+    if(dot<.9995) {
+      const double angle=std::acos(dot),denominator=std::sin(angle);
+      from=std::sin((1-weight)*angle)/denominator;to=std::sin(weight*angle)/denominator;
+    }
+    for(int k=0;k<4;++k)expected[k]=from*o.inputLocalRotation[k]+to*sign*o.lastLocalRotation[k];
+  }
+  double dot=0,expectedNorm=0;
+  for(int k=0;k<4;++k){dot+=double(o.localRotation[k])*expected[k];expectedNorm+=expected[k]*expected[k];}
+  if(!std::isfinite(expectedNorm) || expectedNorm<=0) return false;
+  error.rotationDot=std::abs(dot/std::sqrt(actualNorm*expectedNorm));
+  return std::isfinite(error.rotationDot) && error.distanceSquared<=.0002*.0002 && error.rotationDot>=.99999;
+}
 static bool ClothContactOutputRead(void *teamBox, void *manager, void *access,
                                    void *getItem, ClothContactSample &sample,
                                    const ClothInputBinding &binding = s_clothInput) {
@@ -204,7 +272,7 @@ static bool ClothContactOutputRead(void *teamBox, void *manager, void *access,
   const char *tt[]{"System.Int16", "BeyondDynamicBone.ExBitFlag8", "Unity.Mathematics.double3", "Unity.Mathematics.quaternion", "Unity.Mathematics.float3", "Unity.Mathematics.quaternion"};
   ClothInputChunk vc{}, tc{};
   if (!ClothContactArrays(mesh, va, vn, vt, 4) || !ClothContactArrays(manager, ta, tn, tt, 6) ||
-      !ClothInputChunkRead(teamBox, "proxyCommonChunk", va[0].length, vc) ||
+      !ClothInputChunkRead(teamBox, "proxyCommonChunk", va[0].length, vc, ClothContactParticles) ||
       !ClothInputChunkRead(teamBox, "proxyTransformChunk", binding.mapping.length, tc, ClothContactParticles+1) ||
       !ClothContactRange(vc, va, 4, ClothContactParticles) || vc.count != sample.particles ||
       tc.count < vc.count || tc.count > ClothContactParticles+1 ||
@@ -253,7 +321,8 @@ static bool ClothContactOutputRead(void *teamBox, void *manager, void *access,
       if (target.slot == o.slot && (target.duplicate || target.transform.id.instance != o.id)) return false;
     }
   }
-  return ClothContactOutputMapping(sample) && ClothInputIdentity(true, binding);
+  return ClothContactOutputMapping(sample) && ClothContactLocalInputs(manager, teamBox, tc, sample) &&
+      ClothInputIdentity(true, binding);
 }
 
 static bool ClothContactOutputSafe(void *teamBox, void *manager, void *access,

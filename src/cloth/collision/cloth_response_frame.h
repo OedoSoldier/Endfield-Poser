@@ -22,7 +22,8 @@ inline bool Rotation(const OutputMatrix &m,double (&q)[4]) {
   return eiem_cloth_rebuild::UnitQuaternion(q);
 }
 inline bool Valid(const Frame &f,int original,int total) {
-  if(f.target<0||f.target>=original||original<1||total<=original||total>128||f.count<1||f.count>3)return false;
+  if(f.target<0||f.target>=original||original<1||total<=original||
+      !ClothBoneIdentityBudget(total,total-original)||f.count<1||f.count>3)return false;
   double sum=0;
   for(int k=0;k<f.count;++k){if(f.controls[k]<original||f.controls[k]>=total||!std::isfinite(f.weights[k])||f.weights[k]<=0||f.weights[k]>1||
       !eiem_cloth_rebuild::UniformPositive(f.offsets[k]))return false;

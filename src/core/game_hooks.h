@@ -85,7 +85,7 @@ static bool CharacterSwitchInProgress() {
 // Shared ownership flag: web edits must not race the MMD playback writer.
 static volatile LONG g_mmdOwnsPose = 0;
 static bool MmdOwnsPose() { return InterlockedCompareExchange(&g_mmdOwnsPose, 0, 0) != 0; }
-static void (*g_beforeCharacterChange)() = nullptr;
+static void (*g_beforeCharacterChange)(void *nextEntity) = nullptr;
 static SRWLOCK g_pendingCharacterLock = SRWLOCK_INIT;
 static void *g_pendingController = nullptr;
 static void *g_pendingEntity = nullptr;
@@ -374,7 +374,7 @@ static bool SetCharacterEntity(void *entity) {
   __try {
     if (animator != g_charAnimator || entity != g_mainCharEntity) {
       if (g_beforeCharacterChange)
-        g_beforeCharacterChange(); // Restore using OLD actor handles first.
+        g_beforeCharacterChange(entity); // Restore using OLD actor handles first.
       g_mainCharEntity = entity;
       g_charAnimator = animator;
       g_charChanged = true;
@@ -466,7 +466,7 @@ static void *FindPlayerControllerInstance() {
 static void SelectCaptureEntity(void *entity) {
   if (entity != g_captureEntity) {
     if (g_beforeCharacterChange)
-      g_beforeCharacterChange(); // Stop even if the new Animator is not ready.
+      g_beforeCharacterChange(entity); // Stop even if the new Animator is not ready.
     g_captureEntity = entity;
     Log("[POSER] character selection: entity=%p controller=%p", entity,
         g_playerController);

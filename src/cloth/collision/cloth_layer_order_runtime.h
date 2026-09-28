@@ -20,7 +20,7 @@ template<class ReferenceFace> static bool ClothBoneLayerSurface(const ClothBoneR
     const ReferenceFace *reference,size_t count,eiem_cloth_layer::Surface &out) {
   using namespace eiem_cloth_layer;
   const auto &mapping=s.registeredVertices;
-  if(!reference||!count||count>512||chunk.count<1 || chunk.count>128 || chunk.start<0 || chunk.start>INT32_MAX-chunk.count ||
+  if(!reference||!count||count>ClothBoneMaxFaceChoices||chunk.count<1 || chunk.count>ClothBoneMaxParticles || chunk.start<0 || chunk.start>INT32_MAX-chunk.count ||
       size_t(chunk.count)!=mapping.size() || s.registeredFaces.empty() || s.registeredFaces.size()>out.faces.size())return false;
   Surface result{};result.team=s.team[1];result.start=chunk.start;result.count=chunk.count;
   result.faceCount=int(s.registeredFaces.size());

@@ -13,8 +13,10 @@ static bool ClothBoneBodyGeometry() {
       std::isfinite(g.size.x) && fabsf(g.size.x-ClothBodyContactRadius)<1e-6f;
 }
 static bool ClothBoneBodySourceIdentity() {
-  auto &l=ClothBoneState().local;auto &r=l.bodyRenderer;auto renderer=ClothTarget(r.renderer);bool enabled=false;
-  return renderer && ClothValue(SurfaceMethod(il2cpp_object_get_class(renderer),"get_enabled","System.Boolean"),renderer,enabled) && enabled &&
+  auto &l=ClothBoneState().local;auto &r=l.bodyRenderer;auto renderer=ClothTarget(r.renderer);
+  // An LOD renderer can be disabled while its skeleton and fitted capsules
+  // remain in use. Validate the source identity, not its rendering switch.
+  return renderer &&
       ClothBoneRendererAssetCheck(r,l.recipe->bodyAsset?*l.recipe->bodyAsset:ClothBodyContactAsset,false);
 }
 #include "cloth_bonecloth_fitted_body.h"

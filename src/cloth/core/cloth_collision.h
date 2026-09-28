@@ -6,24 +6,54 @@
 #include <type_traits>
 #include <vector>
 
-static std::atomic<bool> s_collisionInspect{false};
-static std::atomic<unsigned> s_clothBoneRequest{0};
-static std::atomic<bool> s_clothBoneStopRequested{false};
+struct ClothActorCommands {
+  std::atomic<bool> inspect{false},stop{false};
+  std::atomic<unsigned> request{0};
+  std::atomic<uint64_t> session{0},requestedAt{0};
+  unsigned seen=0,exportSeen=0;
+};
+static ClothActorBank<ClothActorCommands> s_ClothActorCommands;
+#define s_collisionInspect (s_ClothActorCommands.Get().inspect)
+#define s_clothBoneRequest (s_ClothActorCommands.Get().request)
+#define s_clothBoneStopRequested (s_ClothActorCommands.Get().stop)
+#define s_clothBoneSession (s_ClothActorCommands.Get().session)
+#define s_clothBoneRequestedAt (s_ClothActorCommands.Get().requestedAt)
+#define s_clothBoneSeen (s_ClothActorCommands.Get().seen)
+#define s_collisionExportSeen (s_ClothActorCommands.Get().exportSeen)
 static std::atomic<bool> s_clothAutoEnabled{true};
-static std::atomic<uint64_t> s_clothBoneSession{0}, s_clothBoneRequestedAt{0};
-static unsigned s_clothBoneSeen=0, s_collisionExportSeen=0;
+static std::atomic<bool> s_clothSquadAutoEnabled{true};
+static std::atomic<bool> &ClothEnhancementSetting() {return s_clothActorIndex?s_clothSquadAutoEnabled:s_clothAutoEnabled;}
 static const char *CollisionListType = "System.Collections.Generic.List<BeyondDynamicBone.ColliderComponent>";
 static void ClothBoneQueueCommand(uint64_t session,bool stop) {
-  s_clothAutoEnabled.store(!stop,std::memory_order_release);
+  ClothEnhancementSetting().store(!stop,std::memory_order_release);
   s_clothBoneStopRequested.store(stop,std::memory_order_release);
   s_clothBoneSession.store(session,std::memory_order_release);
   s_clothBoneRequestedAt.store(GetTickCount64(),std::memory_order_release);
   s_clothBoneRequest.fetch_add(1,std::memory_order_acq_rel);
   s_collisionInspect.store(true,std::memory_order_release);
 }
-static std::atomic<unsigned> s_collisionExport{0};
-static std::atomic<uint64_t> s_collisionExportSession{0}, s_collisionExportRequestedAt{0};
-static std::atomic<int> s_collisionExportStatus{0};
+static void ClothSetEnhancementEnabled(bool enabled) {
+  ClothActorScope scope(0);ClothBoneQueueCommand(s_cloth.owner.session,!enabled);
+}
+static void ClothSetSquadEnhancementEnabled(bool enabled) {
+  // Keep the squad's default independent of single-player presets and toggles.
+  // UI requests only queue commands; native restoration stays on the game thread.
+  s_clothSquadAutoEnabled.store(enabled,std::memory_order_release);
+  for(unsigned actor=1;actor<ClothActorCount;++actor) {
+    if(!ClothActorEngaged(actor))continue;
+    ClothActorScope scope(actor);ClothBoneQueueCommand(s_cloth.owner.session,!enabled);
+  }
+}
+struct ClothActorExport {
+  std::atomic<unsigned> request{0};
+  std::atomic<uint64_t> session{0},requestedAt{0};
+  std::atomic<int> status{0};
+};
+static ClothActorBank<ClothActorExport> s_ClothActorExport;
+#define s_collisionExport (s_ClothActorExport.Get().request)
+#define s_collisionExportSession (s_ClothActorExport.Get().session)
+#define s_collisionExportRequestedAt (s_ClothActorExport.Get().requestedAt)
+#define s_collisionExportStatus (s_ClothActorExport.Get().status)
 struct CollisionUi {
   int count = 0;
   char names[ClothCapacity][112]{};
@@ -45,7 +75,8 @@ struct CollisionUi {
   char boneIssues[8][192]{};
   char boneIssue[192]{};
 };
-static CollisionUi s_collisionUi;
+static ClothActorBank<CollisionUi> s_collisionUiActors;
+#define s_collisionUi (s_collisionUiActors.Get())
 static SRWLOCK s_collisionUiLock = SRWLOCK_INIT;
 static CollisionUi CollisionGetUi() {
   AcquireSRWLockShared(&s_collisionUiLock);
@@ -57,7 +88,8 @@ struct CollisionExportNote {
   DWORD error = 0;
   char phase[64]{}, path[MAX_PATH * 4]{};
 };
-static CollisionExportNote s_collisionExportNote;
+static ClothActorBank<CollisionExportNote> s_collisionExportNoteActors;
+#define s_collisionExportNote (s_collisionExportNoteActors.Get())
 static CollisionExportNote CollisionGetExportNote() {
   AcquireSRWLockShared(&s_collisionUiLock);
   auto note = s_collisionExportNote;
@@ -283,7 +315,7 @@ static void *CollisionBody(void *animator, int index) {
                    animator, args, r) ||
       !r)
     return nullptr;
-  return ClothAnchorUnderOwner(r) ? r : nullptr;
+  return ClothUnderAnimator(r,animator) ? r : nullptr;
 }
 
 struct CollisionGeometry {
@@ -417,6 +449,8 @@ static void ClothBoneSolverCompleted(void *manager);
 static void ClothBoneSolverPoseSubmitted(const char *stage,double playhead);
 static void ClothBoneSolverClear(int slot);
 static std::string ClothBoneSolverJson();
+static bool ClothPrefetchNeedsHooks();
+static void ClothPrefetchBoundary();
 
 static void ClothCollisionRelease(const char *reason) {
   __try { ClothBoneRelease(reason); }
@@ -429,6 +463,7 @@ static bool ClothCollisionNeedsMaintenance() { return ClothBonePending(); }
 #include "../diagnostics/cloth_collision_snapshot.h"
 #include "../native/cloth_native_runtime.h"
 #include "../bonecloth/cloth_bonecloth_runtime.h"
+#include "../bonecloth/cloth_bonecloth_prefetch.h"
 #include "../diagnostics/cloth_bonecloth_trace.h"
 static void CollisionPublishUi() {
   CollisionUi ui{};

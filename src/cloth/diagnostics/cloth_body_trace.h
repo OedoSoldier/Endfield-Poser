@@ -20,7 +20,9 @@ struct ClothBodyTrace {
   void *getBones = nullptr, *getMesh = nullptr;
   eiem_cloth_input::CostBudget budget{};
   eiem_cloth_input::Ring<ClothBodySample, 32> samples;
-} static s_clothBody;
+};
+static ClothActorBank<ClothBodyTrace> s_clothBodyActors;
+#define s_clothBody (s_clothBodyActors.Get())
 
 static void ClothBodyClear() {
   if (!ClothOnMainThread()) return;

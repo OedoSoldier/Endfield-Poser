@@ -34,6 +34,13 @@ try {
             if ($info.ProductName -ne 'Endfield Poser' -or $info.FileVersion -ne $version) {
                 throw 'poser.dll does not match the source version. Run build.bat first.'
             }
+            # Check both RC metadata and the C++ marker; never load the DLL to inspect it.
+            $binaryText = [Text.Encoding]::ASCII.GetString($bytes)
+            if ($info.Comments -ne 'EndfieldPoser:xxmi_bridge=0' -or
+                -not $binaryText.Contains('EndfieldPoser:xxmi_bridge=0') -or
+                $binaryText.Contains('EndfieldPoser:xxmi_bridge=1')) {
+                throw 'Release packages must exclude the XXMI bridge. Rebuild with build.bat (without -EnableXxmiBridge).'
+            }
             $files['plugin\poser.dll'] = $source
         } else {
             if (-not [Text.Encoding]::ASCII.GetString($bytes).Contains('[PROXY] plugins loaded via ')) {
@@ -44,7 +51,7 @@ try {
     }
     # Explicit allowlist: never package the developer's whole plugin/ or docs/.
     foreach ($relative in @('安全安装.bat', 'tools\deploy.ps1', 'tools\character_face_resources.ps1',
-            'README.md', 'LICENSE', 'docs\tutorial.md', 'docs\mmd-player.md', 'docs\user-agreement.md',
+            'README.md', 'LICENSE', 'docs\tutorial.md', 'docs\mmd-player.md', 'docs\user-agreement.md', 'docs\xxmi-bridge.md',
             'resources\character-faces\README.md', 'tools\blender\endfield_poser_bridge\README.md',
             'tools\blender\endfield_poser_bridge\__init__.py')) {
         $files[$relative] = Join-Path $root $relative
@@ -100,7 +107,7 @@ MMD 表情参考自茶叶味香皂的终末地 MMD 模型：https://space.bilibi
 "@
     [IO.File]::WriteAllText((Join-Path $package '安装说明.txt'), $instructions, [Text.UTF8Encoding]::new($true))
     $buildInfo = @{ product = 'Endfield Poser'; version = $version; platform = 'Windows x64';
-        face_profiles = $faces.Count; packaged_at = (Get-Date -Format o) }
+        face_profiles = $faces.Count; xxmi_bridge = $false; packaged_at = (Get-Date -Format o) }
     if ((Test-Path -LiteralPath (Join-Path $root '.git')) -and (Get-Command git -ErrorAction SilentlyContinue)) {
         $commit = & git -C $root rev-parse HEAD
         if ($LASTEXITCODE -ne 0) { throw 'Cannot read source commit.' }

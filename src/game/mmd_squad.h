@@ -10,6 +10,7 @@ struct MmdSquadSlot {
   std::string calibration=u8"待读取校准";
   void *calibrationAnimator=nullptr;
   uint64_t calibrationSerial=0;
+  double nextCalibration=0;
   bool calibrated=false;
   Vec3 offset{};
   float yaw=0,scale=1,height=0;
@@ -37,7 +38,11 @@ struct MmdSquadPlayer {
   float scale=.08f,height=0;
   mmd::IkMode ikMode=mmd::IkMode::FollowMotion;
   mmd::Timeline timeline;
+  mmd::PlaybackCountdown countdown;
   mmd::DeferredStart pending;
+  void *pendingEntity=nullptr;
+  double pendingDeadline=0;
+  mmd::SquadIdentity pendingRoster;
   mmd::SquadAnchor anchor;
   mmd::SquadIdentity identity;
   mmd::RigDefinition rig;
@@ -54,6 +59,58 @@ struct MmdSquadPlayer {
   double nextRefresh=0;
 };
 static MmdSquadPlayer &g_squad=*new MmdSquadPlayer;
+
+static void MmdSquadCancelStart() {
+  auto &s=g_squad;s.pending.cancel();s.pendingEntity=nullptr;s.pendingDeadline=0;s.pendingRoster={};
+}
+static void MmdSquadQueueStart() {
+  auto &s=g_squad;
+  if(!s.pending.active) {s.pending.play();s.pendingDeadline=0;}
+  if(!s.pendingDeadline) {s.pendingEntity=MmdSelectedEntity();s.pendingDeadline=MmdNow()+20.;s.pendingRoster={};}
+}
+static bool MmdSquadPendingValid() {
+  auto &s=g_squad;
+  if(s.pending.active&&((s.pendingEntity&&s.pendingEntity!=MmdSelectedEntity())||MmdNow()>=s.pendingDeadline)) {
+    const bool expired=MmdNow()>=s.pendingDeadline;MmdSquadCancelStart();
+    s.status=expired?u8"小队加载等待超时，请确认队员已进入场景后重试":u8"操控角色已再次切换，已取消此前的多人播放请求";
+    return false;
+  }
+  return true;
+}
+
+static bool MmdSquadClothMayAdjustAnchor(void *transform) {
+  if(!transform || !s_clothActorIndex || s_clothActorIndex>4)return false;
+  const auto &actor=g_squad.actors[s_clothActorIndex-1];
+  if(!actor || transform==actor->saved.root)return false;
+  for(int role:actor->profile.roles)
+    if(role>=0 && role<int(actor->bones.size()) && actor->bones[role].transform==transform)return false;
+  const auto &write=actor->mapper.output.write;
+  for(size_t n=0;n<actor->bones.size()&&n<write.size();++n)
+    if(write[n] && actor->bones[n].transform==transform)return false;
+  if(actor->member.animator==g_charAnimator)
+    for(const auto &bone:s_accessoryBones)if(bone.transform==transform&&bone.locked)return false;
+  return true;
+}
+static void MmdSquadPrepareCloth() {
+  for(unsigned n=0;n<4;++n)if(g_squad.actors[n]) {
+    auto &a=*g_squad.actors[n];ClothActorScope scope(n+1);
+    auto &request=s_ClothActorRequest.Get();request.entity=a.member.entity;request.animator=a.member.animator;
+    // Capture native settings before the squad animation writers are disabled.
+    ClothRequestPlayback(true,a.member.animator!=g_charAnimator || !g_frozen);
+  }
+}
+
+static bool MmdSquadClothHolding() {
+  for(unsigned n=0;n<4;++n)if(g_squad.actors[n]) {
+    ClothActorScope scope(n+1);
+    if(g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration))return true;
+  }
+  return false;
+}
+static void MmdSquadSyncAudio() {
+  try {g_mmd.audio.sync(g_squad.timeline,g_squad.active,g_mmd.musicEnabled,g_mmd.musicOffset,g_mmd.musicVolume);}
+  catch(const std::exception &e) {g_mmd.musicError=e.what();g_mmd.musicEnabled=false;}
+}
 
 // Only used while preparing a rig on the game thread, under g_poseMutex.
 // Restore every editor cache even if calibration or allocation throws.
@@ -83,6 +140,21 @@ static mmd::SquadIdentity MmdSquadIdentity(const poser_squad::Snapshot &roster) 
     id.enabled[i]=g_squad.slots[i].enabled&&!g_squad.slots[i].clip.empty();
   }
   return id;
+}
+static bool MmdSquadAcceptPendingRoster(const mmd::SquadIdentity &identity) {
+  auto &s=g_squad;
+  if(s.pendingRoster.squad) {
+    bool same=s.pendingRoster.squad==identity.squad;
+    for(int n=0;n<4;++n)if(s.pendingRoster.enabled[n])same&=s.pendingRoster.entities[n]==identity.entities[n];
+    if(!same) {MmdSquadCancelStart();s.status=u8"小队成员或顺序再次改变，请为新队伍点击播放";return false;}
+  } else {
+    // Members can exist before their models. Bind the waiting request to the
+    // fresh roster, so a second team change with the same leader cannot reuse it.
+    bool complete=identity.squad!=0;
+    for(int n=0;n<4;++n)if(identity.enabled[n]&&!identity.entities[n])complete=false;
+    if(complete)s.pendingRoster=identity;
+  }
+  return true;
 }
 static void MmdSquadRetain(MmdSession &session,void *object) {
   if(!object)return;
@@ -209,12 +281,16 @@ static void MmdSquadLoadActorCalibration(int slot) {
   s.slots[slot].status=u8"骨架与校准就绪";
 }
 static void MmdSquadStop() {
-  auto &s=g_squad;s.pending.cancel();s.stopRequested=false;s.timeline.stop();
+  auto &s=g_squad;MmdSquadCancelStart();s.stopRequested=false;s.timeline.stop();s.countdown.cancel();g_mmdCountdownDisplay.store(0);
   const bool occupied=s.active;s.active=false;
   s.cameraOwner=nullptr;s.cameraReferences.reset();
   // Unregister first: no future callback may select a retiring face context.
   s_squadSMC.fill(nullptr);
   s_editorSquadFrozen=false;
+  for(unsigned n=1;n<ClothActorCount;++n) {
+    if(!s_ClothActorRequest.values[n])continue;
+    ClothActorScope scope(n);ClothRequestPlayback(false);
+  }
   for(auto &ptr:s.actors)if(ptr) {
     auto &a=*ptr;bool alive=!RuntimeClosing()&&UnityObjAlive(a.saved.animator)&&UnityObjAlive(a.saved.root);
     if(a.face) {
@@ -247,6 +323,13 @@ static void MmdSquadStop() {
     s.status=u8"已停止，四名队员分别恢复播放前状态";
   }
 }
+static void MmdSquadCharacterChanging(void *nextEntity) {
+  auto &s=g_squad;const auto request=s.pending;const auto roster=s.pendingRoster;
+  const auto target=s.pendingEntity;const auto deadline=s.pendingDeadline;
+  const bool keep=!s.active&&request.active&&target&&target==nextEntity&&MmdNow()<deadline;
+  MmdSquadStop();s.refresh=true;
+  if(keep) {s.pending=request;s.pendingRoster=roster;s.pendingEntity=target;s.pendingDeadline=deadline;}
+}
 static void MmdSquadRefresh() {
   auto &s=g_squad;if(s.refresh)for(auto &slot:s.slots)slot.calibrationAnimator=nullptr;
   s.roster=poser_squad::Read();s.refresh=false;s.nextRefresh=MmdNow()+1;
@@ -269,11 +352,15 @@ static void MmdSquadPollCalibrations() {
   if(!s.show||s.active||!s.roster.valid||g_mmd.session.active||g_mmd.preview)return;
   // One actor per game frame. Avatar metadata requires no pose writes or
   // manual switching. Saved manual profiles remain an optional fallback.
-  for(int i=0;i<4;++i) {
+  static unsigned next=0;
+  for(int attempt=0;attempt<4;++attempt) {
+    const int i=int(next++%4);
     auto &slot=s.slots[i];auto member=s.roster.members[i];
     if(!member.animator||!UnityObjAlive(member.animator))continue;
-    if(slot.calibrationAnimator==member.animator&&slot.calibrationSerial==s_mmdCalibrationSerial)continue;
+    if(slot.calibrationAnimator==member.animator&&slot.calibrationSerial==s_mmdCalibrationSerial&&
+        (slot.calibrated||MmdNow()<slot.nextCalibration))continue;
     slot.calibrationAnimator=member.animator;slot.calibrationSerial=s_mmdCalibrationSerial;
+    slot.nextCalibration=MmdNow()+1.;
     try {
       MmdSquadRigScope view(member);RebuildAllBones();RebuildHumanBones();auto profile=MmdCurrentProfile();
       slot.calibrated=MmdBindCalibration(profile)||MmdLoadCalibration(profile);
@@ -295,26 +382,39 @@ static void MmdSquadDuration() {
 }
 static bool MmdSquadStart() {
   auto &s=g_squad;
-  if(s.loading||g_mmd.loading||g_mmd.preview||g_mmd.session.active) {s.pending.cancel();s.status=u8"请先完成导入或停止单人播放 / 校准";return false;}
-  if(!ClothOnMainThread()) {if(!s.pending.active)s.pending.play();s.status=u8"等待游戏线程开始多人播放";return false;}
+  if(s.loading||g_mmd.loading||g_mmd.preview||g_mmd.session.active) {MmdSquadCancelStart();s.status=u8"请先完成导入或停止单人播放 / 校准";return false;}
+  MmdSquadQueueStart();if(!MmdSquadPendingValid())return false;
+  if(!ClothOnMainThread()) {s.status=u8"等待游戏线程开始多人播放";return false;}
   if(s.active) {s.timeline.play(MmdNow());return true;}
-  if(s_cloth.active||s_cloth.releasing) {ClothRequestPlayback(false);if(!s.pending.active)s.pending.play();s.status=u8"等待单人衣物增强恢复";return false;}
+  if(s_cloth.active||s_cloth.releasing) {ClothRequestPlayback(false);s.status=u8"等待单人衣物增强恢复";return false;}
+  if(ClothSquadRestoring()) {s.status=u8"等待队员衣物恢复完成";return false;}
   MmdSquadRefresh();
-  if(!s.roster.valid||!MmdCharacterReady()) {s.pending.cancel();s.status=poser_squad::status;return false;}
+  if(!s.roster.valid) {s.status=poser_squad::status;return false;}
+  if(!MmdCharacterReady()) {s.status=u8"等待操控角色骨架，加载完成后开始多人播放";return false;}
   auto identity=MmdSquadIdentity(s.roster);std::set<uintptr_t> unique;int count=0;
+  bool originInSquad=false;for(const auto &m:s.roster.members)originInSquad|=m.entity==g_mainCharEntity&&m.animator==g_charAnimator;
+  if(!originInSquad) {s.status=u8"等待当前编队与操控角色同步";return false;}
+  if(!MmdSquadAcceptPendingRoster(identity))return false;
   for(int n=0;n<4;++n)if(identity.enabled[n]) {
     if(!identity.entities[n]||!identity.animators[n]||!unique.insert(identity.animators[n]).second) {
-      s.pending.cancel();s.status=u8"第 "+std::to_string(n+1)+u8" 位未就绪或角色重复；等待加载，或取消该位置。";return false;
+      s.status=u8"等待第 "+std::to_string(n+1)+u8" 位模型就绪；也可停止后取消该位置。";return false;
     }
     ++count;
   }
-  if(!count) {s.pending.cancel();s.status=u8"请给至少一个小队位置选择动作";return false;}
+  if(!count) {MmdSquadCancelStart();s.status=u8"请给至少一个小队位置选择动作";return false;}
+  s.pendingRoster=identity;
   try {
-    s_mmdStartRequest.cancel();
+    MmdCancelStart();
     s.rig=g_mmd.rig;s.identity=identity;
     for(int n=0;n<4;++n)if(identity.enabled[n])MmdSquadCapture(n,s.roster.members[n]);
+    MmdSquadPrepareCloth();
     MmdSquadFreezeCaptured();
     for(int n=0;n<4;++n)if(s.actors[n])MmdSquadLoadActorCalibration(n);
+    for(unsigned n=0;n<4;++n)if(s.actors[n]) {
+      ClothActorScope scope(n+1);
+      const float height=mmd::CameraTargetHeight(s.actors[n]->profile);
+      s_clothCharacterHeight=std::isfinite(height)&&height>.1f&&height<5.f?height:1.245f;
+    }
     // The controlled character is the origin even when its slot is disabled.
     mmd::RetargetProfile originProfile;bool foundOrigin=false;
     for(auto &actor:s.actors)if(actor&&actor->member.animator==g_charAnimator) {originProfile=actor->profile;foundOrigin=true;break;}
@@ -335,14 +435,34 @@ static bool MmdSquadStart() {
       s_squadSMC[n]=a.face.get();
     }
     s.active=true;s.cameraSession=++mmd_camera::nextSession;InterlockedExchange(&g_mmdOwnsPose,1);
-    MmdSquadDuration();s.timeline.play(MmdNow());s.status=u8"多人播放中，共用操控角色的起始原点";
+    s.countdown.arm(g_mmd.countdownEnabled,g_mmd.countdownSeconds);if(s.countdown.active)s.timeline.seconds=0;
+    MmdSquadDuration();s.timeline.holdClock(MmdSquadClothHolding()||s.countdown.active,MmdNow());s.timeline.play(MmdNow());s.status=u8"多人播放中，共用操控角色的起始原点";
     Log("[MMD-SQUAD] started members=%d squad=%p origin=(%.3f %.3f %.3f)",count,s.roster.squad,s.anchor.origin.x,s.anchor.origin.y,s.anchor.origin.z);
     return true;
   } catch(const std::exception &e) {MmdSquadStop();s.status=e.what();return false;}
 }
+static void MmdSquadCountdownUpdate(bool ready) {
+  auto &s=g_squad;const auto now=MmdNow();const bool cloth=MmdSquadClothHolding();
+  s.countdown.update(now,ready&&!cloth,s.timeline.state==mmd::PlayState::Playing);
+  g_mmdCountdownDisplay.store(s.countdown.display(),std::memory_order_release);
+  s.timeline.holdClock(cloth||s.countdown.active,now);
+}
 static void MmdSquadApply() {
   auto &s=g_squad;if(!s.active)return;
   const double frame=s.timeline.seconds*30.;
+  bool blocked=false;
+  // Prepare every participant, even when an earlier member is still waiting.
+  // No member receives a motion pose until all participating cloth is ready.
+  for(unsigned n=0;n<4;++n)if(s.actors[n]) {
+    auto &a=*s.actors[n];
+    if(!UnityObjAlive(a.saved.animator)||!UnityObjAlive(a.saved.root)) {MmdSquadStop();s.status=u8"队员实例已失效，已停止全部动作";return;}
+    for(const auto &bone:a.bones)if(!UnityObjAlive(bone.transform)) {MmdSquadStop();s.status=u8"队员骨架已变化，已停止全部动作";return;}
+    ClothActorScope scope(n+1);
+    blocked=ClothBlockFirstBodyPose("squad-preparation",MmdSquadClothMayAdjustAnchor)||blocked;
+    MmdHideSessionProps(a.saved);
+  }
+  s.timeline.holdClock(MmdSquadClothHolding()||s.countdown.active,MmdNow());
+  if(blocked) {MmdSquadCountdownUpdate(false);MmdSquadSyncAudio();return;}
   for(int n=0;n<4;++n)if(s.actors[n]) {
     auto &a=*s.actors[n];auto &slot=s.slots[n];
     if(!UnityObjAlive(a.saved.animator)||!UnityObjAlive(a.saved.root)) {MmdSquadStop();s.status=u8"队员实例已失效，已停止全部动作";return;}
@@ -392,6 +512,10 @@ static void MmdSquadApply() {
       SMCMotionPublish(face);slot.status=SMCSectionReady()?u8"身体 / 表情已就绪":u8"身体已就绪，等待表情系统";
     }
     MmdHideSessionProps(a.saved);
+    {
+      ClothActorScope scope(unsigned(n)+1);
+      ClothService(true,MmdSquadClothMayAdjustAnchor,frame);
+    }
   }
   const auto &keys=MmdCameraKeys();
   if(g_mmd.cameraSettings.enabled&&!keys.empty()&&mmd_camera::ready) {
@@ -412,8 +536,9 @@ static void MmdSquadApply() {
           settings,s.anchor.origin,s.anchor.basis,delta,s.scale,height,mmd::CameraSourceHeight(s.rig),correction),follow,0,frame});
     }
   } else mmd_camera::Stop();
-  try {g_mmd.audio.sync(s.timeline,true,g_mmd.musicEnabled,g_mmd.musicOffset,g_mmd.musicVolume);}
-  catch(const std::exception &e) {g_mmd.musicError=e.what();g_mmd.musicEnabled=false;}
+  s.timeline.holdClock(MmdSquadClothHolding()||s.countdown.active,MmdNow());
+  MmdSquadCountdownUpdate(true);
+  MmdSquadSyncAudio();
 }
 static void MmdSquadLoad(int slot,bool append=false,std::filesystem::path path={}) {
   auto &s=g_squad;if(s.active||s.pending.active||s.loading||g_mmd.session.active||g_mmd.preview||g_mmd.loading||slot<0||slot>=4)return;
@@ -452,7 +577,11 @@ static bool MmdSquadTick() {
     if(ClothOnMainThread()) {
       if(!s.active&&(s.refresh||(s.show&&MmdNow()>=s.nextRefresh)))MmdSquadRefresh();
       if(!s.pending.active)MmdSquadPollCalibrations();
-      if(s.pending.active) {auto request=s.pending;if(MmdSquadStart()) {request.apply(s.timeline,MmdNow());s.pending.cancel();}}
+      if(s.pending.active) {auto request=s.pending;if(MmdSquadStart()) {
+        if(std::isfinite(request.seconds)) {s.countdown.cancel();g_mmdCountdownDisplay.store(0);}
+        if(request.paused)s.countdown.pause();
+        request.apply(s.timeline,MmdNow());MmdSquadCancelStart();
+      }}
       if(s.active) {
         auto current=poser_squad::Read();
         if(!current.valid||!s.identity.matches(MmdSquadIdentity(current))) {MmdSquadStop();s.status=u8"小队顺序或队员实例发生变化，已停止并恢复";return false;}
@@ -460,12 +589,13 @@ static bool MmdSquadTick() {
     }
     if(!s.active)return false;
     if(!ClothOnMainThread())return true;
+    s.timeline.holdClock(MmdSquadClothHolding()||s.countdown.active,MmdNow());
     s.timeline.tick(MmdNow());MmdSquadApply();return s.active;
   }catch(const std::exception &e){MmdSquadStop();s.status=e.what();return false;}
 }
 static void MmdSquadSeek(double seconds) {
   auto &s=g_squad;
-  if(!s.active) {s.pending.seek(seconds);s.hotkeys=true;return;}
+  if(!s.active) {MmdSquadQueueStart();s.pending.seek(seconds);s.hotkeys=true;return;}
   for(auto &actor:s.actors)if(actor)++actor->saved.terrain.epoch;
   s.pending.seek(seconds);
 }
@@ -475,9 +605,9 @@ static bool MmdSquadCommand(int command) {
   if(!s.hotkeys&&!s.active&&!s.pending.active)return false;
   bool content=false;for(const auto &slot:s.slots)content|=slot.enabled&&!slot.clip.empty();
   if(!s.active&&!s.pending.active&&!content) {s.hotkeys=false;return false;}
-  if(command==2) {s.pending.cancel();s.stopRequested=true;}
-  else if(command==0) {s.hotkeys=true;s.pending.play();}
-  else if(command==1) {if(s.pending.active)s.pending.pause();if(s.active)s.timeline.pause(MmdNow());}
+  if(command==2) {MmdSquadCancelStart();s.stopRequested=true;}
+  else if(command==0) {s.hotkeys=true;MmdSquadQueueStart();s.pending.play();}
+  else if(command==1) {if(s.pending.active)s.pending.pause();if(s.active) {s.countdown.pause();s.timeline.pause(MmdNow());}}
   else if(command==3)MmdSquadSeek(0);
   return true;
 }
@@ -492,5 +622,5 @@ static void MmdSquadInstall() {
     [](){return g_squad.active||g_squad.pending.active||g_squad.loading;},
     [](){if(!g_squad.active&&!g_squad.pending.active)g_squad.hotkeys=false;},
     [](){return !g_mmd.session.active&&!g_mmd.preview&&!s_mmdStartRequest.active &&
-      (g_squad.hotkeys||g_squad.active||g_squad.pending.active);}};
+      (g_squad.hotkeys||g_squad.active||g_squad.pending.active);},MmdSquadCharacterChanging};
 }

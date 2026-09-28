@@ -1988,18 +1988,6 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
       }
       if (applied > 0 && s_frame % 600 == 0)
         Log("[SMC] Applied %d bone deltas (frame %d)", applied, s_frame);
-      // 权重变化时打一行摘要（拖动滑条/重置都会看到），便于确认解算真的在跑
-      static float s_lastWeightSum = -1.0f;
-      float wsum = 0.0f;
-      for (int s = 0; s < SMC_NUM_MOUTH; s++)
-        wsum += s_mouthWeights[s];
-      for (int em = 0; em < s_extraMorphCount; em++)
-        wsum += s_extraMorphs[em].weight;
-      if (!s_motionFaceCurrent.active && fabsf(wsum - s_lastWeightSum) > 0.001f) {
-        s_lastWeightSum = wsum;
-        Log("[SMC] weights sum=%.3f -> applied=%d bones (face=%d)", wsum,
-            applied, s_faceBoneCount);
-      }
       s_faceBoneEvalOk = true;
     } __except (1) {
       Log("[SMC] delta accumulation exception");

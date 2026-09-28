@@ -28,6 +28,8 @@
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 #include "user_agreement.h"
 #include "math/hotkey_state.h"
+#include "mmd_countdown_hud.h"
+static bool g_overlayPanelsDraw=true;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -1028,8 +1030,12 @@ static DWORD GuiThreadBody(LPVOID) {
     bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
     // click_through 模式：面板打开就常驻显示，靠分层穿透把鼠标让给游戏；
     // 默认模式：只有按住 Alt（或拖拽中）才显示覆盖层，其余时间整窗隐藏。
-    bool shouldShow = g_guiVisible && !IsIconic(g_gameHwnd) &&
-                      (g_clickThrough || altHeld || g_inputDragging || !poser_agreement::Allowed());
+    g_overlayPanelsDraw=g_guiVisible &&
+      (g_clickThrough || altHeld || g_inputDragging || !poser_agreement::Allowed());
+    const int countdown=g_mmdCountdownDisplay.load(std::memory_order_acquire);
+    static int lastCountdown=0;
+    if(lastCountdown!=countdown) {lastCountdown=countdown;nextDrawTick=0;g_layerForcePresent=true;}
+    bool shouldShow = !IsIconic(g_gameHwnd) && (g_overlayPanelsDraw || countdown>0);
     static int s_showLogged = -1;
     if ((int)shouldShow != s_showLogged) {
       s_showLogged = (int)shouldShow;
@@ -1116,11 +1122,12 @@ static DWORD GuiThreadBody(LPVOID) {
       // 面板/关节/旋转环上（或正在拖拽）时才关掉穿透，把这次交互留给覆盖层。
       // 放在这里（DrawPoserGui 之后）是关键：用的是**本帧**的 hover 状态，
       // 快一帧都不行 —— 否则快速移到旋转环上立刻点击，那一下会被判成点游戏。
-      if (g_clickThrough) {
+      if(!g_overlayPanelsDraw)SetOverlayClickThrough(true);
+      else if (g_clickThrough) {
         bool overInteractive = g_inputTakeMouse || g_inputHoverGizmo ||
                                g_inputDragging || g_inputMouseHeld;
         SetOverlayClickThrough(!(g_cursorFreeNow && overInteractive));
-      }
+      } else SetOverlayClickThrough(false);
       bool wantText = io.WantTextInput;
       if (wantText != g_inputWantsText) {
         g_inputWantsText = wantText;

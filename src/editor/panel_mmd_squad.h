@@ -44,6 +44,7 @@ static void DrawMmdSquadPanel() {
     s.timeline.tick(MmdNow());
     s.timeline.speed = speed;
   }
+  DrawMmdCountdownOptions(s.active||s.pending.active);
   ImGui::Checkbox(u8"全队循环", &s.timeline.loop);
   ImGui::SameLine();
   ImGui::Checkbox(u8"原地播放", &s.inPlace);
@@ -123,6 +124,27 @@ static void DrawMmdSquadPanel() {
       ImGui::Checkbox(u8"全队地形跟随（各自探测脚下）", &s.terrain.enabled);
       if (s.terrain.enabled)
         ImGui::SliderFloat(u8"贴地强度", &s.terrain.strength, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      bool clothEnabled = s_clothSquadAutoEnabled.load();
+      if (ImGui::Checkbox(u8"全队衣物物理增强", &clothEnabled))
+        ClothSetSquadEnhancementEnabled(clothEnabled);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"默认开启，与单人开关独立。各队员分别适配，停止后恢复原设置。");
+      for (unsigned i = 0; i < 4; ++i) {
+        if (!s.actors[i] && !ClothActorEngaged(i + 1))
+          continue;
+        ClothActorScope scope(i + 1);
+        const auto cloth = CollisionGetUi();
+        const int applied = cloth.authoredApplied + cloth.autoConnectionsApplied +
+                            cloth.autoSkinApplied + cloth.autoPartialApplied;
+        const bool failed=g_clothPlaybackGate.State()==eiem_playback::Preparation::Failed;
+        const bool held=g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration);
+        const char *state = failed ? u8"准备失败，请停止重试或关闭增强" : held ? u8"等待全队衣物就绪" : s_cloth.releasing || cloth.boneRestoring ? u8"恢复中" :
+                            !clothEnabled ? u8"使用原有物理" :
+                            applied ? u8"增强已生效" :
+                            s_cloth.failed ? u8"未能启用增强" :
+                            cloth.autoPreparing || cloth.boneBusy ? u8"准备中" : u8"使用原有物理";
+        ImGui::Text(u8"第 %u 位衣物：%s", i + 1, state);
+      }
       ImGui::BeginDisabled(s.active);
       ImGui::Checkbox(u8"按各自腿长自动适配位移", &s.autoScale);
       if (!s.autoScale)
@@ -154,7 +176,7 @@ static void DrawMmdSquadPanel() {
         }
       }
       ImGui::EndDisabled();
-      ImGui::TextWrapped(u8"眼神锁定在表情面板统一设置。多人使用游戏原有衣物物理。");
+      ImGui::TextWrapped(u8"眼神锁定在表情面板统一设置。衣物增强按各自角色处理，不包含队员之间的碰撞。");
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"镜头与音乐")) {

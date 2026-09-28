@@ -67,7 +67,7 @@ inline std::array<float,16> CurveSamples(const Value &data,bool positive) {
 }
 inline float CurveAt(const std::array<float,16> &curve,double depth){Need(std::isfinite(depth)&&depth>=0&&depth<=1.00001,"auto-native-depth");const double x=(std::min)(1.,depth)*15;const int k=(std::min)(14,int(x));return float(curve[k]*(1-(x-k))+curve[k+1]*(x-k));}
 inline std::vector<double> NativeFixedPathLengths(const std::vector<ClothBoneAsset> &bones,const std::vector<Point> &points) {
-  Need(!bones.empty()&&bones.size()<=128&&bones.size()==points.size(),"auto-density-depth-input");
+  Need(!bones.empty()&&bones.size()<=ClothBoneMaxIdentities&&bones.size()==points.size(),"auto-density-depth-input");
   for(size_t n=0;n<bones.size();++n){Need(bones[n].attribute>=0&&bones[n].attribute<=2,"auto-density-depth-attribute");
     if(bones[n].attribute)for(double v:points[n])Need(std::isfinite(v),"auto-density-depth-position");}
   std::vector<double> lengths(bones.size());
@@ -303,7 +303,7 @@ inline std::shared_ptr<DenseRecipe> GenerateCoatWaist(Package &package,Scene &sc
 inline double ResampleLongPanel(DenseRecipe &out,Scene &scene,int64_t parent,const std::vector<int> &sourceRoots,
     const std::vector<std::vector<int>> &source,std::vector<ClothBoneAsset> &bones,std::vector<Matrix> &world,
     std::vector<Point> &points,std::vector<std::vector<int>> &dense) {
-  constexpr int columns=12,rows=7;
+  constexpr int columns=ClothLongPanelColumns,rows=ClothLongPanelRows;
   Need(source.size()==8&&bones.size()==40&&sourceRoots.size()==8,"long-panel-source-grid");
   for(const auto &chain:source)Need(chain.size()==4,"long-panel-source-depth");
   auto full=source;double maximumLength=0;
@@ -327,7 +327,7 @@ inline double ResampleLongPanel(DenseRecipe &out,Scene &scene,int64_t parent,con
       const int n=int(bones.size());bones.push_back(b);out.added.push_back(b);out.parents.push_back(full[left][0]);world.push_back(Mul(parentWorld,BoneMatrix(b)));points.push_back(Transform(world.back(),{0,0,0}));chain.push_back(n);
     }out.roots.push_back(chain[0]);dense.push_back(chain);
   }
-  Need(bones.size()<=128&&out.added.size()==84,"long-panel-candidate-budget");
+  Need(bones.size()==ClothLongPanelIdentities&&out.added.size()==ClothLongPanelParticles,"long-panel-candidate-budget");
   return maximumLength;
 }
 inline void FitLongPanelBody(Package &package,Scene &scene,DenseRecipe &out) {
@@ -385,7 +385,7 @@ inline void FitLongPanelBody(Package &package,Scene &scene,DenseRecipe &out) {
 }
 inline void LongPanelResponse(Scene &scene,DenseRecipe &out,const std::vector<int64_t> &ids,
     const std::vector<Matrix> &world,const std::vector<Point> &points,const PanelChart &panel) {
-  Need(out.view.resampledPanel&&ids.size()==40&&world.size()==124,"long-response-source-contract");
+  Need(out.view.resampledPanel&&ids.size()==40&&world.size()==ClothLongPanelIdentities,"long-response-source-contract");
   int64_t consumer=0;
   for(const auto &o:scene.file.objects)if(scene.file.Class(o.first)==114&&scene.Name(o.first)=="MC_Seraph_Skirt_Ribbon"){
     Need(!consumer,"long-response-consumer-ambiguous");consumer=o.first;}
@@ -409,7 +409,7 @@ inline void LongPanelResponse(Scene &scene,DenseRecipe &out,const std::vector<in
     auto vector=[](const Value &v){return Vector3{float(v.At("x").Number()),float(v.At("y").Number()),float(v.At("z").Number())};};
     response.center=vector(source.At("center"));response.size=vector(source.At("size"));
     response.reverse=source.At("reverseDirection").Int()!=0;response.separated=source.At("radiusSeparation").Int()!=0;response.centered=source.At("alignedOnCenter").Int()!=0;
-    Need(eiem_cloth_response::Valid(f,40,124),"long-response-frame-invalid");out.responses.push_back(response);
+    Need(eiem_cloth_response::Valid(f,40,ClothLongPanelIdentities),"long-response-frame-invalid");out.responses.push_back(response);
   }
 }
 inline void LongPanelContactFaces(DenseRecipe &out,const std::vector<Point> &points,const PanelChart &panel) {
@@ -420,7 +420,7 @@ inline void LongPanelContactFaces(DenseRecipe &out,const std::vector<Point> &poi
     const auto normal=Cross(Sub(b,a),Sub(c,a));const double size=std::sqrt(Dot(normal,normal)*Dot(radial,radial)),side=Dot(normal,radial);
     Need(std::isfinite(size)&&size>1e-9&&std::abs(side)>size*.1,"long-response-face-side-ambiguous");
     const int sign=side>0?1:-1;auto added=signs.emplace(f,sign);Need(added.second||added.first->second==sign,"long-response-face-side-conflict");}
-  Need(!signs.empty()&&signs.size()<=512,"long-response-oriented-face-budget");
+  Need(!signs.empty()&&signs.size()<=ClothBoneMaxFaceChoices,"long-response-oriented-face-budget");
   for(const auto &f:signs)out.responseFaces.push_back({f.first,f.second});
   out.view.contactProducer=out.view.responseConsumer;
 }
@@ -435,7 +435,8 @@ inline std::shared_ptr<DenseRecipe> GenerateDenseCandidate(Package &package,Scen
   const auto &p=base.view;Need(p.rootCount<=16&&p.depth<=16&&p.dependencyCount==0&&meshes.size()<=16&&ids.size()==size_t(p.boneCount),"auto-density-structure-needs-specialized-recipe");
   const bool stripWidth=allowStripWidth&&SourceLegRibbonWidth(p)&&!groups.empty()&&selected.empty();
   const bool shortSkin=SourceShortContract(p),longPanel=SourceSeraphPanel(p),apronFit=SourceApronFit(p),panelFit=SourcePanelFit(p),fitted=apronFit||panelFit;const int divisions=fitted?3:refinement;
-  Need(divisions>=2&&divisions<=4,"auto-density-refinement-range");
+  const bool upperCoat=SourceUpperCoatFront(p);
+  Need((divisions>=2&&divisions<=4)||(upperCoat&&divisions==1&&!groups.empty()&&selected.empty()),"auto-density-refinement-range");
   Need(groups.empty()||(!fitted&&!p.loop&&groups.size()==size_t(p.rootCount)&&groups.front()==0&&groups.back()>=1&&groups.back()<ClothBoneMaxSeparatedPanels),"auto-separated-density-contract");
   for(size_t n=1;n<groups.size();++n)Need(groups[n]==groups[n-1]||groups[n]==groups[n-1]+1,"auto-separated-group-order");
   const auto sourceRoots=apronFit?p.roots:p.originalRoots;const auto parent=scene.Parent(ids[sourceRoots[0]]);for(int c=0;c<p.rootCount;++c)Need(scene.Parent(ids[sourceRoots[c]])==parent,"auto-density-independent-attachment-frames");
@@ -444,20 +445,25 @@ inline std::shared_ptr<DenseRecipe> GenerateDenseCandidate(Package &package,Scen
   auto out=std::make_shared<DenseRecipe>();auto &r=out->view;r.runtimeGenerated=true;r.loop=p.loop;r.multipleLod=true;r.originalCount=p.boneCount;r.originalRoots=p.rootCount;r.depth=p.depth;r.bodyCoverage=false;r.sourcePanelFit=panelFit;r.sourceApronFit=apronFit;
   r.separatedPanels=groups.empty()?0:groups.back()+1;
   r.sourceShortSkin=shortSkin;
-  r.baseSignature=out->String(p.signature);r.prefabSha=out->String(p.prefabSha);const std::string identity=std::string(!groups.empty()?"runtime-separated-panel-roots-lines-v2\n":shortSkin?"runtime-fixed-short-native-skin-v1\n":longPanel?"runtime-long-panel-skin-envelope-calf-v3\n":apronFit?"runtime-fixed-apron-ordered-volumes-v3\n":SourceChenPanel(p)?"runtime-source-waist-folded-panels-point-v1\n":panelFit?"runtime-fitted-waist-panels-v1\n":"runtime-simple-surface-regions-v2\n")+p.signature;r.signature=out->String(Digest(Bytes(identity.begin(),identity.end())));
+  r.baseSignature=out->String(p.signature);r.prefabSha=out->String(p.prefabSha);const std::string identity=std::string(!groups.empty()?"runtime-separated-panel-roots-lines-v2\n":shortSkin?"runtime-fixed-short-native-skin-v1\n":longPanel?"runtime-long-panel-knee-contour-v12\n":apronFit?"runtime-fixed-apron-ordered-volumes-v3\n":SourceChenPanel(p)?"runtime-source-waist-folded-panels-point-v1\n":panelFit?"runtime-fitted-waist-panels-v1\n":"runtime-simple-surface-regions-v2\n")+p.signature;r.signature=out->String(Digest(Bytes(identity.begin(),identity.end())));
   if(!fitted&&divisions!=2){const auto adaptive=identity+"\ncell-aspect-refinement-v1:"+std::to_string(divisions);r.signature=out->String(Digest(Bytes(adaptive.begin(),adaptive.end())));}
   if(stripWidth){const auto widthIdentity=identity+"\nnative-isolated-ribbon-width-v1";r.signature=out->String(Digest(Bytes(widthIdentity.begin(),widthIdentity.end())));}
   const auto &sd=scene.file.Get(component).At("serializeData");out->radiusCurve=CurveSamples(sd.At("radius"),true);out->distanceCurve=CurveSamples(sd.At("distanceConstraint").At("stiffness"),false);
-  std::vector<Matrix> world;std::vector<Point> points;std::vector<ClothBoneAsset> bones=base.bones;std::vector<std::vector<int>> chains(p.rootCount,std::vector<int>(p.depth+(shortSkin?1:0),-1));double maxSpacing=0;
+  if(longPanel){Need(sd.At("connectionMode").Int()==0,"long-panel-source-not-line");
+    for(float v:out->distanceCurve)Need(v==1,"long-panel-source-distance-changed");
+    r.bendingStiffness=0;r.distanceStiffness=ClothLongPanelDistanceStiffness;r.tetherStretch=ClothLongPanelTetherStretch;
+    out->distanceCurve.fill(r.distanceStiffness);}
+  std::vector<Matrix> world;std::vector<Point> points;std::vector<ClothBoneAsset> bones=base.bones;std::vector<std::vector<int>> chains(p.rootCount,std::vector<int>(p.depth+((shortSkin||upperCoat)?1:0),-1));double maxSpacing=0;
   for(int n=0;n<p.boneCount;++n){world.push_back(scene.World(ids[n]));if(!p.Passive(n))QuaternionOf(world.back());points.push_back(Transform(world.back(),{0,0,0}));
     if(p.Passive(n))bones[n].attribute=0;
     if(SourceSeparatedCoat(p)&&p.ReleasedFixed(n))bones[n].attribute=2;
+    SourceUpperCoatSelection(p,n,bones[n]);
     if(panelFit&&SourcePanelRelease(p,n))bones[n].attribute=2;
     if(panelFit){bones[n].column=SourcePanelColumn(p,n);bones[n].depth=SourcePanelDepth(p,n);if(SourceChenWaist(p,n))bones[n].attribute=1;}
     if(apronFit&&SourceApronRelease(p,n))bones[n].attribute=2;
     if(shortSkin){bones[n].column=SourceShortColumn(p,n);bones[n].depth=SourceShortDepth(p,n);bones[n].attribute=bones[n].depth?2:1;}
     if(bones[n].attribute){Need(bones[n].column>=0&&bones[n].depth>=0,"auto-density-source-label");chains[bones[n].column][bones[n].depth]=n;}
-    out->columns.push_back(bones[n].column<0?-1:bones[n].column*divisions+(groups.empty()?0:groups[bones[n].column]));bones[n].column=out->columns.back();}
+    out->columns.push_back(bones[n].column<0?-1:bones[n].column*divisions+(groups.empty()?0:groups[bones[n].column]*(divisions==1?2:1)));bones[n].column=out->columns.back();}
   for(auto &chain:chains){while(!chain.empty()&&chain.back()<0)chain.pop_back();Need(chain.size()>=2,"auto-density-source-chain");for(size_t d=1;d<chain.size();++d)Need(chain[d]>=0&&chain[d-1]>=0,"auto-density-source-chain");}
   const auto originalLengths=NativeFixedPathLengths(bones,points);const double maxLength=*std::max_element(originalLengths.begin(),originalLengths.end());
   Need(maxLength>1e-6,"auto-density-zero-move-length");
@@ -514,6 +520,7 @@ inline std::shared_ptr<DenseRecipe> GenerateDenseCandidate(Package &package,Scen
 inline std::shared_ptr<DenseRecipe> GenerateDense(Package &package,Scene &scene,int64_t component,eiem_cloth_cache::Profile &base,const std::vector<int64_t> &ids,const std::vector<MeshView> &meshes,
     const std::vector<std::vector<unsigned char>> &selected={},const std::vector<int> &groups={}) {
   const auto &p=base.view;
+  if(SourceUpperCoatFront(p))return GenerateDenseCandidate(package,scene,component,base,ids,meshes,selected,groups,1,false);
   if(!groups.empty()&&SourceLegRibbonWidth(p))try{return GenerateDenseCandidate(package,scene,component,base,ids,meshes,selected,groups);}
     catch(const std::exception &e){CheckCancel(package.vfs.cancel);auto fallback=GenerateDenseCandidate(package,scene,component,base,ids,meshes,selected,groups,2,false);
       fallback->densityReport=std::string("auto-native-strip-width-unavailable-original-panels-retained:")+e.what();return fallback;}

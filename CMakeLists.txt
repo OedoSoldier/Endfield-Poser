@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(endfield_poser CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(POSER_ENABLE_XXMI_BRIDGE "Build the optional XXMI mod bridge (excluded from release packages)" OFF)
 
 # MSVC：源码含 UTF-8 中文注释/字符串，缺 /utf-8 时 GBK 误读会把
 # 行尾字节解析成反斜杠续行符，导致下一行被吞（C2046 等假错误）。
@@ -48,7 +49,7 @@ if(WIN32)
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
-    src/math/mod_bridge.h src/game/mod_bridge.h src/editor/panel_mod_bridge.h
+    src/core/build_features.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
@@ -58,7 +59,15 @@ if(WIN32)
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
     src/game/mmd_runtime_api.h src/game/mmd_avatar.h src/math/mmd_avatar.h
     src/game/mmd_terrain.h src/math/mmd_terrain.h
-    src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h
+    src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h src/cloth/core/cloth_actor_context.h
+    src/math/cloth_playback_start.h src/cloth/bonecloth/cloth_bonecloth_limits.h
+    src/cloth/bonecloth/cloth_bonecloth_prefetch.h src/cloth/bonecloth/cloth_bonecloth_display.h
+    src/cloth/bonecloth/cloth_bonecloth_contact_finish.h src/cloth/collision/cloth_display_state.h
+    src/cloth/collision/cloth_display_install.h src/cloth/collision/cloth_contact_finish_state.h
+    src/cloth/collision/cloth_contact_finish_install.h src/cloth/diagnostics/cloth_ribbon_motion_trace.h
+    src/cloth/assets/cloth_asset_coat_calves.h
+    src/cloth/assets/cloth_asset_coat_torso.h
+    src/cloth/assets/cloth_asset_coat_waist_panels.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
     src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
     src/math/face_mixing.h
@@ -74,6 +83,13 @@ if(WIN32)
     deps/imgui/imgui_impl_win32.cpp
     deps/imguizmo/ImGuizmo.cpp
   )
+  if(POSER_ENABLE_XXMI_BRIDGE)
+    target_sources(poser PRIVATE src/math/mod_bridge.h src/game/mod_bridge.h src/editor/panel_mod_bridge.h)
+    set(POSER_PLUGIN_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/build/xxmi/plugin")
+  else()
+    set(POSER_PLUGIN_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/plugin")
+  endif()
+  target_compile_definitions(poser PRIVATE POSER_ENABLE_XXMI_BRIDGE=$<BOOL:${POSER_ENABLE_XXMI_BRIDGE}>)
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(poser PRIVATE
@@ -104,16 +120,16 @@ if(WIN32)
 
   # 部署：把 poser.dll 与 d3dcompiler_47.dll 拷到 plugin/
   add_custom_command(TARGET poser POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/plugin
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${POSER_PLUGIN_OUTPUT}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:poser>
-            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/poser.dll
+            "${POSER_PLUGIN_OUTPUT}/poser.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:d3dcompiler_47>
-            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/d3dcompiler_47.dll
+            "${POSER_PLUGIN_OUTPUT}/d3dcompiler_47.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:vulkan-1>
-            ${CMAKE_CURRENT_SOURCE_DIR}/plugin/vulkan-1.dll)
+            "${POSER_PLUGIN_OUTPUT}/vulkan-1.dll")
 endif()
 
 # Private local tests are optional; public checkouts build without them.
@@ -171,6 +187,7 @@ if(MSVC)
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_plugin_paths tests/test_plugin_paths.cpp)
   add_poser_test(test_mod_bridge_runtime tests/test_mod_bridge_runtime.cpp)
+  target_compile_definitions(test_mod_bridge_runtime PRIVATE POSER_ENABLE_XXMI_BRIDGE=1)
   add_poser_test(test_layered_readback tests/test_layered_readback.cpp)
   target_link_libraries(test_layered_readback PRIVATE d3d11)
   add_poser_test(test_overlay_device tests/test_overlay_device.cpp)

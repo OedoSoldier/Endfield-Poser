@@ -95,7 +95,7 @@ static bool ClothBoneResponsePointSurface(const ClothBoneRuntime &s,const ClothB
       for(int k=0;k<5;++k)if(l.outputVertices[k]==n&&(t!=ClothTarget(l.outputBones[k])||index!=l.outputTransforms[k]))return false;
     }
     std::vector<eiem_cloth_layer::Face> faces;const auto &r=*sheet->local.recipe;
-    if(!r.responseFaces||r.responseFaceCount<1||r.responseFaceCount>512)return false;
+    if(!r.responseFaces||r.responseFaceCount<1||r.responseFaceCount>ClothBoneMaxFaceChoices)return false;
     for(int n=0;n<r.responseFaceCount;++n)faces.push_back({r.responseFaces[n].ids,r.responseFaces[n].outside});
     if(!ClothBoneLayerSurface(*sheet,particles,faces.data(),faces.size(),out))return false;stage(nullptr);return true;
   }
@@ -126,7 +126,7 @@ static bool ClothBoneResponseLayerPrepare(ClothBoneRuntime &s) {
   auto &l=s.local;auto &response=l.response;if(!l.recipe)return false;const auto &r=*l.recipe;
   if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||!ClothOwns(s.owner)||
       s.stopRequested||s.tx.cancelled||!s_clothLayerInstalled.load(std::memory_order_acquire)||!l.contactConfirmed||
-      l.contactProducer<0||size_t(l.contactProducer)>=s.nativeProducers.size()||!r.responseFaces||r.responseFaceCount<1||r.responseFaceCount>512)return false;
+      l.contactProducer<0||size_t(l.contactProducer)>=s.nativeProducers.size()||!r.responseFaces||r.responseFaceCount<1||r.responseFaceCount>ClothBoneMaxFaceChoices)return false;
   const auto &p=s.nativeProducers[l.contactProducer];void *inner=nullptr,*outer=nullptr,*manager=CollisionGc(l.contactManager);
   ClothInputChunk chunk{};eiem_cloth_contact_job::Container list{};
   if(!ClothBoneContactTeam(s.team[1],CollisionGc(s.process[1]),inner)||!ClothBoneContactTeam(p.team,CollisionGc(p.process),outer)||
@@ -135,7 +135,7 @@ static bool ClothBoneResponseLayerPrepare(ClothBoneRuntime &s) {
   eiem_cloth_layer::Policy policy{};
   policy.ticket={s.owner.session,s.owner.generation,s.command,{uint64_t(uintptr_t(CollisionGc(s.process[1]))),uint64_t(uintptr_t(CollisionGc(p.process)))},
       {uint64_t(uintptr_t(CollisionGc(s.candidateData))),uint64_t(uintptr_t(CollisionGc(p.data)))}};policy.list=list.data;
-  std::array<eiem_cloth_layer::Face,512> faces{};for(int n=0;n<r.responseFaceCount;++n)faces[n]={r.responseFaces[n].ids,r.responseFaces[n].outside};
+  std::array<eiem_cloth_layer::Face,ClothBoneMaxFaceChoices> faces{};for(int n=0;n<r.responseFaceCount;++n)faces[n]={r.responseFaces[n].ids,r.responseFaces[n].outside};
   if(!ClothBoneLayerSurface(s,chunk,faces.data(),r.responseFaceCount,policy.inner)||
       !ClothBoneResponsePointSurface(s,p,outer,policy.outer,&l.readbackIssue)||!s_clothLayerGate.Publish(policy))return false;
   if(!response.layerArmed)Log("[CLOTH-RIBBON-LAYER] stage=armed frame=%d session=%llu generation=%llu command=%u innerTeam=%d outerTeam=%d innerFaces=%d outerPoints=%d outerStorageSlots=%d direction=outer-points-outside-inner-surface outerFaces=%d outerBBC=native-original geometryWrites=0 innerContactMass=1 nativeContactReadback=confirmed visualVerified=0",

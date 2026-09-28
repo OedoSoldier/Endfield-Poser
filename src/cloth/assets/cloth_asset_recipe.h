@@ -21,6 +21,8 @@ struct Generated {
   std::vector<std::shared_ptr<eiem_cloth_cache::Profile>> profiles;
   std::vector<std::shared_ptr<DenseRecipe>> dense;
   std::vector<Report> reports;
+  bool rendererScopeKnown=false;
+  std::vector<size_t> liveRenderers;
   std::string source,sourceHash,key;
   std::string relevantHash;
   std::map<std::string,std::string> sources;
@@ -60,7 +62,7 @@ inline void ResolveGeneratedRenderers(Generated &result) {
   result.profiles.erase(std::remove_if(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return orphanLayers.count(&p->view)!=0;}),result.profiles.end());
   result.dense.erase(std::remove_if(result.dense.begin(),result.dense.end(),[&](const auto &d){return std::none_of(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return p->view.generatedLocal==&d->view;});}),result.dense.end());
   for(const auto &p:result.profiles)result.reports.push_back({p->view.component,p->view.generatedLocal?
-      (p->view.generatedLocal->NativeBodyOnly()?"source-Line-Point-fitted-thigh-contact-original-skin-native-BBC-pending":p->view.generatedLocal->CoatWaistSkinOnly()?"source-coat-waist-trunk-field-private-skin-native-BBC-pending":p->view.generatedLocal->sourceShortSkin?"source-fixed-short-skirt-native-skin-release-pending":p->view.generatedLocal->NativePanelsOnly()?"runtime-separated-native-panels-original-skin-retained-native-BBC-pending":p->view.generatedLocal->NativeRibbonWidth()?"runtime-native-ribbon-width-skin-native-BBC-pending":p->view.generatedLocal->ribbonSurface?"source-fitted-ribbon-width-sheet-native-contact-pending":p->view.generatedLocal->sourceApronFit?"content-fitted-fixed-apron-native-BBC-and-visual-validation-pending":p->view.generatedLocal->sourcePanelFit?"content-fitted-waist-panels-native-BBC-and-visual-validation-pending":p->view.generatedLocal->partialSurface?"runtime-isolated-source-regions-bones-and-private-skin-generated-native-BBC-pending":
+      (p->view.generatedLocal->sourceCoatTorso?"source-coat-chest-waist-contact-original-skin-native-BBC-pending":p->view.generatedLocal->NativeBodyOnly()?"source-Line-Point-fitted-thigh-contact-original-skin-native-BBC-pending":p->view.generatedLocal->CoatWaistSkinOnly()?"source-coat-waist-trunk-field-private-skin-native-BBC-pending":p->view.generatedLocal->sourceShortSkin?"source-fixed-short-skirt-native-skin-release-pending":p->view.generatedLocal->NativePanelsOnly()?"runtime-separated-native-panels-original-skin-retained-native-BBC-pending":p->view.generatedLocal->NativeRibbonWidth()?"runtime-native-ribbon-width-skin-native-BBC-pending":p->view.generatedLocal->ribbonSurface?"source-fitted-ribbon-width-sheet-native-contact-pending":p->view.generatedLocal->sourceApronFit?"content-fitted-fixed-apron-native-BBC-and-visual-validation-pending":p->view.generatedLocal->sourcePanelFit?"content-fitted-waist-panels-native-BBC-and-visual-validation-pending":p->view.generatedLocal->partialSurface?"runtime-isolated-source-regions-bones-and-private-skin-generated-native-BBC-pending":
       "runtime-simple-surface-bones-and-private-skin-generated-native-BBC-pending"):
       p->view.runtimeUnowned?"runtime-unowned-sheet-new-native-BBC-required-original-skin-retained":
       "runtime-original-bone-connections-generated-density-and-body-coverage-unchanged"});
@@ -70,6 +72,29 @@ inline std::vector<int64_t> Refs(const Value &v){std::vector<int64_t> out;for(co
 inline bool RootMatch(Scene &s,int64_t id,const LiveCloth &c){const auto &v=s.file.Get(id);if(s.Name(id)!=c.name||!v.At("serializeData").Has("rootBones"))return false;const auto roots=Refs(v.At("serializeData").At("rootBones"));if(roots.size()!=c.roots.size())return false;for(size_t k=0;k<roots.size();++k)if(!(Key(s,roots[k])==c.roots[k]))return false;return true;}
 inline bool RendererMatch(Scene &s,const MeshView &m,const LiveRenderer &r){if(m.name!=r.name||m.parent!=r.parent||m.mesh!=r.mesh||m.root!=r.root||m.vertices!=r.vertices||m.submeshes!=r.submeshes||m.bones.size()!=r.bones.size())return false;
   for(size_t n=0;n<m.bones.size();++n){if(!(Key(s,m.bones[n])==r.bones[n].bone))return false;if(!r.offlineBinding)for(int k=0;k<16;++k)if(!std::isfinite(r.bones[n].bind[k])||std::abs(m.binds[n][k]-r.bones[n].bind[k])>.0001)return false;}return true;}
+inline bool MatchSourceRenderers(Package &package,Scene &scene,const Query &captured,
+    const std::vector<int64_t> &cloths,Query &query,std::vector<size_t> &selected,std::string *issue=nullptr) {
+  auto reject=[&](const std::string &reason){if(issue)*issue=reason;return false;};
+  std::set<std::pair<std::string,std::string>> declared;
+  for(const auto &o:scene.file.objects)if(scene.file.Class(o.first)==137)
+    declared.insert({scene.Name(o.first),scene.Name(scene.Parent(scene.TransformId(o.first)))});
+  query=captured;query.renderers.clear();selected.clear();std::set<std::pair<std::string,std::string>> seen;
+  for(size_t k=0;k<captured.renderers.size();++k){const auto &r=captured.renderers[k];
+    if(declared.count({r.name,r.parent})){if(!seen.insert({r.name,r.parent}).second)return reject("auto-source-renderer-identity-ambiguous:"+r.name);query.renderers.push_back(r);selected.push_back(k);}}
+  if(query.renderers.empty())return reject("auto-source-renderer-scope-empty");
+  std::set<int64_t> referenced;
+  for(auto id:cloths){auto branch=scene.Branch(Refs(scene.file.Get(id).At("serializeData").At("rootBones")));referenced.insert(branch.begin(),branch.end());}
+  for(const auto &o:scene.file.objects)if(scene.file.Class(o.first)==137){const auto &r=scene.file.Get(o.first);bool related=false;
+    for(auto id:Refs(r.At("m_Bones")))related|=referenced.count(id)!=0;if(!related)continue;
+    const auto mesh=DescribeMesh(package,scene,o.first);size_t matches=0;
+    for(const auto &live:query.renderers)matches+=RendererMatch(scene,mesh,live);
+    if(matches!=1)return reject("auto-source-required-renderer-matches-"+std::to_string(matches)+":"+mesh.name);}
+  for(const auto &live:query.renderers){size_t matches=0;
+    for(const auto &o:scene.file.objects)if(scene.file.Class(o.first)==137&&scene.Name(o.first)==live.name)
+      matches+=RendererMatch(scene,DescribeMesh(package,scene,o.first),live);
+    if(matches!=1)return reject("auto-source-live-renderer-matches-"+std::to_string(matches)+":"+live.name);}
+  return true;
+}
 inline bool Above(Scene &s,int64_t descendant,int64_t ancestor){for(int steps=0;descendant&&steps<128;++steps){if(descendant==ancestor)return true;descendant=s.Parent(descendant);}return false;}
 inline std::string RelevantSource(Package &package,Scene &s,const std::vector<int64_t> &cloths){std::map<std::string,std::string> parts;std::set<int64_t> transforms,clothBones;
   auto hashValue=[&](SerializedFile &f,int64_t id,const Value &v){const auto &o=f.objects.at(id);Need(v.start<=o.size&&v.length<=o.size-v.start,"auto-evidence-byte-range");return Digest(Bytes(f.bytes.begin()+o.offset+v.start,f.bytes.begin()+o.offset+v.start+v.length));};
@@ -118,13 +143,17 @@ inline LegReachPlan SourceLegReach(Scene &s,const Query &q,const Value &sd,const
     if(own<=0||sum<=0)continue;auto p=m.world[v];for(auto &x:p)x/=sum;garment.push_back(p);}
   const auto origin=Transform(s.World(FindBodyKey(s,q.hips)),{0,0,0}),up=Sub(Transform(s.World(FindBodyKey(s,q.spine)),{0,0,0}),origin);
   auto result=PlanLegReach(garment,origin,up,legs);std::array<std::vector<eiem_collision::Capsule>,4> shapes;
+  std::vector<eiem_collision::Capsule> torsoShapes;
+  const auto hips=FindBodyKey(s,q.hips),torsoTop=FindBodyKey(s,q.upperChest.name.empty()?q.spine:q.upperChest);
   for(auto ref:Refs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(ref);const auto &c=s.file.Get(ref);int region=-1;
     for(int side=0;side<2;++side)if(Above(s,t,ids[side])&&!Above(s,t,ids[side+4]))region=side+(Above(s,t,ids[side+2])?2:0);
-    if(region<0)continue;result.listed|=1u<<region;int axis=-1;if(c.Has("direction"))for(int n=0;n<3;++n)if(q.capsuleDirections[n]>=0&&c.At("direction").Int()==q.capsuleDirections[n])axis=n;
+    const bool torso=Above(s,torsoTop,t)&&Above(s,t,hips);
+    if(region<0&&!torso)continue;if(region>=0)result.listed|=1u<<region;
+    int axis=-1;if(c.Has("direction"))for(int n=0;n<3;++n)if(q.capsuleDirections[n]>=0&&c.At("direction").Int()==q.capsuleDirections[n])axis=n;
     if(axis<0||!c.Has("center")||!c.Has("size"))continue;
-    try{shapes[region].push_back(SourceWorldCapsule(s.World(t),Vec(c.At("center")),Vec(c.At("size")),axis,c.At("reverseDirection").Int()!=0,c.At("radiusSeparation").Int()!=0,c.At("alignedOnCenter").Int()!=0));}
+    try{(region>=0?shapes[region]:torsoShapes).push_back(SourceWorldCapsule(s.World(t),Vec(c.At("center")),Vec(c.At("size")),axis,c.At("reverseDirection").Int()!=0,c.At("radiusSeparation").Int()!=0,c.At("alignedOnCenter").Int()!=0));}
     catch(const std::exception &){}}
-  for(int n=0;n<4;++n)if(LegCenterlineCovered(legs[n],shapes[n]))result.centerlineCovered|=1u<<n;return result;
+  for(int n=0;n<4;++n)if(n<2?LegCenterlineCovered(legs[n],shapes[n],torsoShapes):LegCenterlineCovered(legs[n],shapes[n]))result.centerlineCovered|=1u<<n;return result;
 }
 inline std::vector<int> ChainOrder(size_t count,const std::set<std::pair<int,int>> &pairs,bool &loop){Need(count>=2&&count<=16,"auto-root-budget");std::vector<std::vector<int>> adjacency(count);
   for(const auto &p:pairs){Need(p.first>=0&&p.second>p.first&&size_t(p.second)<count,"auto-root-edge");adjacency[p.first].push_back(p.second);adjacency[p.second].push_back(p.first);}
@@ -255,25 +284,31 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
   }
   Need(!meshes.empty()&&meshes.size()<=64,"auto-renderer-coverage-missing-or-budget");
   LegReachPlan leg;
+  const bool originalCoverageCoat=SourceOriginalCoverageCoat(s.file.sha.c_str(),s.Name(id).c_str());
   try{leg=SourceLegReach(s,query,sd,attrs,meshes);}catch(const std::exception &e){if(surface)surface->legReport=std::string("auto-leg-coverage-unconfirmed:")+e.what();}
   if(surface&&surface->legReport.empty())surface->legReport="auto-leg-coverage requiredMask="+std::to_string(leg.required)+" listedMask="+std::to_string(leg.listed)+
       " sourceCapsuleCenterlineMask="+std::to_string(leg.centerlineCovered)+" missingMask="+std::to_string(leg.required&~leg.listed)+
       " geometryGapMask="+std::to_string(leg.required&~leg.centerlineCovered)+" maskOrder=left-thigh,right-thigh,left-calf,right-calf geometryWrites=0 renderDepth=unmeasured";
   if(upperCoat)Need((leg.listed&leg.centerlineCovered&3)==3&&(leg.required&3)!=0,"auto-upper-coat-thigh-coverage-unconfirmed");
+  const bool retainOriginalCoverage=OriginalCoverageCoatEligible(originalCoverageCoat,leg.required,leg.listed,leg.centerlineCovered);
+  if(retainOriginalCoverage&&surface)surface->legReport+=" sourceTorsoThighUnion=1 calfSupplement=pending";
   bool loop=false;std::vector<int> order,groups;
   if(bodyOnly){for(size_t n=0;n<roots.size();++n)order.push_back(int(n));}
   else try{order=ChainOrder(roots.size(),pairs,loop);}catch(const std::exception &){
     Need(surface!=nullptr,"auto-independent-panels-needs-private-root-separators");std::vector<Point> positions;for(auto root:roots)positions.push_back(Transform(s.World(root),{0,0,0}));
-    const auto separated=SeparatedPanelOrder(positions,pairs,hp,up,Sub(rp,lp),leg.required!=0&&(leg.required&~leg.centerlineCovered)==0);order=separated.order;groups=separated.groups;loop=false;
+    const auto separated=SeparatedPanelOrder(positions,pairs,hp,up,Sub(rp,lp),retainOriginalCoverage||(leg.required!=0&&(leg.required&~leg.centerlineCovered)==0),retainOriginalCoverage);order=separated.order;groups=separated.groups;loop=false;
     if(surface)surface->legReport+=" independentPanels="+std::to_string(groups.back()+1)+" sourceSkinAdjacency=1 crossOpeningFaces=0";
   }
   Need(!tree.forks||groups.empty(),"auto-fixed-fork-disconnected-panels");
   std::vector<int> orderedColumn(roots.size());for(size_t c=0;c<order.size();++c)orderedColumn[order[c]]=int(c);
   if(!bodyOnly)for(const auto &m:meshes)for(const auto &f:m.triangles){std::set<int> labels;bool moving=false,pure=true;
     for(int v:f)for(size_t k=0;k<m.weights[v].size();++k)if(m.weights[v][k]>0){const auto b=m.bones[size_t(m.indices[v][k])];if(columns.count(b)&&attrs[b]){labels.insert(orderedColumn[columns[b]]);moving|=attrs[b]==2;}else pure=false;}
-    if(moving&&pure&&!groups.empty()&&!labels.empty())for(int c:labels)Need(groups[c]==groups[*labels.begin()],"auto-separated-panels-share-render-face");
+    // Connection groups preserve the verified coat skin, including existing
+    // triangles influenced by several groups; no cross-opening cloth faces.
+    if(!retainOriginalCoverage&&moving&&pure&&!groups.empty()&&!labels.empty())for(int c:labels)Need(groups[c]==groups[*labels.begin()],"auto-separated-panels-share-render-face");
     if(!moving||labels.size()<3)continue;int gaps=0;for(int c:labels)if(!labels.count(c+1)&&!(loop&&c==int(roots.size())-1&&labels.count(0)))++gaps;
-    densityCheck(gaps<=1&&labels.size()<=3,"auto-density-disconnected-or-wide-skin-junction");}
+    if(!retainOriginalCoverage)densityCheck(gaps<=1&&labels.size()<=3,"auto-density-disconnected-or-wide-skin-junction");}
+  if(retainOriginalCoverage)Need(!groups.empty(),"auto-original-coverage-coat-connection-groups-required");
   std::string panelIdentity=std::string(ownership.proofs.empty()?"runtime-effective-graph-v3\n":"runtime-effective-graph-v4-ownership\n")+s.file.sha+"\n"+std::to_string(id);
   for(const auto &source:package.sources)panelIdentity+="\n"+source.first+"="+source.second;
   const auto panelKey=Digest(Bytes(panelIdentity.begin(),panelIdentity.end()));ClothBoneProfile panelSource{};
@@ -350,6 +385,15 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
   Need(retainedProducers.size()<=7,"auto-native-producer-budget");for(auto producer:retainedProducers)out->nativeProducers.push_back(text(s.Name(producer)));
   Need(!out->colliders.empty(),"auto-body-collision-coverage-missing");
   std::string signature=std::string(ownership.proofs.empty()?"runtime-effective-graph-v3\n":"runtime-effective-graph-v4-ownership\n")+s.file.sha+"\n"+std::to_string(id);for(const auto &source:package.sources)signature+="\n"+source.first+"="+source.second;if(tree.forks)signature+="\nfixed-fork-native-tree-v2";if(p.runtimeForkCoat)signature+="\nfork-coat-point-flexible-faces-v1";if(inactiveCoat)signature+="\ninactive-coat-branches-v1";if(p.runtimeSeparatedCoat){signature+="\nseparated-coat-inputs-point-flexible-v1";for(int n:out->releasedFixed)signature+=":"+std::to_string(n);}p.signature=text(Digest(Bytes(signature.begin(),signature.end())));Need(!fittedPanels||panelKey==p.signature,"panel-fit-source-closure-changed");p.runtimeGenerated=true;out->Link();
+  if(originalCoverageCoat) {
+    Need(SourceUpperCoatFront(p),"auto-upper-coat-source-chain-changed");
+    auto proposed=attrs;for(int n=0;n<p.boneCount;++n){auto bone=p.bones[n];SourceUpperCoatSelection(p,n,bone);proposed[ids[n]]=bone.attribute;}
+    const auto peers=SharedSelection(s,id,ids,proposed);
+    Need(peers.proofs.empty()&&peers.foreign.empty(),"auto-upper-coat-input-owned-by-peer");
+    if(surface)surface->legReport+=" releasedWaistFixed=9 promotedUpperAttachments=7 upperOriginsRetained=4 sourceSkin=retained contact=Point";
+    const auto revised=std::string(p.signature)+"\nupper-coat-higher-attachments-free-waist-v2";
+    p.signature=text(Digest(Bytes(revised.begin(),revised.end())));
+  }
   if(bodyOnly){p.runtimeBodyOnly=true;out->faces.resize(1);out->lines.resize(1);out->graphs.resize(1);
     for(size_t n=0;n<out->bones.size();++n){const auto &b=out->bones[n];if(b.attribute&&b.parent>=0&&out->bones[b.parent].attribute)out->lines[0].push_back({b.parent,int(n)});}out->Link();}
   else if(irregular){std::vector<Point> points;for(auto b:ids)points.push_back(Transform(s.World(b),{0,0,0}));GraphVariants(*out,points);}
@@ -362,32 +406,37 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
 #include "cloth_asset_apron.h"
 #include "cloth_asset_ribbon.h"
 #include "cloth_asset_native_layers.h"
+#include "cloth_asset_coat_calves.h"
+#include "cloth_asset_coat_torso.h"
 #include "cloth_asset_body_contact.h"
 #include "cloth_asset_unowned.h"
 namespace eiem_cloth_asset {
-inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &query){Need(!query.renderers.empty(),"auto-owner-input-empty");
-  for(const auto &r:query.renderers)Need(!r.offlineBinding||!query.modelPath.empty(),"offline-binding-requires-exact-model-path");
+inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &captured){Need(!captured.renderers.empty(),"auto-owner-input-empty");
+  for(const auto &r:captured.renderers)Need(!r.offlineBinding||!captured.modelPath.empty(),"offline-binding-requires-exact-model-path");
   std::set<int> shortlist;size_t best=SIZE_MAX;
-  if(!query.modelPath.empty()){
-    const auto path=Lower(query.modelPath);Need(ResourcePath(path)&&path.find('/')!=std::string::npos,"auto-model-resource-path-invalid");
+  if(!captured.modelPath.empty()){
+    const auto path=Lower(captured.modelPath);Need(ResourcePath(path)&&path.find('/')!=std::string::npos,"auto-model-resource-path-invalid");
     for(const auto &a:manifest.assets){auto name=Lower(a.name);if(name.size()<7||name.compare(name.size()-7,7,".prefab"))continue;
       for(int extension=0;extension<2;++extension){if(name==path||(name.size()>path.size()&&name.compare(name.size()-path.size(),path.size(),path)==0&&name[name.size()-path.size()-1]=='/'))shortlist.insert(a.bundleId);if(!extension)name.resize(name.size()-7);}}
     Need(shortlist.size()==1,"auto-model-resource-path-not-unique-in-manifest");
   }
-  if(query.modelPath.empty())for(const auto &renderer:query.renderers){std::set<int> modelBundles;const auto name=Lower(renderer.mesh);for(const auto &a:manifest.assets){const auto leaf=Lower(Leaf(a.name));if(leaf==name+".asset"||leaf==name+".fbx")modelBundles.insert(a.bundleId);}if(modelBundles.empty())continue;
+  if(captured.modelPath.empty())for(const auto &renderer:captured.renderers){std::set<int> modelBundles;const auto name=Lower(renderer.mesh);for(const auto &a:manifest.assets){const auto leaf=Lower(Leaf(a.name));if(leaf==name+".asset"||leaf==name+".fbx")modelBundles.insert(a.bundleId);}if(modelBundles.empty())continue;
     std::set<int> candidates;for(const auto &a:manifest.assets)if(a.name.size()>=7&&a.name.compare(a.name.size()-7,7,".prefab")==0){const auto &deps=manifest.bundles[a.bundleId].dependencies;bool match=modelBundles.count(a.bundleId)!=0;for(int dep:deps)match|=modelBundles.count(dep)!=0;if(match)candidates.insert(a.bundleId);}if(!candidates.empty()&&candidates.size()<best){best=candidates.size();shortlist=std::move(candidates);}}
-  Need(!shortlist.empty()&&shortlist.size()<=32,"auto-prefab-source-unavailable-or-ambiguous");Generated result;bool matched=false;
+  Need(!shortlist.empty()&&shortlist.size()<=32,"auto-prefab-source-unavailable-or-ambiguous");Generated result;bool matched=false;std::string bindingIssue;
   for(int bundle:shortlist){CheckCancel(vfs.cancel);Package package(vfs,manifest);package.Load(bundle);std::vector<std::shared_ptr<SerializedFile>> prefabs;for(auto &entry:package.files)prefabs.push_back(entry.second);
-    for(auto &file:prefabs){Scene scene(*file);std::vector<int64_t> cloths;bool rootsMatch=true;for(const auto &live:query.cloths){int64_t found=0;for(const auto &o:file->objects)if(file->Class(o.first)==114&&RootMatch(scene,o.first,live)){Need(!found,"auto-prefab-duplicate-cloth");found=o.first;}if(!found){rootsMatch=false;break;}cloths.push_back(found);}if(!rootsMatch)continue;
-      package.Models(bundle);std::set<int64_t> referenced;for(auto id:cloths){auto branch=scene.Branch(Refs(file->Get(id).At("serializeData").At("rootBones")));referenced.insert(branch.begin(),branch.end());}
-      bool allBindings=true;size_t bindingMatches=0;for(const auto &o:file->objects)if(file->Class(o.first)==137){const auto &r=file->Get(o.first);bool related=false;for(auto id:Refs(r.At("m_Bones")))related|=referenced.count(id)!=0;if(!related)continue;auto mesh=DescribeMesh(package,scene,o.first);int matches=0;for(const auto &live:query.renderers)matches+=RendererMatch(scene,mesh,live);allBindings&=matches==1;++bindingMatches;}
-      for(const auto &live:query.renderers){int matches=0;for(const auto &o:file->objects)if(file->Class(o.first)==137&&scene.Name(o.first)==live.name)
-          matches+=RendererMatch(scene,DescribeMesh(package,scene,o.first),live);allBindings&=matches==1;}
-      if(!allBindings)continue;
+    for(auto &file:prefabs){Scene scene(*file);std::vector<int64_t> cloths;bool rootsMatch=true;for(const auto &live:captured.cloths){int64_t found=0;for(const auto &o:file->objects)if(file->Class(o.first)==114&&RootMatch(scene,o.first,live)){Need(!found,"auto-prefab-duplicate-cloth");found=o.first;}if(!found){rootsMatch=false;break;}cloths.push_back(found);}if(!rootsMatch)continue;
+      package.Models(bundle);Query query;std::vector<size_t> selected;
+      if(!MatchSourceRenderers(package,scene,captured,cloths,query,selected,&bindingIssue))continue;
       const auto evidence=RelevantSource(package,scene,cloths)+file->sha;
       const auto relevant=Digest(Bytes(evidence.begin(),evidence.end()));
       if(matched){Need(result.relevantHash==relevant,"auto-source-full-binding-ambiguous-nonidentical-cloth-input");++result.equivalentSources;continue;}
       matched=true;result.source=manifest.bundles[bundle].name;result.sourceHash=file->sha;result.relevantHash=relevant;result.sources=package.sources;result.sources[manifest.sourceName]=manifest.sourceHash;
+      result.rendererScopeKnown=true;result.liveRenderers=std::move(selected);
+      result.reports.push_back({"renderer-scope","captured="+std::to_string(captured.renderers.size())+
+          " sourceMatched="+std::to_string(query.renderers.size())+" extraPreserved="+std::to_string(captured.renderers.size()-query.renderers.size())+" fullBindingVerified=1"});
+      std::set<size_t> retained(result.liveRenderers.begin(),result.liveRenderers.end());size_t extraReported=0;
+      for(size_t k=0;k<captured.renderers.size()&&extraReported<8;++k)if(!retained.count(k)){
+        const auto &r=captured.renderers[k];result.reports.push_back({r.name,"not-in-matched-source-renderer-scope-preserved parent="+r.parent});++extraReported;}
       SelectBodyScope(scene,query);
       if(scene.bodyRoot){int count=0;for(const auto &t:scene.goTransform)count+=Key(scene,t.second)==query.hips;
         result.reports.push_back({"body-reference","auto-Animator-relative-path-confirmed hipsCandidates="+std::to_string(count)+" selectedSkeletons=1"});}
@@ -406,6 +455,15 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &q
           if(p->view.inputAnchorCount)Need(p->view.generatedLocal!=nullptr,surface.densityIssue.empty()?"apron-private-skin-required":surface.densityIssue.c_str());
           if(!surface.groups.empty())Need(p->view.generatedLocal!=nullptr,surface.densityIssue.empty()?"auto-separated-panels-native-graph-required":surface.densityIssue.c_str());
           if(p->view.runtimeSeparatedCoat)Need(p->view.generatedLocal&&p->view.generatedLocal->NativePanelsOnly(),"auto-separated-coat-private-graph-required");
+          if(SourceOriginalCoverageCoat(p->view.prefabSha,p->view.component)) {
+            const auto r=p->view.generatedLocal;
+            Need(r&&r->NativePanelsOnly()&&!r->bodyCoverage&&!r->bodySphereCount&&!r->meshCount,
+                "auto-original-coverage-coat-requires-native-panels-and-original-skin");
+            for(auto &d:result.dense)if(&d->view==r) {ConfigureCoatCalves(package,scene,query,p->view,*d);ConfigureCoatTorso(scene,query,p->view,*d);}
+            Need(r->CoatCalfCoverage()&&r->CoatTorsoCoverage(),"auto-coat-body-coverage-missing");
+          }
+          if(SourceForkCoatFront(p->view)) {auto dense=GenerateForkCoatBody(package,scene,cloths[k],query,*p);
+            p->view.generatedLocal=&dense->view;result.dense.push_back(std::move(dense));}
           if(p->view.generatedLocal)for(const auto &d:result.dense)if(&d->view==p->view.generatedLocal&&!d->densityReport.empty())result.reports.push_back({query.cloths[k].name,d->densityReport});
           if(!surface.densityIssue.empty())result.reports.push_back({query.cloths[k].name,surface.densityIssue});
           if(!surface.sheetIssue.empty()&&surface.sheetIssue!=surface.densityIssue&&!(p->view.generatedLocal&&(p->view.generatedLocal->FittedSkin()||p->view.generatedLocal->CoatWaistSkinOnly())))result.reports.push_back({query.cloths[k].name,surface.sheetIssue});result.profiles.push_back(std::move(p));
@@ -414,9 +472,9 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &q
       try{GenerateUnowned(package,scene,query,result);}catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"unowned-waist-discovery",e.what()});}
       result.meshReads+=scene.meshReads;result.meshCacheHits+=scene.meshCacheHits;result.meshCacheBytes+=scene.meshCacheBytes;result.meshDecodeMs+=scene.meshDecodeMs;
       result.sources=package.sources;result.sources[manifest.sourceName]=manifest.sourceHash;
-      std::string key="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-v1-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-v2-fixed-apron-v1-bundle-v2-cell-aspect-v1-leg-coverage-native-lines-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1\n"+manifest.sourceHash;for(const auto &p:package.sources)key+="\n"+p.first+"="+p.second;result.key=Digest(Bytes(key.begin(),key.end()));
+      std::string key="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-v1-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-v2-fixed-apron-v1-bundle-v2-cell-aspect-v1-leg-coverage-native-lines-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1\n"+manifest.sourceHash;for(const auto &p:package.sources)key+="\n"+p.first+"="+p.second;key+="\nendminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-lower-v2-pelvis-overlap-v1";result.key=Digest(Bytes(key.begin(),key.end()));
     }
-  }Need(matched,"auto-source-full-binding-not-confirmed");
+  }Need(matched,bindingIssue.empty()?"auto-source-full-binding-not-confirmed":bindingIssue.c_str());
   ResolveGeneratedRenderers(result);
   Need(vfs.StillCurrent()&&Digest(vfs.Read(manifest.sourceName))==manifest.sourceHash,"auto-source-updated-during-generation");return result;
 }

@@ -15,7 +15,8 @@ static bool ClothBonePanelPointBody(const ClothBoneRuntime &s) {
       r->rootCount==24&&r->depth==4&&r->loop&&!r->resampledPanel;
 }
 static bool ClothBonePointBody(const ClothBoneRuntime &s) {
-  return s.supportPointCollision || ClothBoneApronPointBody(s) || ClothBonePanelPointBody(s) || ClothBoneForkCoat(s) ||
+  return s.supportPointCollision || ClothBoneApronPointBody(s) || ClothBonePanelPointBody(s) ||
+      ClothBoneForkCoat(s) ||
       (s.profile&&s.profile->runtimeBodyOnly&&s.local.requested&&s.local.recipe&&s.local.recipe->NativeBodyOnly());
 }
 static const char *ClothBoneBodyMode(const ClothBoneRuntime &s) {

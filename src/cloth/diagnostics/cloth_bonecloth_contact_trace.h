@@ -159,7 +159,7 @@ static bool ClothBonePairTraceImpl(int slot,unsigned record,int frame,const char
   for(int side=0;side<2;++side) {
     int relative=-1;
     if(!ClothInputTeamField(team[side],"useRelativeTransform","System.Int32",relative) || relative!=0 ||
-        !ClothInputChunkRead(team[side],"particleChunk",arrays[0].length,chunks[side]) ||
+        !ClothInputChunkRead(team[side],"particleChunk",arrays[0].length,chunks[side],ClothContactParticles) ||
         !ClothContactRange(chunks[side],arrays,4,ClothContactParticles) ||
         chunks[side].count!=ClothBoneCandidate(side?p:b).EffectiveCount())return false;
     for(int n=0;n<chunks[side].count;++n) {

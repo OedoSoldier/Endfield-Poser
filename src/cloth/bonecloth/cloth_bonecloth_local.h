@@ -24,19 +24,26 @@ static bool ClothBoneLocalMeshEnabled(const ClothBoneLocalMeshState &l,bool requ
   auto &s=ClothBoneState();
   if(l.renderer<0 || size_t(l.renderer)>=s.renderers.size()) return false;
   auto r=ClothTarget(s.renderers[l.renderer].renderer);bool visible=false,enabled=false;
+  // Squad ownership is independent of the current camera. All members must
+  // prepare before the shared timeline starts, including those off screen.
+  requireVisible=requireVisible&&s_clothActorIndex==0;
   return r && (!requireVisible || (ClothValue(SurfaceMethod(il2cpp_object_get_class(r),"get_isVisible","System.Boolean"),r,visible) && visible)) &&
       ClothValue(SurfaceMethod(il2cpp_object_get_class(r),"get_enabled","System.Boolean"),r,enabled) && enabled;
 }
 static bool ClothBoneLocalVisible() {
   auto &s=ClothBoneState();auto &local=s.local;auto &layers=local.layers;
-  if(local.recipe->CoatWaistSkinOnly()) {
+  if(local.recipe->RetainsBindings()) {
     if(layers.size()!=size_t(local.recipe->meshCount)||!s.profile||s.renderers.size()!=size_t(s.profile->rendererCount))return false;
-    for(size_t k=0;k<s.renderers.size();++k){ClothBoneLocalMeshState source{};source.renderer=int(k);if(ClothBoneLocalMeshEnabled(source,true))return true;}
+    // Retained skin is not replaced: an off-screen squad member is still a valid
+    // owner. Keep enabled/identity checks; native team culling remains in charge.
+    for(size_t k=0;k<s.renderers.size();++k){ClothBoneLocalMeshState source{};source.renderer=int(k);if(ClothBoneLocalMeshEnabled(source,false))return true;}
     return false;
   }
   if(local.recipe->NativeSkinRetained()) {
     if(!layers.empty()||!s.profile||s.renderers.size()!=size_t(s.profile->rendererCount))return false;
-    for(size_t k=0;k<s.renderers.size();++k){ClothBoneLocalMeshState source{};source.renderer=int(k);if(ClothBoneLocalMeshEnabled(source,true))return true;}
+    // No renderer replacement is published; transient camera culling is not
+    // an identity failure. Enabled state and native ownership remain checked.
+    for(size_t k=0;k<s.renderers.size();++k){ClothBoneLocalMeshState source{};source.renderer=int(k);if(ClothBoneLocalMeshEnabled(source,false))return true;}
     return false;
   }
   if(layers.empty() || layers.size()!=size_t(local.recipe->meshCount)) return false;
@@ -50,7 +57,7 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   auto &l=s.local;const auto &r=*l.recipe;
   if(!s.profile || ClothBoneLocalRecipeFor(*s.profile)!=l.recipe ||
       s.profile->boneCount!=r.originalCount || s.profile->rootCount!=r.originalRoots ||
-      s.profile->depth!=r.depth || (s.profile->loop!=r.loop&&!r.sourceShortSides) || r.Total()>ClothContactParticles ||
+      s.profile->depth!=r.depth || (s.profile->loop!=r.loop&&!r.sourceShortSides) || r.Total()>(r.resampledPanel?ClothBoneMaxIdentities:ClothContactParticles) ||
       (r.meshCount<1&&!r.NativeSkinRetained()) || r.meshCount>16 || (r.crossCount<1&&!r.RetainsSourceReference()) || r.crossCount>256 ||
       (s.profile->candidateIgnoredCount&&!r.runtimeGenerated) || (l.recipe==&ClothRingRecipe &&
       (strcmp(ClothLocalBaseSignature,ClothInnerBaseSignature) || strcmp(ClothLocalSignature,ClothInnerPrimarySignature)))) return false;
@@ -60,9 +67,14 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   if(r.sourceBodyOnly&&(!r.NativeBodyOnly()||!s.profile->runtimeBodyOnly||!eiem_cloth_asset::SourceBodyContact(s.profile->prefabSha,s.profile->component)))return false;
   if(s.profile->runtimeBodyOnly&&!r.NativeBodyOnly())return false;
   if(s.profile->runtimeSeparatedCoat&&(!r.NativePanelsOnly()||!eiem_cloth_asset::SourceSeparatedCoat(*s.profile)))return false;
+  if(eiem_cloth_asset::SourceOriginalCoverageCoat(s.profile->prefabSha,s.profile->component)&&
+      (!r.NativePanelsOnly()||!r.CoatCalfCoverage()))return false;
+  if(r.sourceCoatCalves&&(!r.CoatCalfCoverage()||!eiem_cloth_asset::SourceOriginalCoverageCoat(s.profile->prefabSha,s.profile->component)))return false;
+  if(r.sourceCoatTorso&&(!r.CoatTorsoCoverage()||
+      (r.sourceCoatCalves?!eiem_cloth_asset::SourceUpperCoatFront(*s.profile):(!r.ForkCoatBodyOnly()||!eiem_cloth_asset::SourceForkCoatFront(*s.profile)))))return false;
   l.assets.assign(s.profile->bones,s.profile->bones+s.profile->boneCount);
   if(r.sourcePanelFit&&!eiem_cloth_asset::SourcePanelContract(*s.profile))return false;
-  if(r.resampledPanel&&(!r.sourcePanelFit||!eiem_cloth_asset::SourceSeraphPanel(*s.profile)||r.addedCount!=84||r.rootCount!=12||!r.bodyAsset||r.bodySphereCount!=14))return false;
+  if(r.resampledPanel&&(!r.sourcePanelFit||!eiem_cloth_asset::SourceSeraphPanel(*s.profile)||r.addedCount!=ClothLongPanelParticles||r.rootCount!=ClothLongPanelColumns||!r.bodyAsset||r.bodySphereCount!=14))return false;
   if(r.sourceApronFit&&(!eiem_cloth_asset::SourceApronRelease(*s.profile,1)||!eiem_cloth_asset::SourceApronRelease(*s.profile,4)))return false;
   if(r.sourceShortSkin&&(!r.NativeSkinRetained()||!eiem_cloth_asset::SourceShortContract(*s.profile)))return false;
   if(eiem_cloth_asset::SourceShortContract(*s.profile)&&!r.sourceShortSkin)return false;
@@ -74,6 +86,9 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   l.ignored.clear();
   for(int n=0;n<r.originalCount;++n) {l.assets[n].column=r.columns[n];if(r.runtimeGenerated&&s.profile->Passive(n))l.assets[n].attribute=0;
     if(s.profile->runtimeSeparatedCoat&&s.profile->ReleasedFixed(n))l.assets[n].attribute=2;
+    eiem_cloth_asset::SourceUpperCoatSelection(*s.profile,n,l.assets[n]);
+    l.assets[n].column=r.columns[n];
+    if(r.ForkCoatBodyOnly()&&eiem_cloth_asset::SourceForkCoatRelease(*s.profile,n))l.assets[n].attribute=2;
     if((r.sourcePanelFit&&eiem_cloth_asset::SourcePanelRelease(*s.profile,n)) || (r.sourceApronFit&&eiem_cloth_asset::SourceApronRelease(*s.profile,n)))l.assets[n].attribute=2;
     if(r.sourcePanelFit){l.assets[n].depth=eiem_cloth_asset::SourcePanelDepth(*s.profile,n);if(eiem_cloth_asset::SourceChenWaist(*s.profile,n))l.assets[n].attribute=1;}
     if(r.sourceCoatWaist)l.assets[n].attribute=s.profile->CandidateAttribute(n);
@@ -86,9 +101,10 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   l.profile.candidateAttributes=nullptr;
   l.profile.nativeGraphs=r.graphs;l.profile.nativeGraphCount=r.graphCount;
   l.profile.boneCount=int(l.assets.size());l.profile.roots=l.roots.data();l.profile.rootCount=int(l.roots.size());
-  if(r.resampledPanel){l.profile.depth=7;l.profile.candidateIgnored=l.ignored.data();l.profile.candidateIgnoredCount=int(l.ignored.size());}
+  if(eiem_cloth_asset::SourceUpperCoatFront(*s.profile))l.profile.depth=s.profile->depth+1;
+  if(r.resampledPanel){l.profile.depth=ClothLongPanelRows;l.profile.candidateIgnored=l.ignored.data();l.profile.candidateIgnoredCount=int(l.ignored.size());}
   if(r.sourceShortSkin)l.profile.depth=3;
-  return l.profile.boneCount==r.Total() && l.profile.EffectiveCount()==(r.resampledPanel?0:r.sourceShortSkin?s.profile->boneCount:s.profile->EffectiveCount()+eiem_cloth_asset::SourcePanelPromotedCount(*s.profile))+r.addedCount;
+  return ClothBoneIdentityBudget(l.profile.boneCount,l.profile.EffectiveCount()) && l.profile.boneCount==r.Total() && l.profile.EffectiveCount()==(r.resampledPanel?0:r.sourceShortSkin?s.profile->boneCount:s.profile->EffectiveCount()+eiem_cloth_asset::SourcePanelPromotedCount(*s.profile)+eiem_cloth_asset::SourceUpperCoatPromoted(*s.profile))+r.addedCount;
 }
 static bool ClothBoneLocalCreate() {
   auto &s=ClothBoneState();auto &l=s.local;const auto &recipe=*l.recipe;
@@ -160,13 +176,13 @@ static bool ClothBoneLocalCreate() {
     if(!layer.oldArray) {
       const bool paired=s.contactPartner>=0&&s_clothBoneSlots[s.contactPartner].supportCreated;
       if(!ClothBoneLocalBindingMapValid(config,source,recipe.Total(),paired?ClothPartnerSurfaceOriginal:0,
-          paired?int(std::size(ClothPartnerSurfaceBones)):0,recipe.CoatWaistSkinOnly()) ||
+          paired?int(std::size(ClothPartnerSurfaceBones)):0,recipe.RetainsBindings()) ||
           !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_bones","UnityEngine.Transform[]"),renderer,nullptr,old) || !old) return false;
       layer.oldArray=ClothBoneHold(old);
-      void *array=recipe.CoatWaistSkinOnly()?old:il2cpp_array_new(g_transformClass,config.sourceBones+config.bindingCount);
+      void *array=recipe.RetainsBindings()?old:il2cpp_array_new(g_transformClass,config.sourceBones+config.bindingCount);
       if(!layer.oldArray || !(layer.newArray=ClothBoneHold(array))) return false;
       layer.rendererBones=s.renderers[layer.renderer].bones;
-      if(recipe.CoatWaistSkinOnly())layer.buildBinding=config.sourceBones;
+      if(recipe.RetainsBindings())layer.buildBinding=config.sourceBones;
     }
     auto array=CollisionGc(layer.newArray);if(!array)return false;
     auto set=SurfaceMethod(il2cpp_object_get_class(array),"SetValue","System.Void","System.Object","System.Int32");
@@ -191,10 +207,11 @@ static bool ClothBoneLocalCreate() {
   if(recipe.bodyCoverage && !ClothBoneBodyCreate()) return false;
   if(ClothBoneSideRecipeFor(*s.profile) && !ClothBoneSideCreate()) return ClothBoneReject("body-side-support-create-unconfirmed");
   l.created=true;l.deadline=GetTickCount64()+12000;
-  if(recipe.resampledPanel)Log("[CLOTH-AUTO] stage=long-panel-prepared component=%s sourceIdentities=40 sourceParticleWrites=0 privateColumns=12 privateRows=7 privateFixed=12 privateMove=72 fittedBodyShapes=%d proximalSpheres=12 calfCapsules=2 originalCapsuleWrites=0 upperAttachmentRing=source-wrapper upperAnchorSkinVertices=%zu contactRadius=%g sourceStructuralMaterialRetained=1 nativeReadback=pending visualVerified=0",s.profile->component,recipe.bodySphereCount,recipe.upperAnchorSkinVertices,recipe.fittedContactRadius);
+  if(recipe.resampledPanel)Log("[CLOTH-AUTO] stage=long-panel-prepared component=%s sourceIdentities=40 sourceParticleWrites=0 privateColumns=%d privateRows=%d privateFixed=%d privateMove=%d fittedBodyShapes=%d proximalSpheres=12 calfCapsules=2 originalCapsuleWrites=0 upperAttachmentRing=source-wrapper upperAnchorSkinVertices=%zu contactRadius=%g sourceAngleRetained=1 contourMaterialReadback=pending faceBendingReadback=pending nativeReadback=pending visualVerified=0",s.profile->component,ClothLongPanelColumns,ClothLongPanelRows,ClothLongPanelColumns,ClothLongPanelParticles-ClothLongPanelColumns,recipe.bodySphereCount,recipe.upperAnchorSkinVertices,recipe.fittedContactRadius);
   if(recipe.sourcePanelFit){int released=0,waist=0;for(int n=0;n<s.profile->boneCount;++n){released+=eiem_cloth_asset::SourcePanelRelease(*s.profile,n);waist+=l.assets[n].attribute==1&&l.assets[n].depth==0;}
     Log("[CLOTH-AUTO] stage=source-panel-prepared component=%s internalFixedToMove=%d sourceFixedWaistRoots=%d verifiedSourceWaists=%d commonLayerSkin=1 originalBodyCollidersRetained=1 selectionRestore=original-snapshot nativeReadback=pending visualVerified=0",s.profile->component,released,waist,eiem_cloth_asset::SourcePanelPromotedCount(*s.profile));}
-  if(recipe.CoatWaistSkinOnly())Log("[CLOTH-AUTO] stage=coat-waist-prepared component=%s meshes=%d addedBones=0 fixedToSourceTrunkField=1 MoveWeightsUnchanged=1 sourceBodyCapsulesUnchanged=1 nativeReadback=pending visualVerified=0",s.profile->component,recipe.meshCount);
+  if(recipe.RetainsBindings())Log("[CLOTH-AUTO] stage=coat-waist-prepared component=%s meshes=%d addedBones=%d waistSkinTransition=1 originalPaletteRetained=1 nativeReadback=pending visualVerified=0",s.profile->component,recipe.meshCount,recipe.addedCount);
+  if(recipe.sourceCoatTorso)Log("[CLOTH-AUTO] stage=coat-torso-prepared component=%s addedChest=1 addedTransverseWaist=1 totalAddedCapsules=%d originalSkinRetained=1 sourceCollidersRetained=1 nativeReadback=pending visualVerified=0",s.profile->component,recipe.bodySphereCount);
   if(recipe.NativeBodyOnly())Log("[CLOTH-AUTO] stage=body-contact-prepared component=%s points=%d sourceLines=%d addedThighCapsules=%d sourceReferenceRetained=1 originalSkinRetained=1 originalCapsuleWrites=0 nativeReadback=pending visualVerified=0",s.profile->component,l.profile.EffectiveCount(),recipe.graphs[0].lineCount,recipe.bodySphereCount);
   if(recipe.sourceShortSkin)Log("[CLOTH-AUTO] stage=short-skin-prepared component=%s waistFixed=%d visibleFixedToMove=4 leasedSideBones=%d nativeControls=%d closedSurface=%d originalSkinRetained=1 sharedRendererWrites=0 originalCapsuleWrites=0 nativeReadback=pending visualVerified=0",s.profile->component,recipe.sourceShortSides?6:4,s.profile->sourceBranchCount,recipe.Total(),recipe.sourceShortSides);
   if(recipe.sourceApronFit)Log("[CLOTH-AUTO] stage=source-apron-prepared originalNativePoints=4 verifiedWaistInputs=2 internalFixedToMove=2 addedBones=%d sourceFixedOnlySkinReleased=1 sideBBCsRetained=1 originalBodyColliders=1 nativeReadback=pending visualVerified=0",recipe.addedCount);
@@ -319,7 +336,6 @@ static bool ClothBoneLocalReady() {
     il2cpp_gchandle_free(l.registryScan);l.registryScan=0;l.registryReady=true;
     for(const auto &layer:l.layers)if(layer.namePresent)return false;
     Log("[CLOTH-BONE-RESOURCE] stage=registry-ready sharedLayers=%zu inspected=%zu perFrameSoftBudgetMs=3",l.layers.size(),l.registryCount);
-    return true;
   }
   LARGE_INTEGER start{},clock{},frequency{};QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&start);
   for(size_t k=0;k<l.layers.size();++k) {
@@ -359,7 +375,7 @@ static bool ClothBoneLocalMeshRestore(ClothBoneLocalMeshState &l) {
   }
   if(!ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_sharedMesh","UnityEngine.Mesh"),renderer,nullptr,mesh)) return false;
   if(mesh==ClothTarget(l.mesh) && (!ClothTarget(r.mesh) || !SurfaceCall(renderer,"set_sharedMesh","UnityEngine.Mesh",ClothTarget(r.mesh)))) return false;
-  if(!s.local.recipe->CoatWaistSkinOnly() && SurfaceRenderSameReferences(renderer,"get_bones","UnityEngine.Transform[]",l.rendererBones) &&
+  if(!s.local.recipe->RetainsBindings() && SurfaceRenderSameReferences(renderer,"get_bones","UnityEngine.Transform[]",l.rendererBones) &&
       !SurfaceCall(renderer,"set_bones","UnityEngine.Transform[]",CollisionGc(l.oldArray))) return false;
   if(!ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_sharedMesh","UnityEngine.Mesh"),renderer,nullptr,mesh) || mesh==ClothTarget(l.mesh) ||
       !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_bones","UnityEngine.Transform[]"),renderer,nullptr,array)) return false;
@@ -389,7 +405,7 @@ static bool ClothBoneLocalCommitMeshes() {
   for(auto &layer:l.layers) {
     auto renderer=ClothTarget(s.renderers[layer.renderer].renderer);
     layer.publishAttempted=true;
-    const bool sent=(l.recipe->CoatWaistSkinOnly() || SurfaceCall(renderer,"set_bones","UnityEngine.Transform[]",CollisionGc(layer.newArray))) &&
+    const bool sent=(l.recipe->RetainsBindings() || SurfaceCall(renderer,"set_bones","UnityEngine.Transform[]",CollisionGc(layer.newArray))) &&
       ClothOwns(s.owner) && !s.stopRequested &&
       SurfaceCall(renderer,"set_sharedMesh","UnityEngine.Mesh",ClothTarget(layer.mesh));
     layer.published=sent;
@@ -414,6 +430,7 @@ static bool ClothBoneLocalPublish() {
   if(!ClothBoneBindingIdentity()) {ClothBoneLocalRestore();return false;}
   l.published=true;
   if(l.recipe->CoatWaistSkinOnly())Log("[CLOTH-AUTO] stage=coat-waist-active component=%s Process=%p team=%d meshes=%d nativeOutputFrames=%u originalBBC=1 same24Particles=1 sourceTrunkField=1 MoveWeightsUnchanged=1 sourceBodyCapsulesUnchanged=1 visualVerified=0",s.profile->component,CollisionGc(s.process[1]),s.team[1],l.recipe->meshCount,l.solverFrames);
+  if(l.recipe->sourceCoatTorso)Log("[CLOTH-AUTO] stage=coat-torso-active component=%s team=%d addedChest=1 addedTransverseWaist=1 totalAddedCapsules=%d registered=%d nativeOutputFrames=%u originalSkinRetained=1 visualVerified=0",s.profile->component,s.team[1],l.recipe->bodySphereCount,l.fittedBodyRegistered,l.solverFrames);
   if(l.recipe->NativeBodyOnly())Log("[CLOTH-AUTO] stage=body-contact-active component=%s Process=%p team=%d points=%d sourceLines=%d addedThighCapsules=%d nativeOutputFrames=%u originalBBC=1 originalSkinRetained=1 sourceReferenceRetained=1 visualVerified=0",s.profile->component,CollisionGc(s.process[1]),s.team[1],l.profile.EffectiveCount(),l.recipe->graphs[0].lineCount,l.recipe->bodySphereCount,l.solverFrames);
   if(l.recipe->sourceShortSkin)Log("[CLOTH-AUTO] stage=short-skin-active component=%s team=%d points=%d faces=%d outputFrames=%u visibleFixedToMove=4 leasedSideBones=%d closedSurface=%d sharedRendererWrites=0 visualVerified=0",s.profile->component,s.team[1],l.profile.EffectiveCount(),l.profile.FaceCount(),l.solverFrames,s.profile->sourceBranchCount,l.recipe->sourceShortSides);
   if(l.recipe->NativePanelsOnly())Log("[CLOTH-AUTO] stage=separated-panels-active component=%s Process=%p team=%d panels=%d points=%d nativeFaces=%d nativeOutputFrames=%u originalSkinRetained=1 rendererWrites=0 visualVerified=0",
@@ -432,7 +449,7 @@ static bool ClothBoneLocalPublish() {
   if(s.contactPartner>=0&&s.contactPartner<s_clothBoneCount&&s_clothBoneSlots[s.contactPartner].supportCreated)
     Log("[CLOTH-BONE-SURFACE] stage=merged-skin-published recipe=%s partnerTeam=%d supportPoints=%zu singleRendererPublisher=1 originalFixedTermsPreserved=1 innerSkinPreserved=1 naturalShapePreserved=1 visualVerified=0",
         ClothPartnerSurfaceSignature,s_clothBoneSlots[s.contactPartner].team[1],std::size(ClothPartnerSurfaceBones));
-  ClothBoneNote(l.recipe->NativeBodyOnly()?"active-original-BBC-Line-Point-fitted-thigh-contact":l.recipe->CoatWaistSkinOnly()?"active-original-BBC-coat-waist-skin":l.recipe->sourceShortSkin?"active-original-BBC-short-visible-skin":l.recipe->NativePanelsOnly()?"active-separated-native-panels-original-skin":l.recipe->NativeRibbonWidth()?"active-original-BBC-isolated-ribbon-width-skin":l.recipe->sourceApronFit?"active-content-fitted-fixed-apron-original-BBC":l.recipe->sourcePanelFit?"active-content-fitted-waist-panels-original-BBC":l.recipe->runtimeGenerated?"active-runtime-generated-simple-BoneCloth-surface":l.recipe->rootSkinTransition?"active-original-BBC-open-strip-skin-candidate":"active-original-BBC-joint-chart-two-layer-skin-candidate");return true;
+  ClothBoneNote(l.recipe->sourceCoatTorso?"active-original-BBC-coat-chest-waist-contact":l.recipe->NativeBodyOnly()?"active-original-BBC-Line-Point-fitted-thigh-contact":l.recipe->CoatWaistSkinOnly()?"active-original-BBC-coat-waist-skin":l.recipe->sourceShortSkin?"active-original-BBC-short-visible-skin":l.recipe->NativePanelsOnly()?"active-separated-native-panels-original-skin":l.recipe->NativeRibbonWidth()?"active-original-BBC-isolated-ribbon-width-skin":l.recipe->sourceApronFit?"active-content-fitted-fixed-apron-original-BBC":l.recipe->sourcePanelFit?"active-content-fitted-waist-panels-original-BBC":l.recipe->runtimeGenerated?"active-runtime-generated-simple-BoneCloth-surface":l.recipe->rootSkinTransition?"active-original-BBC-open-strip-skin-candidate":"active-original-BBC-joint-chart-two-layer-skin-candidate");return true;
 }
 static bool ClothBoneLocalCleanupWait(const char *reason,int item) {
   auto &s=ClothBoneState();auto &l=s.local;const auto now=GetTickCount64();

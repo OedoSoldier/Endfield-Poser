@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.4.73**。新增自动适配、地形跟随和眼神校正，尚待完整游戏内验收。
+**当前预发布版：0.4.85**。新增播放倒计时，改进多人衣物增强与管理员外套，部分物理效果仍待游戏内验证。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.73) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.85) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.73-win64.zip`。`source.zip` 和 **Source code** 是源码。
+1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.85-win64.zip`。`source.zip` 和 **Source code** 是源码。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装或更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -31,13 +31,12 @@
 | 配合音乐、镜头 | 在播放器 **镜头与音乐** 页选择文件和调整构图 |
 | 调整衣物物理 | 在播放器 **动作 → 衣物物理** 开关碰撞增强；飘带抖动时可在停止后调整 **飘带减振** |
 | 隐藏面板拍摄 | 按 **L**；动作和音乐继续播放 |
-| 让 Mod 衣着随动作切换 | 通过 EFMI 启动，在播放器 **高级 → Mod 联动（实验）** 中绑定自定义表情轨道；见[说明](docs/mmd-player.md#mod-联动实验) |
 
 播放快捷键、窗口拖动和姿态保存见[快速教程](docs/tutorial.md)。动作幅度、IK、衣物物理和特殊骨骼适配见[MMD 播放指南](docs/mmd-player.md)。需要在 Blender 中摆姿时，可使用[可选桥接插件](tools/blender/endfield_poser_bridge/README.md)。
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
-本版新增自动骨架及腿长适配、单人和多人地形跟随、镜头高度补偿与可调强度的眼神锁定。眼神校正与限位按角色保存；面板按用途分组，播放控制常驻顶部，低频设置归入高级选项。详见 [0.4.73 更新说明](docs/releases/v0.4.73.md)。
+播放倒计时默认关闭，开启后人物与镜头先就位，隐藏面板也能看到数字。多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。详见 [0.4.85 更新说明](docs/releases/v0.4.85.md)。
 
 ## 常见问题
 
@@ -45,10 +44,11 @@
 |---|---|
 | 更新提示游戏仍在运行 | 完全退出游戏；若窗口已关闭，在任务管理器确认 `Endfield.exe` 已退出后重试 |
 | 面板无法点击或拖动 | 按住 **Alt**；取消 **锁定窗口**，或点击 **重排窗口** |
-| 换人后不能播放 | 等待角色加载，再尝试 **刷新骨骼** 和重新校准 |
+| 换人后不能播放 | 播放器会等待新角色和衣物就绪；若持续提示恢复中，可先停止并关闭衣物增强重试 |
 | 播放时不能手动摆姿 | 先点 **停止并恢复**；暂停时仍由播放器控制 |
 | 腿部僵硬、动作夸张 | 手动对照 IK 开关，调整动作幅度；见[适配方法](docs/mmd-player.md#动作幅度与-ik) |
 | 衣服或脚底穿模 | 调整[衣物物理与高度](docs/mmd-player.md#衣物物理)，效果取决于角色和动作 |
+| 安装包没有 `assets/cloth` | 衣物资源已内嵌 DLL，无需另行复制；源码包保留此目录 |
 
 遇到异常时先确认版本，再提供复现步骤和 `plugin/poser_log.txt` 中的相关片段。发送日志前请移除个人路径等信息。
 
@@ -69,6 +69,8 @@
 ## 从源码构建
 
 安装 Visual Studio 或 Build Tools 的 **MSVC x64 C++ 工具**和 **Windows SDK**，运行 `build.bat`，成功后运行 **安全安装.bat**。普通用户直接下载安装包即可。
+
+XXMI 联动仅供单独构建：运行 `build.bat -EnableXxmiBridge`，产物输出到 `build/xxmi/plugin/`。默认构建和 Release 包不包含联动；见[单独构建与使用](docs/xxmi-bridge.md)。
 
 需要制作安装包时，构建后运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/package.ps1`。ZIP 输出到 `dist/`，自动包含内置表情校准、安装向导和使用说明。
 

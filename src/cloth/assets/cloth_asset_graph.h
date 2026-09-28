@@ -5,7 +5,7 @@
 namespace eiem_cloth_asset {
 struct Graph {std::vector<std::array<int,3>> faces;std::vector<std::array<int,2>> lines;};
 struct PanelOrder {std::vector<int> order,groups;};
-inline PanelOrder SeparatedPanelOrder(const std::vector<Point> &roots,const std::set<std::pair<int,int>> &pairs,Point origin,Point up,Point side,bool retainSingleLines=false) {
+inline PanelOrder SeparatedPanelOrder(const std::vector<Point> &roots,const std::set<std::pair<int,int>> &pairs,Point origin,Point up,Point side,bool retainSingleLines=false,bool useSourceChainOrder=false) {
   Need(roots.size()>=4&&roots.size()<=12,"auto-separated-panel-root-budget");
   for(auto p:roots)for(auto v:p)Need(std::isfinite(v),"auto-separated-nonfinite-root");
   std::vector<std::vector<int>> adjacent(roots.size());for(auto e:pairs){Need(e.first>=0&&e.second>e.first&&size_t(e.second)<roots.size(),"auto-separated-panel-edge");adjacent[e.first].push_back(e.second);adjacent[e.second].push_back(e.first);}
@@ -17,6 +17,19 @@ inline PanelOrder SeparatedPanelOrder(const std::vector<Point> &roots,const std:
   up=unit(up);const double along=Dot(side,up);for(int k=0;k<3;++k)side[k]-=along*up[k];side=unit(side);const auto forward=Cross(up,side);PanelOrder result;
   constexpr double pi=3.14159265358979323846;
   for(size_t c=0;c<components.size();++c){if(components[c].size()==1){result.order.push_back(components[c][0]);result.groups.push_back(int(c));continue;}std::vector<std::pair<double,int>> angles;
+    if(useSourceChainOrder) {
+      // Some coats fold around roots at different heights. Their actual skin
+      // adjacency is a unique open path even when azimuth sorting crosses it.
+      int start=-1,ends=0;
+      for(int n:components[c]){Need(adjacent[n].size()==1||adjacent[n].size()==2,"auto-separated-source-chain-branched");
+        if(adjacent[n].size()==1){++ends;if(start<0||n<start)start=n;}}
+      Need(ends==2,"auto-separated-source-chain-not-open");
+      std::set<int> seen;int previous=-1,current=start;
+      while(current>=0){Need(seen.insert(current).second,"auto-separated-source-chain-cycle");
+        result.order.push_back(current);result.groups.push_back(int(c));int next=-1;
+        for(int n:adjacent[current])if(n!=previous)next=n;previous=current;current=next;}
+      Need(seen.size()==components[c].size(),"auto-separated-source-chain-incomplete");continue;
+    }
     for(int n:components[c]){const auto p=Sub(roots[n],origin);const double x=Dot(p,side),z=Dot(p,forward);Need(std::isfinite(x)&&std::isfinite(z)&&std::hypot(x,z)>.005,"auto-separated-panel-axis-root");angles.push_back({std::atan2(z,x),n});}
     std::sort(angles.begin(),angles.end());double largest=0;size_t start=0;
     for(size_t k=0;k<angles.size();++k){double gap=angles[(k+1)%angles.size()].first-angles[k].first;if(gap<=0)gap+=2*pi;if(gap>largest){largest=gap;start=(k+1)%angles.size();}}
@@ -34,7 +47,9 @@ inline double Angle(Point a,Point b) {
 }
 inline Graph NativeGraph(const std::vector<Point> &p,const std::vector<ClothBoneAsset> &bones,int columns,bool loop,bool reverse,
     eiem_cloth_graph::OrderContract *contract=nullptr) {
-  Need(p.size()==bones.size()&&p.size()>=4&&p.size()<=128&&columns>=2&&columns<=32,"auto-native-graph-budget");
+  Need(p.size()==bones.size()&&p.size()>=4&&ClothBoneIdentityBudget(bones.size(),
+      size_t(std::count_if(bones.begin(),bones.end(),[](const ClothBoneAsset &b){return b.attribute!=0;})))&&
+      columns>=2&&columns<=32,"auto-native-graph-budget");
   std::set<std::array<int,3>> faces;std::set<std::array<int,2>> adjacent;
   for(int v=0;v<int(p.size());++v) {
     if(!bones[v].attribute)continue;std::vector<int> neighbors;
@@ -82,7 +97,7 @@ inline Graph NativeGraph(const std::vector<Point> &p,const std::vector<ClothBone
   for(const auto &f:faces)if(!removed.count(f)) {
     result.faces.push_back(f);for(int i=0;i<3;++i)for(int j=i+1;j<3;++j)covered.insert({f[i],f[j]});
   }
-  Need(!result.faces.empty()&&result.faces.size()<=256,"auto-native-graph-face-budget");
+  Need(!result.faces.empty()&&result.faces.size()<=ClothBoneMaxFaces,"auto-native-graph-face-budget");
   for(auto e:adjacent)if(!covered.count(e))result.lines.push_back(e);
   if(contract){for(auto &r:choices)if(r.second.size()>1)contract->rules.push_back({r.first,std::move(r.second)});
     Need(eiem_cloth_graph::Valid(*contract),"auto-native-graph-order-contract");}

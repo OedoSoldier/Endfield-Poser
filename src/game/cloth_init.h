@@ -11,7 +11,7 @@ static void ClothInstallWeightWriterMainThread(void *method) {
 }
 static void ClothInstallInputTraceMainThread() {
   static bool attempted = false;
-  if (attempted || !ClothOnMainThread() || !s_cloth.active) return;
+  if (attempted || !ClothOnMainThread() || (!s_cloth.active&&!ClothPrefetchNeedsHooks())) return;
   attempted = true;
   size_t count = 0;
   void **asms = il2cpp_domain_get_assemblies(il2cpp_domain_get(), &count);
@@ -106,6 +106,8 @@ static void ClothInstallInputTraceMainThread() {
 #include "cloth/collision/cloth_contact_job_install.h"
 #include "cloth/collision/cloth_layer_order_install.h"
 #include "cloth/collision/cloth_elastic_install.h"
+#include "cloth/collision/cloth_display_install.h"
+#include "cloth/collision/cloth_contact_finish_install.h"
 #include <bcrypt.h>
 #include "cloth/resources/cloth_bonecloth_catalog_io.h"
 #pragma comment(lib,"bcrypt.lib")
@@ -177,13 +179,15 @@ static bool ClothInitializeHost() {
   if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
       reinterpret_cast<LPCWSTR>(&ClothInitializeHost), &keepAlive)) {
     Log("[CLOTH] module lifetime unavailable; enhancement disabled");
-    s_clothAutoEnabled.store(false);return false;
+    s_clothAutoEnabled.store(false);s_clothSquadAutoEnabled.store(false);return false;
   }
   s_clothWeightHookInstaller=ClothInstallWeightWriterMainThread;
   s_clothInputHookInstaller=ClothInstallInputTraceMainThread;
   s_clothContactJobInstaller=ClothInstallContactJobsMainThread;
   s_clothLayerInstaller=ClothInstallLayerOrderMainThread;
   s_clothElasticInstaller=ClothInstallElasticMainThread;
+  s_clothDisplayInstaller=ClothInstallDisplayMainThread;
+  s_clothFinishInstaller=ClothInstallFinishMainThread;
   ClothLoadPreparedCatalog();
   ClothWarmInstalledSource();
   return true;

@@ -594,6 +594,11 @@ static std::string ClothContactJson(const ClothInputBinding &binding = s_clothIn
       out << ",\"lastRotation\":"; ClothInputJsonArray(out, v.lastRotation, 4);
       out << ",\"lastLocalPosition\":"; ClothInputJsonArray(out, v.lastLocalPosition, 3);
       out << ",\"lastLocalRotation\":"; ClothInputJsonArray(out, v.lastLocalRotation, 4);
+      out << ",\"localInputKnown\":" << (v.localInputKnown?"true":"false");
+      if (v.localInputKnown) {
+        out << ",\"inputLocalPosition\":"; ClothInputJsonArray(out, v.inputLocalPosition, 3);
+        out << ",\"inputLocalRotation\":"; ClothInputJsonArray(out, v.inputLocalRotation, 4);
+      }
       out << ",\"visibleMatrix\":"; ClothInputJsonArray(out, v.visible.matrix, 16);
       out << ",\"localPosition\":"; ClothInputJsonArray(out, v.localPosition, 3);
       out << ",\"localRotation\":"; ClothInputJsonArray(out, v.localRotation, 4);

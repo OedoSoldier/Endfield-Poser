@@ -1,6 +1,7 @@
 #pragma once
 #include "cloth_bonecloth_partner.h"
-static bool ClothBoneRootNames(ClothInstance &i,const ClothBoneProfile &p) {
+static bool ClothBoneRootNames(ClothInstance &i,const ClothBoneProfile &p,void *animator=nullptr) {
+  if(!animator)animator=ClothTarget(s_cloth.animator);
   void *data=nullptr,*list=nullptr,*bbc=ClothTarget(i.ref);
   if(strcmp(i.name,p.component) || !bbc || !ClothInvoke(i.api.serialize,bbc,nullptr,data) ||
       !CollisionField(data,"rootBones","System.Collections.Generic.List<UnityEngine.Transform>",list) ||
@@ -9,7 +10,7 @@ static bool ClothBoneRootNames(ClothInstance &i,const ClothBoneProfile &p) {
     auto t=CollisionItem(list,n,"UnityEngine.Transform"); char name[128]{},parent[128]{};
     CollisionName(t,name,sizeof(name)); CollisionName(CollisionParent(t),parent,sizeof(parent));
     const auto &b=p.bones[p.originalRoots[n]];
-    if(!t || strcmp(name,b.name) || strcmp(parent,b.parentName) || !ClothAnchorUnderOwner(t)) return false;
+    if(!t || strcmp(name,b.name) || strcmp(parent,b.parentName) || !ClothUnderAnimator(t,animator)) return false;
   }
   return true;
 }
@@ -182,11 +183,19 @@ static bool ClothBoneCaptureAttachment(void *bbc,void *process,void *data,void *
 }
 static bool ClothBoneBindingIdentity() {
   auto &s=ClothBoneState();
-  if(s.prebuild.captured&&!ClothBonePrebuildIdentity())return false;
-  if(!s.profile || s.renderers.size()!=size_t(s.profile->rendererCount) || !ClothBoneAttachmentsIdentity() || !ClothBoneOriginalExcludedIdentity()) return false;
-  for(size_t n=0;n<s.renderers.size();++n) if(!ClothBoneRendererCheck(n,false)) return false;
-  for(auto &b:s.bones) if(!ClothTarget(b.bone) || CollisionParent(ClothTarget(b.bone))!=ClothTarget(b.parent)) return false;
-  return ClothBoneBodyBindingIdentity() && ClothBoneSideIdentity();
+  const auto reject=[&](const char *part,int index=-1) {
+    Log("[CLOTH-BONE-BINDING] component=%s actorSlot=%u frame=%d part=%s index=%d identity=0 restoring=1",
+        s.profile?s.profile->component:"unknown",s_clothActorIndex,ClothFrame(),part,index);return false;
+  };
+  if(s.prebuild.captured&&!ClothBonePrebuildIdentity())return reject("prebuild");
+  if(!s.profile || s.renderers.size()!=size_t(s.profile->rendererCount))return reject("profile");
+  if(!ClothBoneAttachmentsIdentity())return reject("attachment");
+  if(!ClothBoneOriginalExcludedIdentity())return reject("excluded");
+  for(size_t n=0;n<s.renderers.size();++n) if(!ClothBoneRendererCheck(n,false)) return reject("renderer",int(n));
+  for(size_t n=0;n<s.bones.size();++n) {auto &b=s.bones[n];
+    if(!ClothTarget(b.bone) || CollisionParent(ClothTarget(b.bone))!=ClothTarget(b.parent))return reject("bone-parent",int(n));}
+  if(!ClothBoneBodyBindingIdentity())return reject("body-collider");
+  return ClothBoneSideIdentity()||reject("side-collider");
 }
 static bool ClothBoneTeamRegistered(void *process,int team) {
   void *manager=nullptr,*dict=nullptr,*registered=nullptr;
@@ -384,7 +393,7 @@ static bool ClothBoneColliderTeamsAbsent(int team) {
 static bool ClothBoneDependencyCollider(const ClothBoneRuntime &consumer,const ClothBoneRuntime &producer,int collider,void *transform) {
   if(!producer.profile || !transform)return false;
   const auto &active=ClothBoneCandidate(producer);
-  if(active.boneCount<1||active.boneCount>128||producer.bones.size()!=size_t(active.boneCount))return false;
+  if(!ClothBoneIdentityBudget(active.boneCount,active.EffectiveCount())||producer.bones.size()!=size_t(active.boneCount))return false;
   bool originalVolume=false;
   if(producer.supportCreated && ClothBonePair(producer,consumer) && consumer.local.recipe) {
     const auto &r=*consumer.local.recipe;
@@ -404,7 +413,7 @@ static bool ClothBoneCapturePeerRoots(const ClothInstance &peer,void *bbc,void *
     const bool authoredInput=ClothBoneOwnershipInputRoot(bbc,root);
     int inputAncestors=0;
     for(size_t b=0;b<s.bones.size()&&b<size_t(s.profile->boneCount);++b) if(!s.profile->Foreign(int(b))&&
-        (p.CandidateAttribute(int(b))==2 || (eiem_cloth_asset::SourceSeparatedCoat(p)&&p.ReleasedFixed(int(b))) || eiem_cloth_asset::SourceForkCoatRelease(p,int(b)) || p.InputAnchor(int(b)) || eiem_cloth_asset::SourceShortRelease(p,int(b)) || eiem_cloth_asset::SourceShortWaist(p,int(b)) || eiem_cloth_asset::SourceApronRelease(p,int(b)))) {
+        (p.CandidateAttribute(int(b))==2 || (eiem_cloth_asset::SourceSeparatedCoat(p)&&p.ReleasedFixed(int(b))) || eiem_cloth_asset::SourceForkCoatRelease(p,int(b)) || eiem_cloth_asset::SourceUpperCoatRelease(p,int(b)) || eiem_cloth_asset::SourceUpperCoatRoot(p,int(b))>=0 || p.InputAnchor(int(b)) || eiem_cloth_asset::SourceShortRelease(p,int(b)) || eiem_cloth_asset::SourceShortWaist(p,int(b)) || eiem_cloth_asset::SourceApronRelease(p,int(b)))) {
       if(ClothBoneOwnershipProved(bbc,int(b)))continue;
       auto t=ClothTarget(s.bones[b].bone);
       void *a=nullptr,*bResult=nullptr,*argsA[]{t},*argsB[]{root};

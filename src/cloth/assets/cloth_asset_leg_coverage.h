@@ -32,10 +32,15 @@ inline double LegCapsuleGap(Point point,const eiem_collision::Capsule &c) {
   double lo=0,hi=1;for(int n=0;n<36;++n){double a=(lo*2+hi)/3,b=(lo+hi*2)/3;if(gap(a)<gap(b))hi=b;else lo=a;}
   return (std::min)({gap(0),gap(1),gap((lo+hi)*.5)});
 }
-inline bool LegCenterlineCovered(const LegRegion &leg,const std::vector<eiem_collision::Capsule> &shapes) {
-  if(shapes.empty())return false;
+inline bool LegCenterlineCovered(const LegRegion &leg,const std::vector<eiem_collision::Capsule> &shapes,
+    const std::vector<eiem_collision::Capsule> &jointShapes={}) {
+  if(shapes.empty()||!std::isfinite(Distance(leg.from,leg.to))||Distance(leg.from,leg.to)<=1e-5)return false;
   for(int n=0;n<=12;++n){const double t=double(n)/12;Point p{};for(int k=0;k<3;++k)p[k]=leg.from[k]*(1-t)+leg.to[k]*t;
-    bool covered=false;for(const auto &c:shapes)covered|=LegCapsuleGap(p,c)<=0;if(!covered)return false;}
+    bool covered=false;for(const auto &c:shapes)covered|=LegCapsuleGap(p,c)<=0;
+    // Adjacent torso contact can cover the hip pivot outside the thigh capsule.
+    // Only actual source volumes count; do not inflate geometry or allow gaps.
+    for(const auto &c:jointShapes)covered|=LegCapsuleGap(p,c)<=0;
+    if(!covered)return false;}
   return true;
 }
 }

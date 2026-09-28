@@ -4,6 +4,7 @@ using ClothWeightWriterFn = void(__fastcall *)(void *, float, void *);
 static ClothWeightWriterFn s_clothOriginalWeightWriter = nullptr;
 static void (*s_clothWeightHookInstaller)(void *) = nullptr;
 static thread_local unsigned s_clothWeightCommandDepth = 0;
+static thread_local eiem_cloth::DeferredWeightWrites s_clothDeferredWeights;
 static bool ClothInvokeWeightCommand(void *method, void *obj, void **args, void *&result) {
   bool ok = false;
   ++s_clothWeightCommandDepth;
@@ -62,7 +63,7 @@ static int ClothWriterFind(void *object) {
       continue;
     void *animator = ClothTarget(s_cloth.animator);
     int scene = 0;
-    if (!animator || animator != g_charAnimator || !ClothScene(animator, scene) ||
+    if (!animator || animator != ClothHostAnimator() || !ClothScene(animator, scene) ||
         scene != s_cloth.scene)
       return -1;
     if (!i.changedWeight || !i.startup.weightSent || !i.weightWriter.ownWriteConfirmed ||
@@ -102,7 +103,7 @@ static void ClothWriterReadback(int index, eiem_cloth::Owner owner, void *obj, u
     const int frame = ClothFrame();
     auto &e = i.weightWriter;
     if (forwarded != requested) {
-      if (!read || !eiem_cloth::WeightAtTarget(actual)) {
+      if (!read || !eiem_cloth::WeightAtTarget(actual) || !eiem_cloth::WeightAtTarget(property)) {
         e.armed = false;
         e.ownWriteConfirmed = false;
         Log("[CLOTH-WRITER-FAILED] session=%llu instance=%d frame=%d caller=%p requested=%g "
@@ -118,7 +119,7 @@ static void ClothWriterReadback(int index, eiem_cloth::Owner owner, void *obj, u
             i.ref.id.instance, frame, reinterpret_cast<void *>(caller), requested, forwarded,
             actual, property, e.intercepted);
       }
-    } else if (read && !e.armed) {
+    } else if (read && std::isfinite(property) && fabsf(property - actual) <= .000001f && !e.armed) {
       const unsigned previous = e.observations;
       const bool armed = e.Observe(frame, caller, requested, actual);
       if (e.observations != previous || armed) {
@@ -141,12 +142,21 @@ static __declspec(noinline) void __fastcall ClothNativeWeightWriter(void *obj, f
   if (!original)
     return;
   std::unique_lock<std::recursive_mutex> poseLock(g_poseMutex, std::try_to_lock);
-  if (!poseLock.owns_lock() || !ClothOnMainThread()) { original(obj, requested, method); return; }
   const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
-  float forwarded = requested;
-  eiem_cloth::Owner owner{};
-  const int index = ClothWriterPrepare(obj, caller, requested, forwarded, owner);
-  original(obj, forwarded, method);
-  if (index >= 0)
-    ClothWriterReadback(index, owner, obj, caller, requested, forwarded);
+  if (!poseLock.owns_lock() || !ClothOnMainThread()) {
+    const bool observe=ClothOnMainThread()&&!s_clothWeightCommandDepth;
+    original(obj,requested,method);
+    if(observe)s_clothDeferredWeights.Record(reinterpret_cast<uintptr_t>(obj),caller,requested,GetTickCount64());
+    return;
+  }
+  for(unsigned actor=0;actor<ClothActorCount;++actor) {
+    if(!ClothActorEngaged(actor))continue;
+    ClothActorScope scope(actor);float forwarded=requested;eiem_cloth::Owner owner{};
+    const int index=ClothWriterPrepare(obj,caller,requested,forwarded,owner);
+    if(index<0)continue;
+    original(obj,forwarded,method);
+    ClothWriterReadback(index,owner,obj,caller,requested,forwarded);
+    return;
+  }
+  original(obj,requested,method);
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "cloth_bonecloth_limits.h"
 #include "../native/cloth_native_math.h"
 #include "cloth_bonecloth_graph_order.h"
 #include <map>
@@ -56,7 +57,7 @@ template<class Profile> inline bool NativeGraphQuadPair(const Profile &p,const s
 }
 template<class Profile> inline bool NativeGraphMatch(const Profile &p,const std::vector<std::array<int,3>> &faces,
     const std::vector<std::array<int,2>> &lines) {
-  if(!p.nativeGraphs||p.nativeGraphCount<1||p.nativeGraphCount>8||(faces.empty()&&!p.runtimeBodyOnly)||faces.size()>256||lines.size()>128)return false;
+  if(!p.nativeGraphs||p.nativeGraphCount<1||p.nativeGraphCount>8||(faces.empty()&&!p.runtimeBodyOnly)||faces.size()>ClothBoneMaxFaces||lines.size()>ClothBoneMaxEdges)return false;
   if(p.runtimeFixedForks)return p.runtimeGenerated&&p.nativeGraphOrder&&eiem_cloth_graph::Match(*p.nativeGraphOrder,faces,lines);
   for(int n=0;n<p.nativeGraphCount;++n) {
     const auto &g=p.nativeGraphs[n];if(g.faceCount!=int(faces.size())||g.lineCount!=int(lines.size()))continue;
@@ -65,7 +66,7 @@ template<class Profile> inline bool NativeGraphMatch(const Profile &p,const std:
     for(int k=0;k<g.lineCount;++k)expectedLines.push_back(g.lines[k]);
     if(eiem_cloth_surface::SameSimplices(faces,expectedFaces)&&eiem_cloth_surface::SameSimplices(lines,expectedLines))return true;
   }
-  if(p.rootCount<3||p.boneCount>128)return false;
+  if(p.rootCount<3||p.boneCount>ClothBoneMaxIdentities)return false;
   using Face=std::array<int,3>;using Cell=std::array<int,4>;
   auto canonical=[](std::vector<Face> fs){for(auto &f:fs)std::sort(f.begin(),f.end());std::sort(fs.begin(),fs.end());return fs;};
   const auto actual=canonical(faces);
@@ -147,7 +148,7 @@ inline bool SameReference(const ReferencePose &a,const ReferencePose &b,double t
 }
 inline bool ConstructionChildren(const std::vector<int> &ids,const std::vector<std::vector<int>> &children,
     const std::vector<int> &excluded,std::vector<std::vector<int>> &out) {
-  if(ids.empty() || ids.size()>129 || children.size()!=ids.size()) return false;
+  if(ids.empty() || ids.size()>ClothBoneMaxParticles+1 || children.size()!=ids.size()) return false;
   auto unique=[](std::vector<int> v) {
     std::sort(v.begin(),v.end()); return std::find(v.begin(),v.end(),0)==v.end() &&
         std::adjacent_find(v.begin(),v.end())==v.end();
@@ -168,7 +169,7 @@ inline bool ConstructionChildren(const std::vector<int> &ids,const std::vector<s
 inline bool ConnectedStrip(const std::vector<std::array<int,2>> &labels,
     const std::vector<std::array<int,3>> &faces,int columns,int depth,bool loop) {
   if(columns<2 || columns>32 || depth<2 || depth>32 || (loop && columns<3) ||
-      columns*depth>128 || labels.size()!=size_t(columns*depth) ||
+      columns*depth>ClothBoneMaxParticles || labels.size()!=size_t(columns*depth) ||
       faces.size()!=size_t((loop?columns:columns-1)*(depth-1)*2)) return false;
   std::vector<bool> seen(labels.size());
   for(auto l:labels) {

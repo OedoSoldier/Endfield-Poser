@@ -30,7 +30,9 @@ struct ClothShoulderDriver {
   const char *prepareStep="not-started";
   int prepareControl=-1;
   bool active=false,stopping=false,attempted=false;
-} static s_clothShoulderDriver;
+};
+static ClothActorBank<ClothShoulderDriver> s_clothShoulderDriverActors;
+#define s_clothShoulderDriver (s_clothShoulderDriverActors.Get())
 static eiem_cloth_shoulder::Pose ClothShoulderPose(Vector3 p,Quaternion q){return {{p.x,p.y,p.z},{q.x,q.y,q.z,q.w}};}
 static bool ClothShoulderRead(void *t,eiem_cloth_shoulder::Pose &p){
   Vector3 v{};Quaternion q{};auto method=s_clothShoulderDriver.getLocal;
@@ -103,7 +105,8 @@ struct ClothShoulderFrameRefs {
   }
 };
 #include "cloth_shoulder_contact_runtime.h"
-static std::unique_ptr<ClothShoulderContactRuntime> s_clothShoulderContact;
+static ClothActorBank<std::unique_ptr<ClothShoulderContactRuntime>> s_clothShoulderContactActors;
+#define s_clothShoulderContact (s_clothShoulderContactActors.Get())
 static void ClothShoulderContactRelease(){
   if(s_clothShoulderContact){ClothShoulderContactClear(*s_clothShoulderContact);s_clothShoulderContact.reset();}
 }
@@ -114,7 +117,7 @@ static void ClothShoulderContactDisable(const char *reason){
 static bool ClothShoulderDriverIdentity(bool audit,std::array<void*,10> *resolved=nullptr) {
   auto &s=s_clothShoulderDriver;ClothShoulderFrameRefs refs;
   auto animator=refs.Get(s.animator),renderer=refs.Get(s.renderer);void *avatar=nullptr,*mesh=nullptr;int scene=0;
-  if(!ClothOwns(s.owner)||!s_clothAutoEnabled.load(std::memory_order_acquire)||!s_cloth.bodyGuard||
+  if(!ClothOwns(s.owner)||!ClothEnhancementSetting().load(std::memory_order_acquire)||!s_cloth.bodyGuard||
       !animator||animator!=refs.Get(s_cloth.animator)||!ClothScene(animator,scene)||scene!=s.scene||scene!=s_cloth.scene||
       !renderer||!ClothInvoke(s.getAvatar,animator,nullptr,avatar)||avatar!=refs.Get(s.avatar)||
       CollisionTransform(animator)!=refs.Get(s.root)||!ClothInvoke(s.getMesh,renderer,nullptr,mesh)||!mesh)return false;

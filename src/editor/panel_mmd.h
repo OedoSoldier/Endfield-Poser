@@ -2,7 +2,9 @@
 #include "config.h"
 #include "game/mmd_player.h"
 #include "editor/panel_mmd_adaptation.h"
+#if POSER_ENABLE_XXMI_BRIDGE
 #include "editor/panel_mod_bridge.h"
+#endif
 #include "imgui.h"
 
 static void DrawMmdFile(const std::string &path) {
@@ -84,6 +86,11 @@ static void DrawMmdCloth() {
   }
   s_collisionInspect.store(true);
   const auto ui = CollisionGetUi();
+  if(g_mmd.timeline.clockHeld) {
+    if(g_clothPlaybackGate.State()==eiem_playback::Preparation::Failed)
+      ImGui::TextWrapped(u8"衣物准备失败，动作与音乐已保持。可停止重试，或关闭服装增强。%s",s_ClothActorRequest.Get().preparationReason);
+    else ImGui::TextWrapped(u8"正在准备衣物，动作与音乐将在就绪后同步开始。");
+  }
   bool enabled = s_clothAutoEnabled.load();
   if (ImGui::Checkbox(u8"服装碰撞增强", &enabled))
     ClothBoneQueueCommand(ui.session, !enabled);
@@ -244,6 +251,15 @@ static void DrawMmdCamera() {
   else if (mmd_camera::request.active && MmdNow() - mmd_camera::lastCallback > 2)
     ImGui::TextWrapped(u8"等待游戏相机更新；尚未确认镜头实际生效。");
 }
+static void DrawMmdCountdownOptions(bool busy) {
+  ImGui::BeginDisabled(busy);
+  ImGui::Checkbox(u8"播放倒计时",&g_mmd.countdownEnabled);
+  if(g_mmd.countdownEnabled) {
+    ImGui::SameLine();ImGui::SetNextItemWidth(120);
+    ImGui::SliderInt(u8"秒##countdown",&g_mmd.countdownSeconds,1,10);
+  }
+  ImGui::EndDisabled();
+}
 static void DrawMmdPanel() {
   auto &m = g_mmd;
   if (!m.show)
@@ -307,6 +323,7 @@ static void DrawMmdPanel() {
       m.timeline.speed = speed;
       MmdSyncAudio();
     }
+    DrawMmdCountdownOptions(m.session.active||s_mmdStartRequest.active);
     ImGui::Checkbox(u8"循环播放", &m.timeline.loop);
     ImGui::SameLine();
     ImGui::Checkbox(u8"原地播放", &m.inPlace);
@@ -566,7 +583,9 @@ static void DrawMmdPanel() {
           ImGui::EndDisabled();
         }
         DrawMmdAdaptationPanel();
+#if POSER_ENABLE_XXMI_BRIDGE
         DrawModBridgePanel();
+#endif
         if (ImGui::CollapsingHeader(u8"诊断与导入报告")) {
           ImGui::TextDisabled(g_frameDiagnostics.gameDriven ? u8"动作更新：跟随游戏帧"
                                                             : u8"动作更新：独立计时（游戏帧回调未触发）");
@@ -578,8 +597,6 @@ static void DrawMmdPanel() {
             ImGui::TextDisabled(u8"帧来源：游戏渲染管线 SRP");
           ImGui::TextDisabled(u8"实际 %.1f Hz / 最长间隔 %.1f ms / 最大耗时 %.1f ms", g_frameDiagnostics.hz,
                               g_frameDiagnostics.maxGapMs, g_frameDiagnostics.maxCostMs);
-          if (g_frameDiagnostics.busy)
-            ImGui::TextDisabled(u8"本秒因编辑占用跳过：%u", g_frameDiagnostics.busy);
           ImGui::Separator();
           if (m.session.active && !m.preview)
             ImGui::Text(u8"腿部 IK：左 %s / 右 %s", m.mapper.output.legIkActive[0] ? u8"开启" : u8"关闭",

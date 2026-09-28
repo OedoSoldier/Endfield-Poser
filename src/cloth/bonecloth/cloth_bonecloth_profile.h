@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include "cloth_bonecloth_limits.h"
 constexpr int ClothBoneMaxSeparatedPanels=6;
 struct ClothBoneAsset {
   const char *name,*parentName;
@@ -92,7 +93,7 @@ struct ClothBoneProfile {
     return false;
   }
   bool ExcludedBranch(int root) const {
-    if(!bones || boneCount<1 || boneCount>128 || root<0 || root>=boneCount || bones[root].attribute!=0) return false;
+    if(!bones || boneCount<1 || boneCount>ClothBoneMaxIdentities || root<0 || root>=boneCount || bones[root].attribute!=0) return false;
     for(int n=0;n<boneCount;++n) {
       if(bones[n].parent < -1 || bones[n].parent>=n) return false;
       for(int p=n;p>=0;p=bones[p].parent)
