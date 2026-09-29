@@ -358,6 +358,26 @@ inline RigDefinition StandardRig(BuiltinRigPreset preset = BuiltinRigPreset::Sta
       r.bones[r.find(s + u8"ひざ")].rest.z = 0;
     }
   }
+  // A thumb is an oblique, out-of-plane chain, not another parallel finger.
+  // Approximate an open hand in palm-length units: forward, index-finger side,
+  // and palm normal. Construct AFTER the A/T preset so changing arm rest pose
+  // cannot flatten the thumb's opposition. Imported PMX geometry is untouched.
+  const Vec3 thumb[] = {{.14f,.20f,-.16f}, {.47f,.40f,-.30f}, {.80f,.61f,-.44f}};
+  for (int side=0;side<2;++side) {
+    const std::string s=side?u8"右":u8"左";
+    const Vec3 wrist=r.bones[r.find(s+u8"手首")].rest;
+    const Vec3 palm=r.bones[r.find(s+u8"中指1")].rest-wrist;
+    const float length=Len(palm);
+    const Vec3 forward=Norm(palm);
+    Vec3 radial=r.bones[r.find(s+u8"人指1")].rest-r.bones[r.find(s+u8"小指1")].rest;
+    radial=Norm(radial-forward*Dot(radial,forward));
+    const Vec3 normal=Cross(forward,radial)*(side?-1.f:1.f);
+    for (int joint=0;joint<3;++joint) {
+      const auto p=thumb[joint];
+      r.bones[r.find(s+u8"親指"+std::to_string(joint))].rest=
+          wrist+(forward*p.x+radial*p.y+normal*p.z)*length;
+    }
+  }
   r.finish();
   return r;
 }

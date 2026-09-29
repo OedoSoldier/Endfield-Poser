@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.4.89**。恢复表情校准基准，改进播放归零和镜头对焦，移除播放倒计时；部分效果仍待游戏内验证。
+**当前预发布版：0.4.91**。修正手臂扭转分配和拇指基准，单人、多人均适用；实际效果仍待游戏内复测。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.89) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.91) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.89-win64.zip`。`source.zip` 和 **Source code** 是源码。
+1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.91-win64.zip`。`source.zip` 和 **Source code** 是源码。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装或更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -36,7 +36,7 @@
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
-多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。详见 [0.4.89 更新说明](docs/releases/v0.4.89.md)。
+多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。详见 [0.4.91 更新说明](docs/releases/v0.4.91.md)。
 
 ## 常见问题
 

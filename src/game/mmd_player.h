@@ -1161,10 +1161,13 @@ static void MmdApplyFrame() {
     if (!p.write[i] || i >= s_allBones.size())
       continue;
     int role = m.profile.bones[i].role;
+    const auto twistRoles=m.mapper.armTwistRoles(int(i));
     bool locked = false;
     for (int h = 0; h < s_humanBoneCount; h++)
-      if (s_humanBones[h].humanBone == role)
-        locked = s_humanBones[h].locked;
+      if (s_humanBones[h].humanBone == role ||
+          (twistRoles[0]>=0 && (s_humanBones[h].humanBone==twistRoles[0] ||
+                               s_humanBones[h].humanBone==twistRoles[1])))
+        locked |= s_humanBones[h].locked;
     if (locked)
       continue;
     void *t = s_allBones[i].transform;
@@ -1265,8 +1268,8 @@ static bool MmdStart() {
   m.timeline.play(MmdNow());
   m.status = u8"播放中";
   MmdApplyFrame();
-  Log("[MMD] playing %s, actor=%p scale=%.5f", m.file.c_str(), g_charAnimator,
-      m.scale);
+  Log("[MMD] playing %s, actor=%p scale=%.5f arm_twist_channels=%zu/4", m.file.c_str(), g_charAnimator,
+      m.scale,m.mapper.armTwistChannels());
   return true;
 }
 static void MmdSeekOrStart(double seconds) {
