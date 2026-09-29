@@ -44,7 +44,6 @@ static void DrawMmdSquadPanel() {
     s.timeline.tick(MmdNow());
     s.timeline.speed = speed;
   }
-  DrawMmdCountdownOptions(s.active||s.pending.active);
   ImGui::Checkbox(u8"全队循环", &s.timeline.loop);
   ImGui::SameLine();
   ImGui::Checkbox(u8"原地播放", &s.inPlace);

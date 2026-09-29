@@ -251,15 +251,6 @@ static void DrawMmdCamera() {
   else if (mmd_camera::request.active && MmdNow() - mmd_camera::lastCallback > 2)
     ImGui::TextWrapped(u8"等待游戏相机更新；尚未确认镜头实际生效。");
 }
-static void DrawMmdCountdownOptions(bool busy) {
-  ImGui::BeginDisabled(busy);
-  ImGui::Checkbox(u8"播放倒计时",&g_mmd.countdownEnabled);
-  if(g_mmd.countdownEnabled) {
-    ImGui::SameLine();ImGui::SetNextItemWidth(120);
-    ImGui::SliderInt(u8"秒##countdown",&g_mmd.countdownSeconds,1,10);
-  }
-  ImGui::EndDisabled();
-}
 static void DrawMmdPanel() {
   auto &m = g_mmd;
   if (!m.show)
@@ -323,7 +314,6 @@ static void DrawMmdPanel() {
       m.timeline.speed = speed;
       MmdSyncAudio();
     }
-    DrawMmdCountdownOptions(m.session.active||s_mmdStartRequest.active);
     ImGui::Checkbox(u8"循环播放", &m.timeline.loop);
     ImGui::SameLine();
     ImGui::Checkbox(u8"原地播放", &m.inPlace);

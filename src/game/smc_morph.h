@@ -153,8 +153,8 @@ static void SMCFaceInvalidate() {
 
 // 中性脸基线（等价于身体的 A-pose 基准）：
 // 不能拿"锁定时游戏正在演的那张脸"当默认值——那样滑条就变成在表情上叠表情。
-// 做法：让 job hook 把 morph 增量整表清零若干帧，游戏会把骨骼写回中性位姿，
-// 这时读到的才是真正的默认值；之后所有表情都是"默认值 + 权重×增量"。
+// 让游戏用零 morph 增量计算后采样实际 Transform；SMC 配置里的骨姿态不能
+// 直接当作 Transform 的局部姿态，否则会破坏角色表情绑定与中性脸。
 
 
 
@@ -943,7 +943,6 @@ static void SMCSnapshotFacePose() {
   }
   s_lastFacePoseValid = true;
 }
-
 // 动态解析 SMC 类字段偏移（优先字段名，失败回退 SafeOff 常量）
 static void ResolveSMCOffsets(void *cls) {
   if (!cls)
@@ -1298,6 +1297,10 @@ static void SMCMorphJobBefore(void *param1) {
 
 static void SMCMotionPublish(const SMCMotionFrame& f) {
   AcquireSRWLockExclusive(&s_motionFaceLock); s_motionFaceMailbox=f; ReleaseSRWLockExclusive(&s_motionFaceLock);
+}
+static void SMCMotionNeutral(void *animator) {
+  SMCMotionFrame frame;frame.active=true;frame.animator=animator;frame.generation=s_faceGeneration;
+  SMCMotionPublish(frame);
 }
 
 static std::vector<mmd_face_controls::Native> SMCManualCatalog() {
@@ -1794,9 +1797,8 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
     }
   }
 
-  // 中性基线：不再"首帧即静息"（那会把锁定时正在演的表情当成默认值）。
-  // 冻结后先记下当前脸，再让 job hook 把 morph 增量清零几帧，游戏会把骨骼写回
-  // 中性位姿，那时抓到的才是默认值；滑条 0 = 中性脸（对应身体的 A-pose 基准）。
+  // Sample the actual zero-morph Transform pose after the native update.
+  // m_baseBonePose is an internal representation, not a local TRS snapshot.
   if (s_faceBoneRefs && !s_faceBonesCaptured && s_bigListCaptured &&
       !s_captureNeutral) {
     s_captureNeutral = true;

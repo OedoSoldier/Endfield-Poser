@@ -539,6 +539,10 @@ static void DrawPoserGuiBody() {
 
 void GameFrameTick() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); GameFrameTickBody(); }
 void DrawPoserGui() {
+  if(!g_overlayPanelsDraw) {
+    g_inputHoverGizmo=false;g_inputDragging=false;TakeLeftClick();
+    return;
+  }
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
@@ -548,19 +552,7 @@ void DrawPoserGui() {
     TakeLeftClick();
     return;
   }
-  if(g_overlayPanelsDraw)DrawPoserGuiBody();
-  else {g_inputHoverGizmo=false;g_inputDragging=false;TakeLeftClick();}
-  const int countdown=g_mmdCountdownDisplay.load(std::memory_order_acquire);
-  if(countdown>0) {
-    char label[16]{};snprintf(label,sizeof(label),"%d",countdown);
-    auto font=ImGui::GetFont();const float size=ImGui::GetFontSize()*4;
-    auto extent=font->CalcTextSizeA(size,FLT_MAX,0,label);
-    auto screen=ImGui::GetIO().DisplaySize;
-    ImVec2 at((screen.x-extent.x)*.5f,screen.y*.25f);
-    auto draw=ImGui::GetForegroundDrawList();
-    draw->AddText(font,size,ImVec2(at.x+3,at.y+3),IM_COL32(0,0,0,220),label);
-    draw->AddText(font,size,at,IM_COL32(255,255,255,255),label);
-  }
+  DrawPoserGuiBody();
 }
 
 // 外部控制（PostMessage WM_APP+90 触发，绕过反作弊输入拦截）：

@@ -64,6 +64,15 @@ struct CameraPose {
   float fov = 30, orthoSize = 1;
   bool perspective = true;
 };
+inline float CameraFocusDistance(const CameraPose &pose) {
+  // Focus is a plane perpendicular to the optical axis, not radial distance.
+  const float depth=Dot(pose.target-pose.position,NormQ(pose.rotation)*Vec3{0,0,1});
+  return std::isfinite(depth)?Clamp(depth,.1f,10000.f):.1f;
+}
+inline float CameraFocalLength(float verticalFov,float sensorHeight) {
+  if(!std::isfinite(verticalFov) || !std::isfinite(sensorHeight) || sensorHeight<=0) return 0;
+  return sensorHeight/(2*std::tan(Clamp(verticalFov,1.f,179.f)*.00872664626f));
+}
 inline Quat CameraOrbit(Vec3 e) {
   // MMD camera orbit: negative Y, then negative X, then negative Z.
   return NormQ(Quat::AxisAngle({0,1,0},-e.y) *
