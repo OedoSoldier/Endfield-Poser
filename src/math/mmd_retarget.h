@@ -294,8 +294,8 @@ class Retargeter {
   std::array<bool, 55> affected_;
   std::vector<Quat> neutralLocal_;
   std::vector<ArmTwistBinding> armTwists_;
-  std::array<bool,2> thumbPalm_{};
-  std::array<Quat,2> thumbBasis_; // Source model space -> target hand rest space.
+  std::array<bool,30> nativeFingers_{};
+  std::array<Quat,2> handBasis_; // Source model space -> target hand rest space.
   Quat basis_;
   void world() {
     for (size_t i = 0; i < target_->bones.size(); i++) {
@@ -343,6 +343,7 @@ public:
   const RigPose &sourcePose() const { return eval_.pose; }
   const std::vector<std::string> &unmapped() const { return eval_.unmapped; }
   size_t armTwistChannels() const { return armTwists_.size(); }
+  size_t nativeFingerCount() const { return std::count(nativeFingers_.begin(),nativeFingers_.end(),true); }
   std::array<int,2> armTwistRoles(int index) const {
     for(const auto &b:armTwists_)for(int helper:b.helpers)
       if(helper==index)return {b.endRole-2,b.endRole};
@@ -397,7 +398,7 @@ public:
       int i = target.roles[r];
       return i >= 0 ? target.bones[i].restPos : Vec3{};
     };
-    thumbPalm_.fill(false);
+    nativeFingers_.fill(false);
     auto descendant = [](const auto &bones, int child, int ancestor) {
       if(child==ancestor)return false;
       while (child >= 0 && child != ancestor) child = bones[child].parent;
@@ -410,22 +411,31 @@ public:
       frame=Basis(x,y,Cross(x,y));return true;
     };
     for(int side=0;side<2;++side) {
-      const int first=24+side*15,hand=17+side,index=27+side*15;
+      const int hand=17+side,index=27+side*15;
       bool complete=true;
-      for(int role:{hand,first,first+1,first+2,index,index+3,index+9})
+      for(int role:{hand,index,index+3,index+9})
         if(sourceRole_[role]<0||target.roles[role]<0||!target.bones[target.roles[role]].calibrated)complete=false;
       if(!complete)continue;
-      // Preserve explicit unrelated role remaps and old two-joint thumbs.
-      for(int role:{first,first+1,first+2,index,index+3,index+9}) {
-        const int parent=role==first+1||role==first+2?role-1:hand;
-        complete=complete&&descendant(source.bones,sourceRole_[role],sourceRole_[parent])&&
-            descendant(target.bones,target.roles[role],target.roles[parent]);
-      }
+      for(int role:{index,index+3,index+9})
+        complete=complete&&descendant(source.bones,sourceRole_[role],sourceRole_[hand])&&
+            descendant(target.bones,target.roles[role],target.roles[hand]);
       Quat sourcePalm,targetPalm;
       if(!complete||!palmFrame(sp(hand),sp(index+3),sp(index),sp(index+9),sourcePalm)||
           !palmFrame(tp(hand),tp(index+3),tp(index),tp(index+9),targetPalm))continue;
-      thumbBasis_[side]=NormQ(Conj(target.bones[target.roles[hand]].restRot)*targetPalm*Conj(sourcePalm));
-      thumbPalm_[side]=true;
+      handBasis_[side]=NormQ(Conj(target.bones[target.roles[hand]].restRot)*targetPalm*Conj(sourcePalm));
+      // Each finger is independent: a missing pinky joint must not disable a
+      // valid thumb, and a legacy two-joint thumb must not invent a third key.
+      for(int finger=0;finger<5;++finger) {
+        const int first=24+side*15+finger*3;bool chain=true;
+        for(int joint=0;joint<3;++joint) {
+          const int role=first+joint,parent=joint?role-1:hand;
+          const int si=sourceRole_[role],ti=target.roles[role];
+          chain=chain&&si>=0&&ti>=0&&target.bones[ti].calibrated&&
+              descendant(source.bones,si,sourceRole_[parent])&&
+              descendant(target.bones,ti,target.roles[parent]);
+          nativeFingers_[role-24]=chain;
+        }
+      }
     }
     basis_ = NormQ(BodyBasis(tp(13), tp(14), tp(0), tp(10)) *
                    Conj(BodyBasis(sp(13), sp(14), sp(0), sp(10))));
@@ -451,16 +461,15 @@ public:
       // even for neutral motion (different heels/toe heights). Transfer the
       // source foot rotation onto the calibrated game foot frame instead.
       const bool foot = r == 5 || r == 6;
-      if (!foot && cr >= 0 && sourceRole_[cr] >= 0 && target.roles[cr] >= 0) {
+      const int side=r>=39?1:0,hand=17+side;
+      const bool nativeFinger=r>=24&&r<=53&&nativeFingers_[r-24];
+      // Keep every character's calibrated native finger zero pose, including
+      // when a PMX is selected. Only the wrist's A/T reference is carried into
+      // the hand; neither a generic nor a PMX opening is added to the fingers.
+      if(nativeFinger)
+        rest=NormQ(alignedRest_[hand]*Conj(target.bones[target.roles[hand]].restRot)*rest);
+      if (!nativeFinger && !foot && cr >= 0 && sourceRole_[cr] >= 0 && target.roles[cr] >= 0) {
         Vec3 a = tp(cr) - tp(r), b = basis_ * (sp(cr) - sp(r));
-        // An oblique thumb needs the full palm frame, not just a world-space
-        // shortest arc. Otherwise an A/T change adds axial roll at rest.
-        const int side=r>=39?1:0,hand=17+side;
-        if ((r==24||r==25||r==39||r==40) && thumbPalm_[side]) {
-          const Quat palm=NormQ(alignedRest_[hand]*Conj(target.bones[target.roles[hand]].restRot));
-          a=palm*a;rest=NormQ(palm*rest);
-          b=alignedRest_[hand]*(thumbBasis_[side]*(sp(cr)-sp(r)));
-        }
         if (Len(a) > 1e-5f && Len(b) > 1e-5f)
           rest = NormQ(Quat::FromTo(a, b) * rest);
       }
@@ -469,7 +478,7 @@ public:
       // creating an artificial backward bend (about 45 degrees for A-pose).
       // Carry the previous phalanx's REST correction through the real chain;
       // the sampled distal rotation is still applied independently below.
-      bool terminalFinger = r >= 24 && r <= 53 && (r - 24) % 3 != 0 &&
+      bool terminalFinger = !nativeFinger && r >= 24 && r <= 53 && (r - 24) % 3 != 0 &&
           (cr < 0 || sourceRole_[cr] < 0 || target.roles[cr] < 0);
       if (terminalFinger && sourceRole_[r - 1] >= 0 && target.roles[r - 1] >= 0) {
         int sourceParent = source.bones[si].parent;
@@ -541,12 +550,12 @@ public:
         Quat desired = NormQ(basis_ * eval_.pose.rotations[sourceRole_[r]] *
                              Conj(basis_) * alignedRest_[r]);
         const int side=r>=39?1:0,hand=17+side;
-        if (((r>=24&&r<=26)||(r>=39&&r<=41)) && thumbPalm_[side]) {
-          // Remove inherited source wrist motion, transfer the authored thumb
-          // delta in palm space, then follow the already retargeted wrist once.
+        if (r>=24&&r<=53&&nativeFingers_[r-24]) {
+          // Transfer finger deltas relative to the source wrist. The native
+          // zero pose follows the mapped wrist once, including unkeyed fingers.
           const Quat relative=NormQ(Conj(eval_.pose.rotations[sourceRole_[hand]])*
               eval_.pose.rotations[sourceRole_[r]]);
-          const Quat basis=thumbBasis_[side];
+          const Quat basis=handBasis_[side];
           desired=NormQ(output.worldRot[target_->roles[hand]]*basis*relative*Conj(basis)*
               Conj(alignedRest_[hand])*alignedRest_[r]);
         }

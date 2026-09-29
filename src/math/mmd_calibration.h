@@ -1,10 +1,57 @@
 #pragma once
 #include "math/mmd_retarget.h"
 #include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
 
 namespace mmd {
+inline constexpr int BodyCalibrationVersion = 4;
+inline bool CurrentBodyCalibration(const nlohmann::json &j) {
+  return j.is_object() && j.contains("version") && j["version"].is_number_integer() &&
+      j["version"] == BodyCalibrationVersion;
+}
+// Only top-level body caches are retired. Face profiles, settings, presets and
+// poses are unrelated. A moved file is already its own durable backup; retries
+// never overwrite an earlier backup or retire a newly generated v4 cache.
+inline size_t ArchiveLegacyBodyCalibrations(const std::filesystem::path &directory) {
+  namespace fs = std::filesystem;
+  if(!fs::exists(directory))return 0;
+  if(fs::is_symlink(fs::symlink_status(directory)))throw std::runtime_error("Body calibration directory is a link");
+  const auto root=fs::canonical(directory);
+  std::vector<fs::path> legacy;
+  for(const auto &entry:fs::directory_iterator(root)) {
+    const auto name=entry.path().filename().wstring();
+    if(name.size()<=9||name.substr(name.size()-9)!=L".rig.json")continue;
+    if(fs::is_symlink(entry.symlink_status()))throw std::runtime_error("Body calibration file is a link");
+    if(!entry.is_regular_file())continue;
+    bool current=false;
+    if(entry.file_size()<=4*1024*1024) {
+      std::ifstream input(entry.path());
+      if(!input)throw std::runtime_error("Cannot read body calibration for backup");
+      current=CurrentBodyCalibration(nlohmann::json::parse(input,nullptr,false));
+    }
+    if(!current)legacy.push_back(entry.path());
+  }
+  if(legacy.empty())return 0;
+  const auto backup=root/"calibration-backups"/"before-native-finger-zero";
+  for(const auto &path:{backup.parent_path(),backup}) {
+    if(fs::is_symlink(fs::symlink_status(path)))throw std::runtime_error("Body calibration backup is a link");
+    fs::create_directory(path);
+  }
+  if(fs::canonical(backup).parent_path().parent_path()!=root)
+    throw std::runtime_error("Body calibration backup escapes its directory");
+  size_t count=0;
+  for(const auto &source:legacy) {
+    auto destination=backup/source.filename();
+    for(size_t suffix=1;fs::exists(destination);++suffix)
+      destination=backup/(source.filename().wstring()+L"."+std::to_wstring(suffix)+L".bak");
+    fs::rename(source,destination);++count;
+  }
+  return count;
+}
 inline RetargetProfile ReadCalibration(const nlohmann::json &j) {
-  if(j.value("version",0)!=3||!j.at("bones").is_array()||j.at("bones").size()>4096)
+  // v3 remains readable for offline inspection, never for runtime fallback.
+  if((j.value("version",0)!=3&&!CurrentBodyCalibration(j))||!j.at("bones").is_array()||j.at("bones").size()>4096)
     throw std::runtime_error("Invalid body calibration");
   RetargetProfile p;p.model=j.at("model");p.fingerprint=j.at("fingerprint");
   for(const auto &v:j.at("bones")) {

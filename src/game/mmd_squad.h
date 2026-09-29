@@ -263,7 +263,7 @@ static void MmdSquadLoadActorCalibration(int slot) {
     }
   }
   a.mapper.bind(s.rig,s.slots[slot].clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
-  Log("[MMD-SQUAD] slot=%d arm_twist_channels=%zu/4",slot+1,a.mapper.armTwistChannels());
+  Log("[MMD-SQUAD] slot=%d arm_twist_channels=%zu/4 native_fingers=%zu/30",slot+1,a.mapper.armTwistChannels(),a.mapper.nativeFingerCount());
   a.scale=(s.autoScale?a.mapper.suggestedScale:s.scale)*s.slots[slot].scale;
   for(const auto &c:a.saved.components) {
     const auto name=il2cpp_class_get_name(il2cpp_object_get_class(c.component));

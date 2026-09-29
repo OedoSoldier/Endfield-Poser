@@ -142,6 +142,19 @@ static std::filesystem::path MmdConfigDirectory() {
   GetModuleFileNameW(GetModuleHandleW(L"poser.dll"), p, 32768);
   return std::filesystem::path(p).parent_path() / L"mmd";
 }
+static bool MmdMigrateBodyCalibrations() {
+  static bool attempted=false,ready=false;
+  if(attempted)return ready;
+  attempted=true;
+  try {
+    const size_t archived=mmd::ArchiveLegacyBodyCalibrations(MmdConfigDirectory());
+    if(archived)Log("[MMD] retired %zu legacy body calibrations; automatic Avatar calibration will be used",archived);
+    ready=true;
+  } catch(const std::exception &e) {
+    Log("[MMD] body calibration backup failed; old caches disabled, saving deferred until restart: %s",e.what());
+  }
+  return ready;
+}
 static mmd::RetargetProfile MmdCurrentProfile() {
   mmd::RetargetProfile p;
   p.model = CurrentCharModelKey();
@@ -168,8 +181,9 @@ static bool MmdBindCalibration(mmd::RetargetProfile &profile) {
 }
 static uint64_t s_mmdCalibrationSerial=0;
 static void MmdSaveCalibration(const mmd::RetargetProfile &p) {
+  if(!MmdMigrateBodyCalibrations())throw std::runtime_error(u8"旧身体校准备份失败，请检查目录权限后重启；本次仍使用自动校准");
   using nlohmann::json;
-  json j = {{"version", 3},
+  json j = {{"version", mmd::BodyCalibrationVersion},
             {"model", p.model},
             {"fingerprint", p.fingerprint},
             {"bones", json::array()}};
@@ -209,18 +223,20 @@ static void MmdSaveCalibration(const mmd::RetargetProfile &p) {
   ++s_mmdCalibrationSerial;
 }
 static bool MmdLoadCalibration(mmd::RetargetProfile &p) {
+  if(!MmdMigrateBodyCalibrations())return false;
   auto load=[&](const std::filesystem::path &path) {
     try {
       if(std::filesystem::file_size(path)>4*1024*1024)return false;
       std::ifstream f(path);nlohmann::json j;f>>j;
+      if(!mmd::CurrentBodyCalibration(j))return false;
       if(j.value("model","")!=p.model)return false;
       return mmd::RestoreBodyCalibration(mmd::ReadCalibration(j),p);
     }catch(...){return false;}
   };
   const auto directory=MmdConfigDirectory(),exact=directory/(p.fingerprint+".rig.json");
   if(load(exact))return true;
-  // Preserve version-3 user files. A weapon or effect change can alter the old
-  // whole-hierarchy fingerprint while the actual calibrated body is unchanged.
+  // Only use calibrations generated after the native finger zero reset. Props
+  // can change the hierarchy fingerprint without changing the calibrated body.
   try {
     std::vector<std::pair<std::filesystem::file_time_type,std::filesystem::path>> candidates;
     for(const auto &entry:std::filesystem::directory_iterator(directory)) {
@@ -1268,8 +1284,8 @@ static bool MmdStart() {
   m.timeline.play(MmdNow());
   m.status = u8"播放中";
   MmdApplyFrame();
-  Log("[MMD] playing %s, actor=%p scale=%.5f arm_twist_channels=%zu/4", m.file.c_str(), g_charAnimator,
-      m.scale,m.mapper.armTwistChannels());
+  Log("[MMD] playing %s, actor=%p scale=%.5f arm_twist_channels=%zu/4 native_fingers=%zu/30", m.file.c_str(), g_charAnimator,
+      m.scale,m.mapper.armTwistChannels(),m.mapper.nativeFingerCount());
   return true;
 }
 static void MmdSeekOrStart(double seconds) {
@@ -1282,6 +1298,7 @@ static void MmdSeekOrStart(double seconds) {
 static void MmdTick() {
   try {
     auto &m = g_mmd;
+    MmdMigrateBodyCalibrations();
     MmdLoadFaceSettings();
     MmdPollCharacterFaces();
     MmdPollLoad();

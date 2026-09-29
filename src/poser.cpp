@@ -177,7 +177,7 @@ static void RebuildCapturedCharacter() {
     if (changed)
       RestoreCharStateOnSwitch();
     g_mmd.status = u8"角色骨架已就绪，可校准或播放已导入的动作";
-    g_mmd.calibrationStatus = u8"当前角色待校准；播放时优先读取该角色保存的校准";
+    g_mmd.calibrationStatus = u8"当前角色待校准；播放时自动读取原生 Avatar 骨架";
   }
 }
 static void UpdateOverlayCursor() {
