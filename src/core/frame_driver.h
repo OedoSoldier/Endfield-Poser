@@ -20,6 +20,7 @@ static std::atomic<DWORD> g_frameGameThreadId{0};
 static HANDLE g_frameWorker = nullptr, g_frameStop = nullptr;
 static void *g_frameCountMethod = nullptr;
 static poser::FrameCadence g_frameCadence;
+static poser::FrameCadence g_maintenanceCadence;
 struct FrameDiagnostics {
   double hz = 0, maxGapMs = 0, maxCostMs = 0;
   bool gameDriven = false;
@@ -54,9 +55,21 @@ static bool RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
   // Attach only during an actual fallback tick, after acquiring the lock.
   // Never keep a managed thread alive while the worker sleeps or waits.
   if (!fromGame && !g_frameCadence.fallbackDue(now,g_lastRenderTick.load())) return false;
+  const bool maintenanceDue=fromGame && g_gameMaintenance &&
+      (frame>=0 ? g_maintenanceCadence.gameDue(frame)
+                : g_maintenanceCadence.fallbackDue(now,-1e30));
+  const bool tickDue=g_frameRunning.load() &&
+      (fromGame ? g_frameCadence.gameDue(frame)
+                : g_frameCadence.fallbackDue(now,g_lastRenderTick.load()));
+  if(!maintenanceDue && !tickDue)return false;
   RuntimeThreadScope runtime;
   if (!runtime.ready) return false;
-  if (fromGame && g_gameMaintenance) g_gameMaintenance();
+  // Character, camera-manager and render callbacks can all arrive in one
+  // frame. Deduplicate release/prefetch work too, including while disabled.
+  if (maintenanceDue) {
+    g_maintenanceCadence.stepped(now,frame);
+    g_gameMaintenance();
+  }
   if (!g_frameRunning.load()) return false;
   if (fromGame ? !g_frameCadence.gameDue(frame)
                : !g_frameCadence.fallbackDue(now, g_lastRenderTick.load())) return false;
@@ -227,6 +240,7 @@ static void StartGameFrameDriver() {
     return;
   }
   g_frameCadence = {};
+  g_maintenanceCadence = {};
   g_lastRenderTick.store(-1e30);
   g_frameRunning.store(true);
   g_frameWorker = CreateThread(nullptr, 0, FrameWorker, nullptr, 0, nullptr);

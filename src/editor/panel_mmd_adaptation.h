@@ -67,6 +67,7 @@ static void DrawMmdAdaptationPanel() {
   if (ImGui::TreeNode(u8"准标准骨补全")) {
     if(ImGui::SmallButton(u8"全部开启")) {
       auto next=mmd::DefaultRigAdaptation();next.extra=draft.extra;next.tracks=draft.tracks;next.roles=draft.roles;
+      next.characterThumbs=draft.characterThumbs;
       draft=std::move(next);dirty=true;
     }
     ImGui::TextDisabled(u8"默认全部开启，可单独关闭。载入预设时使用预设设置。");

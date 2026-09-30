@@ -21,6 +21,7 @@ struct MmdSquadActor {
   std::vector<AllBone> bones;
   mmd::RetargetProfile profile;
   mmd::Retargeter mapper;
+  std::string thumbStatus;
   std::shared_ptr<SMCActorState> face;
   bool editorFace=false;
   std::map<std::string,MmdMorphMapping> morphs;
@@ -262,7 +263,9 @@ static void MmdSquadLoadActorCalibration(int slot) {
       throw std::runtime_error(u8"第 "+std::to_string(slot+1)+u8" 位无法自动适配；请切到该角色，在单人面板完成备用 T 姿校准。");
     }
   }
+  if(!s.slots[slot].clip.bones.empty())a.thumbStatus=MmdPrepareThumbs(a.profile,g_mmd.adaptation.characterThumbs);
   a.mapper.bind(s.rig,s.slots[slot].clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
+  if(!a.thumbStatus.empty())Log("[MMD-THUMB] slot=%d %s",slot+1,a.thumbStatus.c_str());
   Log("[MMD-SQUAD] slot=%d arm_twist_channels=%zu/4 native_fingers=%zu/30",slot+1,a.mapper.armTwistChannels(),a.mapper.nativeFingerCount());
   a.scale=(s.autoScale?a.mapper.suggestedScale:s.scale)*s.slots[slot].scale;
   for(const auto &c:a.saved.components) {

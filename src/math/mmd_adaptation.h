@@ -59,6 +59,7 @@ struct ExtraBone {
   bool grantRotation = false, grantPosition = false;
 };
 struct RigAdaptation {
+  bool characterThumbs = true;
   bool controlRoot = false, upperBody1 = false, waistCancel = false,
        legD = false;
   bool parentRoot = false, groove = false, upperBody2 = false,
@@ -333,6 +334,7 @@ inline nlohmann::json AdaptationJson(const RigAdaptation &a, int sourcePreset,
                                      IkMode ik) {
   ValidateAdaptation(a);
   nlohmann::json j = {{"version", 1},
+                      {"character_thumbs", a.characterThumbs},
                       {"source_pose", sourcePreset},
                       {"ik_mode", int(ik)},
                       {"control_root", a.controlRoot},
@@ -371,6 +373,7 @@ inline RigAdaptation ReadAdaptation(const nlohmann::json &j, int &sourcePreset,
   if (pose < 0 || pose > 1 || mode < 0 || mode > 2)
     throw std::runtime_error(u8"无效的姿态或 IK 模式");
   RigAdaptation a;
+  a.characterThumbs = j.value("character_thumbs", true);
   a.controlRoot = j.value("control_root", false);
   a.upperBody1 = j.value("upper_body_1", false);
   a.waistCancel = j.value("waist_cancel", false);

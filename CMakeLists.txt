@@ -58,6 +58,7 @@ if(WIN32)
     src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h src/math/eye_gaze_profile.h
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
     src/game/mmd_runtime_api.h src/game/mmd_avatar.h src/math/mmd_avatar.h
+    src/math/mmd_thumb.h resources/character-thumbs/builtin.h
     src/game/mmd_terrain.h src/math/mmd_terrain.h
     src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h src/cloth/core/cloth_actor_context.h
     src/math/cloth_playback_start.h src/cloth/bonecloth/cloth_bonecloth_limits.h

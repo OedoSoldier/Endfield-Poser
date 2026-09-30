@@ -19,6 +19,9 @@ inline bool CalibrateAvatar(RetargetProfile &profile,const AvatarSkeleton &skele
   auto hash=[&](const void *v,size_t size){auto bytes=(const unsigned char*)v;while(size--){fingerprint^=*bytes++;fingerprint*=1099511628211ull;}};
   for(size_t i=0;i<result.bones.size();++i) {
     auto &b=result.bones[i];
+    // Optional nodes may retain a sampled/manual pose, but are not an Avatar
+    // reference unless their entire ancestor path is usable on this attempt.
+    b.calibrated=false;
     if(b.parent<0){b.localPos={};b.localRot={};b.localScale={1,1,1};b.calibrated=true;continue;}
     auto found=skeleton.find(b.name);
     if(found==skeleton.end()||found->second.size()!=1) {
@@ -26,9 +29,15 @@ inline bool CalibrateAvatar(RetargetProfile &profile,const AvatarSkeleton &skele
       continue;
     }
     const auto &a=found->second.front();
+    bool finite=true;
     for(float f:{a.position.x,a.position.y,a.position.z,a.rotation.x,a.rotation.y,a.rotation.z,a.rotation.w,a.scale.x,a.scale.y,a.scale.z})
-      if(!std::isfinite(f)){error="Non-finite Avatar bone: "+b.name;return false;}
-    if(QuatLen(a.rotation)<.5f||a.scale.x<=1e-5f||a.scale.y<=1e-5f||a.scale.z<=1e-5f){error="Degenerate Avatar bone: "+b.name;return false;}
+      if(!std::isfinite(f))finite=false;
+    const bool usable=finite&&QuatLen(a.rotation)>=.5f&&a.scale.x>1e-5f&&a.scale.y>1e-5f&&a.scale.z>1e-5f;
+    if(!usable) {
+      if(required[i]){error=std::string(finite?"Degenerate Avatar bone: ":"Non-finite Avatar bone: ")+b.name;return false;}
+      continue;
+    }
+    if(!result.bones[b.parent].calibrated)continue;
     b.localPos=a.position;b.localRot=NormQ(a.rotation);b.localScale=a.scale;b.calibrated=true;
     if(required[i]) {
       hash(b.name.data(),b.name.size());hash(&b.role,sizeof(b.role));

@@ -6,6 +6,7 @@
 #include "game/smc_morph.h"
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
+#include "math/mmd_thumb.h"
 #include "math/mmd_calibration.h"
 #include "game/mmd_avatar.h"
 #include "game/mmd_terrain.h"
@@ -177,7 +178,14 @@ static mmd::RetargetProfile MmdCurrentProfile() {
 }
 static std::string s_mmdCalibrationDetail;
 static bool MmdBindCalibration(mmd::RetargetProfile &profile) {
-  return mmd_avatar::Calibrate(g_charAnimator,profile,s_mmdCalibrationDetail);
+  const bool ready=mmd_avatar::Calibrate(g_charAnimator,profile,s_mmdCalibrationDetail);
+  // Keep the original failure visible even when a saved manual pose succeeds.
+  // Suppress repeated identical failures from repeated play/calibration clicks.
+  static std::string lastFailure;
+  const auto failure=ready?std::string{}:profile.model+": "+s_mmdCalibrationDetail;
+  if(!ready&&failure!=lastFailure)Log("[MMD-AVATAR] calibration failed: %s",failure.c_str());
+  lastFailure=failure;
+  return ready;
 }
 static uint64_t s_mmdCalibrationSerial=0;
 static void MmdSaveCalibration(const mmd::RetargetProfile &p) {
@@ -366,6 +374,8 @@ struct MmdPlayer {
   mmd::IkMode ikMode = mmd::IkMode::FollowMotion;
   mmd::MotionAmplitude amplitude;
   mmd::RetargetProfile profile;
+  mmd::RetargetProfile playbackProfile;
+  std::string thumbStatus;
   mmd::Retargeter mapper;
   mmd::Timeline timeline;
   mmd::AudioPlayer audio;
@@ -971,6 +981,16 @@ static bool MmdPrepareProfile() {
   m.profileAnimator = g_charAnimator;
   return true;
 }
+static std::string MmdPrepareThumbs(mmd::RetargetProfile &profile,bool enabled) {
+  if(!enabled)return u8"拇指：游戏原生基准";
+  const auto *reference=mmd::FindThumbReference(character_face::ModelKey(profile.model));
+  if(!reference)return u8"拇指：无对应 PMX 校准，使用原生基准";
+  const auto result=mmd::CalibrateThumbs(profile,reference);
+  if(!result.joints)return u8"拇指：骨架不兼容，使用原生基准";
+  auto status=std::string(u8"拇指：")+reference->label+u8" PMX（"+std::to_string(result.joints)+u8"/6 节）";
+  if(result.joints<6)status+=u8"；其余关节保留原生相对姿态";
+  return status;
+}
 static void MmdCaptureSession() {
   auto &m = g_mmd;
   auto &s = m.session;
@@ -1146,6 +1166,8 @@ static void MmdCharacterChanging(void *nextEntity=nullptr) {
   m.profileRevision = -1;
   m.profileAnimator = nullptr;
   m.profile = mmd::RetargetProfile{};
+  m.playbackProfile = mmd::RetargetProfile{};
+  m.thumbStatus.clear();
   m.calibrationStatus = u8"角色已切换，等待新角色骨架；原角色校准仍保存在文件中";
   m.status = u8"切换角色已停止动作，等待新角色骨架";
 }
@@ -1273,8 +1295,10 @@ static bool MmdStart() {
     m.profileRevision = -1;
   } else if (!MmdPrepareProfile())
     return false;
+  m.playbackProfile=m.profile;
+  m.thumbStatus=m.clip.bones.empty()?std::string{}:MmdPrepareThumbs(m.playbackProfile,m.adaptation.characterThumbs);
   if (!m.clip.bones.empty() || !m.clip.morphs.empty())
-    m.mapper.bind(m.rig, m.clip, m.profile, mmd::AdaptedRoles(m.adaptation), m.adaptation.tracks);
+    m.mapper.bind(m.rig, m.clip, m.playbackProfile, mmd::AdaptedRoles(m.adaptation), m.adaptation.tracks);
   if (!m.clip.bones.empty() && m.autoScale)
     m.scale = m.mapper.suggestedScale;
   MmdCaptureSession();
@@ -1286,6 +1310,7 @@ static bool MmdStart() {
   MmdApplyFrame();
   Log("[MMD] playing %s, actor=%p scale=%.5f arm_twist_channels=%zu/4 native_fingers=%zu/30", m.file.c_str(), g_charAnimator,
       m.scale,m.mapper.armTwistChannels(),m.mapper.nativeFingerCount());
+  if(!m.thumbStatus.empty())Log("[MMD-THUMB] %s",m.thumbStatus.c_str());
   return true;
 }
 static void MmdSeekOrStart(double seconds) {

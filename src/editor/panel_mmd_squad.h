@@ -83,6 +83,8 @@ static void DrawMmdSquadPanel() {
         ImGui::SameLine();
         ImGui::Text(u8"第 %d 位：%s", i + 1, slot.member.empty() ? u8"待读取" : slot.member.c_str());
         ImGui::TextWrapped("%s", slot.calibration.c_str());
+        if(s.actors[i]&&!s.actors[i]->thumbStatus.empty())
+          ImGui::TextWrapped("%s",s.actors[i]->thumbStatus.c_str());
         if (ImGui::Button(u8"选择动作"))
           MmdSquadLoad(i);
         ImGui::SameLine();

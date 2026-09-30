@@ -38,6 +38,10 @@ void Log(const char *fmt, ...) {
   va_end(args);
   if (len < 0)
     len = 0;
+  // vsnprintf returns the required length, which may exceed the buffer.
+  // Leave room for the newline even when a diagnostic was truncated.
+  if (len > int(sizeof(buf) - 3))
+    len = int(sizeof(buf) - 3);
   buf[len] = '\n';
   len++;
   DWORD written;
