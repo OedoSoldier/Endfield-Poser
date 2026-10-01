@@ -5,6 +5,7 @@
 #include <set>
 
 namespace mmd {
+enum class BuiltinRigPreset { StandardMmd, ExtractedTPose };
 struct IkLink {
   int bone = -1;
   bool limited = false;
@@ -26,6 +27,7 @@ struct RigBone {
 struct RigDefinition {
   std::string name;
   bool builtin = false;
+  BuiltinRigPreset builtinPreset = BuiltinRigPreset::StandardMmd;
   std::vector<RigBone> bones;
   std::vector<int> order;
   std::map<std::string, int> names;
@@ -269,12 +271,12 @@ inline const std::array<const char *, 55> &RoleNames() {
        u8"右薬指3",  u8"右小指1", u8"右小指2", u8"右小指3", u8"上半身3"}};
   return n;
 }
-enum class BuiltinRigPreset { StandardMmd, ExtractedTPose };
 // The source rest pose is selected manually; a VMD contains no rest skeleton.
 inline RigDefinition StandardRig(BuiltinRigPreset preset = BuiltinRigPreset::StandardMmd) {
   RigDefinition r;
   r.name = "Standard MMD";
   r.builtin = true;
+  r.builtinPreset = preset;
   auto add = [&](std::string name, std::string parent, Vec3 p) {
     RigBone b;
     b.name = Name(name);

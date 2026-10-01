@@ -5,6 +5,7 @@ namespace mmd {
 struct ThumbHandReference {
   Vec3 root, directions[3]; // In the character PMX's normalized palm frame.
   float lengths[3];
+  Vec3 palmForward, palmAcross; // Rest palm axes in PMX/VMD model coordinates.
 };
 struct ThumbReference {
   const char *key, *label, *sourceHash;
@@ -40,6 +41,7 @@ inline bool ThumbPalm(const RetargetProfile &p,int side,Quat &frame,float &lengt
 // calibration, or the correction would be applied again on subsequent starts.
 inline ThumbCalibration CalibrateThumbs(RetargetProfile &profile,const ThumbReference *reference) {
   ThumbCalibration result;result.reference=reference;
+  profile.thumbSourcePalmValid.fill(false);
   if(!reference||!profile.valid())return result;
   for(int side=0;side<2;++side) {
     auto candidate=profile;Quat palm;float palmLength=0;
@@ -86,7 +88,14 @@ inline ThumbCalibration CalibrateThumbs(RetargetProfile &profile,const ThumbRefe
       bone.localRot=NormQ(Conj(candidate.bones[bone.parent].restRot)*world);
       candidate.globals();++corrected;
     }
-    if(valid) {profile=std::move(candidate);result.joints+=corrected;result.sides[side]=true;}
+    if(valid) {
+      Quat sourcePalm;
+      if(PalmBasis({},ref.palmForward,ref.palmAcross,{},sourcePalm)) {
+        candidate.thumbSourcePalm[side]=sourcePalm;
+        candidate.thumbSourcePalmValid[side]=true;
+      }
+      profile=std::move(candidate);result.joints+=corrected;result.sides[side]=true;
+    }
   }
   return result;
 }

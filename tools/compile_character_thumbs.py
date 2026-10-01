@@ -63,7 +63,8 @@ def derive(model):
         root = frame.T @ (points[0] - pos(wrist)) / scale
         if not np.all(np.isfinite(root)) or np.linalg.norm(root) > 2 or any(v < .03 or v > 2 for v in lengths[:2]) or lengths[2] > 2:
             raise ValueError('Unusable normalized thumb dimensions')
-        sides.append(dict(root=root.tolist(), directions=[d.tolist() for d in directions], lengths=lengths))
+        sides.append(dict(root=root.tolist(), directions=[d.tolist() for d in directions], lengths=lengths,
+                          palm_forward=forward.tolist(), palm_across=across.tolist()))
     return sides
 
 
@@ -101,7 +102,8 @@ def emit(records):
         text = lambda s: 'u8' + json.dumps(s, ensure_ascii=False)
         hands = []
         for h in row['hands']:
-            hands.append('{' + vector(h['root']) + ',{' + ','.join(vector(v) for v in h['directions']) + '},' + vector(h['lengths']) + '}')
+            hands.append('{' + vector(h['root']) + ',{' + ','.join(vector(v) for v in h['directions']) + '},' +
+                         vector(h['lengths']) + ',' + vector(h['palm_forward']) + ',' + vector(h['palm_across']) + '}')
         lines.append('  {' + ','.join(text(row[k]) for k in ('model', 'label', 'source_hash')) + ',{' + ','.join(hands) + '}},')
     lines += ['};', '} // namespace mmd', '']
     return '\n'.join(lines)
@@ -136,7 +138,7 @@ def main():
     for row in records:
         old = unique.get(row['model'])
         if old:
-            flatten = lambda r: np.concatenate([np.ravel(h[k]) for h in r['hands'] for k in ('root', 'directions', 'lengths')])
+            flatten = lambda r: np.concatenate([np.ravel(h[k]) for h in r['hands'] for k in ('root', 'directions', 'lengths', 'palm_forward', 'palm_across')])
             if not np.allclose(flatten(old), flatten(row), rtol=.01, atol=.005):
                 ambiguous.add(row['model'])
         else:
