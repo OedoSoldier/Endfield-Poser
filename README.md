@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.4.95**。修复陈千语等角色自动校准失败的问题，新增按角色 PMX 调整拇指归零手型，并减少空闲时重复更新的开销；实际效果仍待游戏内复测。
+**当前预发布版：0.5.0**。新增单人／多人动作校准、关节 XYZ 角度偏移与逐轴左右联动；支持滑条双击输入、分辨率缩放，并改进眼神跟踪。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.4.95/Endfield-Poser-v0.4.95-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.0/Endfield-Poser-v0.5.0-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 下载 **Endfield-Poser-v0.4.95-win64.zip** 安装包。
+1. 下载 **Endfield-Poser-v0.5.0-win64.zip** 安装包。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装或更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -25,6 +25,7 @@
 |---|---|
 | 手工摆姿 | 按 **P** 冻结，选择骨骼并调整，在姿态库保存 |
 | 播放动作 | 勾选 **MMD 播放器**，打开 VMD 后播放，自动适配当前角色 |
+| 手动适配动作 | **动作 → 动作校准…** 调整四肢伸展、手脚落点、关节比例及 XYZ 角度偏移；多人可按第 1–4 位独立设置、保存预设，无需源 PMX |
 | 小队同步播放 | 在独立的 **MMD 多人播放器** 按第 1–4 位分配动作，支持一键共用动作，以当前操控角色的起点为共同原点 |
 | 手动调整表情 | 在 **表情** 面板切换 **MMD 模式**，冻结角色后调节中文滑条 |
 | 控制眼睛朝向 | 在 **表情 → 眼睛朝向** 调整方向，或开启 **MMD 播放时锁定摄像机** |
@@ -38,12 +39,13 @@
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
-多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.4.95 更新说明](docs/releases/v0.4.95.md)。
+多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.0 更新说明](docs/releases/v0.5.0.md)。
 
 ## 常见问题
 
 | 问题 | 处理方法 |
 |---|---|
+| 面板过小或过大 | 在主面板 **界面缩放** 调整手动倍率，默认按 1080p 基准自动适配分辨率 |
 | 更新提示游戏仍在运行 | 完全退出游戏；若窗口已关闭，在任务管理器确认 `Endfield.exe` 已退出后重试 |
 | 面板无法点击或拖动 | 按住 **Alt**；取消 **锁定窗口**，或点击 **重排窗口** |
 | 换人后不能播放 | 播放器会等待新角色和衣物就绪；若持续提示恢复中，可先停止并关闭衣物增强重试 |
@@ -64,6 +66,7 @@
 | 姿态库 | `plugin/poses/` |
 | 角色表情校准 | `plugin/mmd/character-faces/` |
 | 身体校准、表情设置、适配预设 | `plugin/mmd/` |
+| 动作校准预设 | `plugin/mmd/motion-presets/` |
 | 角色与镜头构图预设 | `plugin/mmd/camera-settings.json` |
 | 逐角色眼神校正与限位 | `plugin/mmd/eye-gaze.json` |
 | 安装备份 | `plugin/poser-backups/` |

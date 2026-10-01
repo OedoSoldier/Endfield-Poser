@@ -2,6 +2,7 @@
 #include "core/build_features.h"
 #include "game/char_state.h"
 #include "game/mmd_io.h"
+#include "game/mmd_dialog_history.h"
 #include "game/mmd_audio.h"
 #include "game/smc_morph.h"
 #include "math/mmd_props.h"
@@ -337,6 +338,7 @@ struct MmdMorphMapping {
 };
 struct MmdLoadResult {
   int kind = 0;
+  int motionTarget = 0; // Immutable preset destination: 0 shared, 1-4 squad slots.
   bool cancelled = false;
   std::string file, error;
   mmd::MotionClip clip;
@@ -347,6 +349,12 @@ struct MmdLoadResult {
 struct MmdFaceLibraryResult {
   std::vector<std::shared_ptr<const character_face::Profile>> profiles;
   std::string error;
+};
+struct MmdMotionOverride {
+  bool independent = false, initialized = false;
+  mmd::MotionCalibration motion;
+  mmd::MotionAmplitude amplitude;
+  std::string file;
 };
 struct MmdPlayer {
   bool faceSettingsLoaded=false,faceLibraryStarted=false,faceLibraryLoading=false;
@@ -373,6 +381,11 @@ struct MmdPlayer {
   int sourcePreset = 0; // 0: A-pose, 1: extracted T-pose; manual selection
   mmd::IkMode ikMode = mmd::IkMode::FollowMotion;
   mmd::MotionAmplitude amplitude;
+  mmd::MotionCalibration motionCalibration;
+  bool showMotionCalibration = false;
+  std::string motionCalibrationFile;
+  std::array<MmdMotionOverride, 4> squadMotion;
+  int motionCalibrationTarget = 0; // Editor selection, never a loader destination.
   mmd::RetargetProfile profile;
   mmd::RetargetProfile playbackProfile;
   std::string thumbStatus;
@@ -401,6 +414,36 @@ struct MmdPlayer {
 // by the CRT under the DLL loader lock after Windows has stopped other threads.
 // Normal plugin disable still performs MmdStop and joins imports explicitly.
 static MmdPlayer &g_mmd = *new MmdPlayer;
+struct MmdMotionView {
+  mmd::MotionCalibration &motion;
+  mmd::MotionAmplitude &amplitude;
+  std::string &file;
+};
+static MmdMotionView MmdMotionSettings(int target, bool effective = true) {
+  auto &m = g_mmd;
+  if (target >= 1 && target <= 4) {
+    auto &slot = m.squadMotion[target - 1];
+    if (!effective || slot.independent) return {slot.motion, slot.amplitude, slot.file};
+  }
+  return {m.motionCalibration, m.amplitude, m.motionCalibrationFile};
+}
+static void MmdCopySharedMotion(int target) {
+  if (target < 1 || target > 4) return;
+  auto &slot = g_mmd.squadMotion[target - 1];
+  slot.motion = g_mmd.motionCalibration; slot.amplitude = g_mmd.amplitude;
+  slot.file = g_mmd.motionCalibrationFile;
+  slot.independent = slot.initialized = true;
+}
+static void MmdSetIndependentMotion(int target, bool enabled) {
+  if (target < 1 || target > 4) return;
+  auto &slot = g_mmd.squadMotion[target - 1];
+  if (enabled && !slot.initialized) MmdCopySharedMotion(target);
+  slot.independent = enabled;
+}
+static void MmdOpenMotionCalibration(int target = 0) {
+  g_mmd.motionCalibrationTarget = (std::clamp)(target, 0, 4);
+  g_mmd.showMotionCalibration = true;
+}
 // Optional squad controller. Callbacks are installed by mmd_squad.h; keeping
 // this boundary independent also preserves the standalone single-player tests.
 struct MmdSquadBridge {
@@ -742,16 +785,28 @@ static bool MmdApplyAdaptation(const mmd::RigAdaptation &next, int sourcePreset)
     return false;
   }
 }
-static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
+static void MmdBeginLoad(int kind, std::filesystem::path path = {}, int motionTarget = 0) {
   auto &m = g_mmd;
-  if (m.loading || m.session.active || MmdSquadBusy())
+  const bool sizingPreset = kind == 7 || kind == 8;
+  if (m.loading || (sizingPreset ? m.preview : (m.session.active || MmdSquadBusy())))
     return;
+  if (sizingPreset && (motionTarget < 0 || motionTarget > 4)) return;
+  if (kind == 8 && motionTarget && !m.squadMotion[motionTarget - 1].independent) {
+    m.status = u8"请先开启该队员的独立动作校准，再保存"; return;
+  }
   s_mmdClosing.store(false);
   HWND owner = g_gameHwnd;
   nlohmann::json saved;
+  if (kind == 8) {
+    const auto settings = MmdMotionSettings(motionTarget);
+    saved = {{"format", "poser-motion-calibration"},
+             {"motion_calibration", mmd::MotionCalibrationJson(settings.motion)},
+             {"motion_amplitude", mmd::AmplitudeJson(settings.amplitude)}};
+  }
   if (kind == 4) {
     saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
     saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
+    saved["motion_calibration"] = mmd::MotionCalibrationJson(m.motionCalibration);
     saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load(),s_clothAutoEnabled.load(),s_collisionGeometry.load(),s_clothRibbonDamping.load()});
     saved["requires_pmx"] = m.reference;
     // Portable source structure check, never store a required local PMX path.
@@ -760,33 +815,39 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
       for (const auto &b : m.baseRig.bones) saved["pmx_bones"].push_back(b.name);
     }
   }
-  auto presetDir = MmdConfigDirectory() / L"rig-presets";
-  m.loader = std::async(std::launch::async, [kind, owner, path, saved, presetDir]() {
+  auto presetDir = MmdConfigDirectory() / (sizingPreset ? L"motion-presets" : L"rig-presets");
+  m.loader = std::async(std::launch::async, [kind, owner, path, saved, presetDir, motionTarget]() {
     MmdLoadResult result;
     result.kind = kind;
+    result.motionTarget = motionTarget;
     try {
       auto selected = path;
+      const auto folderHistory = presetDir.parent_path() / L"file-dialogs.json";
       if (selected.empty()) {
+        const bool saving = kind == 4 || kind == 8;
         wchar_t name[32768] = {};
         OPENFILENAMEW ofn = {};
+        std::filesystem::path initialDirectory;
         ofn.lStructSize = sizeof(ofn);
         ofn.hwndOwner = owner;
         ofn.lpstrFile = name;
         ofn.nMaxFile = 32768;
         ofn.lpstrFilter =
+            (kind == 7 || kind == 8) ? L"Motion calibration\0*.mmdmotion.json;*.json\0\0" :
             kind == 5 ? L"Music (WAV/MP3/M4A/AAC/WMA/FLAC)\0*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac\0All files\0*.*\0\0" :
             kind == 6 ? L"VMD camera\0*.vmd\0\0" :
             kind >= 3 ? L"MMD rig preset\0*.mmdrig.json;*.json\0\0" :
             kind == 2 ? L"PMX skeleton\0*.pmx\0\0" : L"VMD motion\0*.vmd\0\0";
-        ofn.Flags = (kind == 4 ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST) | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+        ofn.Flags = (saving ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST) | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
                     OFN_EXPLORER | OFN_ENABLEHOOK;
-        if (kind == 3 || kind == 4) {
-          std::filesystem::create_directories(presetDir);
-          ofn.lpstrInitialDir = presetDir.c_str();
-          ofn.lpstrDefExt = L"mmdrig.json";
+        if (kind == 3 || kind == 4 || kind == 7 || kind == 8) {
+          initialDirectory = mmd::PresetDialogDirectory(folderHistory,kind,presetDir);
+          std::filesystem::create_directories(initialDirectory);
+          ofn.lpstrInitialDir = initialDirectory.c_str();
+          ofn.lpstrDefExt = (kind == 7 || kind == 8) ? L"mmdmotion.json" : L"mmdrig.json";
         }
         ofn.lpfnHook = MmdDialogHook;
-        if (!(kind == 4 ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn))) {
+        if (!(saving ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn))) {
           s_mmdDialog.store(nullptr);
           DWORD error = CommDlgExtendedError();
           if (error)
@@ -798,12 +859,16 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
         s_mmdDialog.store(nullptr);
         selected = name;
       }
+      // Remember a confirmed selection, including a file that later fails to
+      // parse. Cancellation leaves history intact; history failure is nonfatal.
+      if(!mmd::RememberPresetDirectory(folderHistory,kind,selected))
+        Log("[MMD] could not save preset dialog folder; file operation continues");
       result.file = mmd::Utf8(selected.wstring());
       if (kind == 5) {
         result.music = mmd::DecodeAudio(selected, s_mmdClosing);
         return result;
       }
-      if (kind == 4) {
+      if (kind == 4 || kind == 8) {
         auto temporary = selected; temporary += L".tmp";
         auto text = saved.dump(2);
         if (text.size() > 1024 * 1024) throw std::runtime_error(u8"适配预设超过 1 MiB");
@@ -817,15 +882,22 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
           throw std::runtime_error(u8"无法替换适配预设文件");
         return result;
       }
-      if (kind == 3 && std::filesystem::file_size(selected) > 1024 * 1024)
+      if ((kind == 3 || kind == 7) && std::filesystem::file_size(selected) > 1024 * 1024)
         throw std::runtime_error(u8"适配预设超过 1 MiB");
-      if (kind == 3) {
+      if (kind == 3 || kind == 7) {
         auto bytes = mmd::ReadFile(selected);
         result.adaptation = nlohmann::json::parse(bytes.begin(), bytes.end());
-        int pose; mmd::IkMode ik;
-        mmd::ReadAdaptation(result.adaptation, pose, ik);
+        if (kind == 7) {
+          if (result.adaptation.value("format", std::string{}) != "poser-motion-calibration" ||
+              !result.adaptation.contains("motion_calibration"))
+            throw std::runtime_error(u8"请选择动作校准预设");
+        } else {
+          int pose; mmd::IkMode ik;
+          mmd::ReadAdaptation(result.adaptation, pose, ik);
+          mmd::ReadNativeCloth(result.adaptation);
+        }
         mmd::ReadAmplitude(result.adaptation);
-        mmd::ReadNativeCloth(result.adaptation);
+        mmd::ReadMotionCalibration(result.adaptation);
       } else if (kind == 2)
         result.rig = mmd::ReadPmx(mmd::ReadFile(selected), mmd::Decode);
       else {
@@ -863,6 +935,26 @@ static void MmdPollLoad() {
     Log("[MMD] load error file=%s: %s", r.file.c_str(), r.error.c_str());
     return;
   }
+  if (r.kind == 7 || r.kind == 8) {
+    if (r.motionTarget < 0 || r.motionTarget > 4) {m.status = u8"动作校准目标无效，保留原设置"; return;}
+    const auto settings = MmdMotionSettings(r.motionTarget, false);
+    if (r.kind == 7) {
+      // Parse both before publishing. Bad files retain the complete old setup.
+      try {
+        auto sizing = mmd::ReadMotionCalibration(r.adaptation);
+        auto amplitude = mmd::ReadAmplitude(r.adaptation);
+        settings.motion = sizing; settings.amplitude = amplitude;
+        if (r.motionTarget) {
+          auto &slot = m.squadMotion[r.motionTarget - 1];
+          slot.independent = slot.initialized = true;
+        }
+      } catch (const std::exception &e) {m.status = e.what(); return;}
+    }
+    settings.file = r.file;
+    m.status = (r.motionTarget ? u8"第 " + std::to_string(r.motionTarget) + u8" 位：" : u8"共用：") +
+               std::string(r.kind == 7 ? u8"动作校准已载入" : u8"动作校准已保存");
+    return;
+  }
   if (r.kind == 5) {
     m.audio.setClip(std::move(r.music));
     m.musicFile = r.file;
@@ -897,9 +989,11 @@ static void MmdPollLoad() {
       int pose; mmd::IkMode ik;
       auto a = mmd::ReadAdaptation(j, pose, ik);
       auto amplitude = mmd::ReadAmplitude(j);
+      auto sizing = mmd::ReadMotionCalibration(j);
       auto cloth = mmd::ReadNativeCloth(j);
       if (MmdApplyAdaptation(a, pose)) {
         m.amplitude = amplitude;
+        m.motionCalibration = sizing;
         s_skirtHipRadiusDelta.store(cloth.hipRadius);
         s_collisionGeometry.store(cloth.geometry);
         s_clothRibbonDamping.store(cloth.ribbonDamping);
@@ -1188,7 +1282,7 @@ static void MmdApplyFrame() {
   if(ClothBlockFirstBodyPose("single-preparation",MmdClothMayAdjustAnchor)) {
     SMCMotionNeutral(s.animator);return;
   }
-  m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude);
+  m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude, m.motionCalibration);
   auto &p = m.mapper.output;
   auto world=s.anchorWorld*mmd::TRS(p.rootOffset,{});
   float ground=m.clip.bones.empty()?0:mmd_terrain::Apply(s.terrain,m.terrain,m.profile,p,world,s.anchorWorld,MmdNow(),m.timeline.seconds);
@@ -1246,6 +1340,9 @@ static void MmdApplyFrame() {
     }
   }
   SMCMotionPublish(face);
+  // Body samples can also contain eyes and can run after CameraManager. Apply
+  // this sample's gaze last without waiting for the next SMC mailbox consume.
+  SMCGazeTick(&face);
 #if POSER_ENABLE_XXMI_BRIDGE
   ModBridgeFrame(m.clip, frame);
 #endif

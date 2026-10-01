@@ -16,12 +16,21 @@ inline Limits ReadLimits(const nlohmann::json &j) {
 inline nlohmann::json WriteProfile(Profile p) {
   p=Sanitize(p);
   return {{"camera_yaw",p.cameraYaw},{"camera_pitch",p.cameraPitch},
+          {"response",p.response},{"focus_depth",p.focusDepth},{"smoothing",p.smoothing},
+          {"center_offset",{{"outward",p.centerOffset.x},{"up",p.centerOffset.y},{"forward",p.centerOffset.z}}},
           {"limits",{{"left",p.limits.left},{"right",p.limits.right},{"up",p.limits.up},{"down",p.limits.down}}}};
 }
 inline Profile ReadProfile(const nlohmann::json &j) {
   if(!j.is_object())throw std::runtime_error("Invalid gaze profile");
   Profile p;p.cameraYaw=Number(j,"camera_yaw",0,-30,30);p.cameraPitch=Number(j,"camera_pitch",0,-20,20);
-  p.limits=ReadLimits(j.at("limits"));return p;
+  p.limits=ReadLimits(j.at("limits"));
+  p.response=Number(j,"response",1,0,2);p.focusDepth=Number(j,"focus_depth",0,-2,10);
+  p.smoothing=Number(j,"smoothing",.04f,0,.2f);
+  if(j.contains("center_offset")) {
+    const auto &o=j.at("center_offset");if(!o.is_object())throw std::runtime_error("Invalid gaze center offset");
+    p.centerOffset={Number(o,"outward",0,-.45f,.45f),Number(o,"up",0,-.5f,.5f),Number(o,"forward",0,-.5f,.5f)};
+  }
+  return p;
 }
 struct Reference { bool ready=false,estimatedLimits=false; Vec3 forward; Limits limits; };
 inline Reference ReadReference(const nlohmann::json &j) {

@@ -2,6 +2,7 @@
 #include "math/ik_two_bone.h"
 #include "math/mmd_rig.h"
 #include "math/mmd_amplitude.h"
+#include "math/mmd_motion_calibration.h"
 #include "math/mmd_arm_twist.h"
 
 namespace mmd {
@@ -283,6 +284,8 @@ struct SampledPose {
   std::vector<bool> write;
   Vec3 rootOffset;
   std::array<bool, 2> legIkActive{false, false};
+  // 0: no adjustment, 1: applied, 2: unreachable endpoint clamped, -1: unmapped.
+  std::array<int, 4> sizingStatus{};
 };
 class Retargeter {
   const RigDefinition *source_ = nullptr;
@@ -321,18 +324,91 @@ class Retargeter {
     output.write[i] = true;
     world();
   }
-  void applyAmplitude(const MotionAmplitude &amplitude) {
+  void applyMotionCalibration(const MotionCalibration &calibration) {
+    output.sizingStatus.fill(0);
+    if (!calibration.enabled) return;
+    for (int limb = 0; limb < 4; ++limb) {
+      const auto &s = calibration.limbs[limb];
+      if (s.identity()) continue;
+      int ar = (limb < 2 ? 13 : 1) + (limb & 1), br = ar + 2, cr = ar + 4;
+      int a = target_->roles[ar], b = target_->roles[br], c = target_->roles[cr];
+      auto descendant = [&](int child, int parent) {
+        for (int i = child; i >= 0; i = target_->bones[i].parent)
+          if (i == parent) return true;
+        return false;
+      };
+      if (a < 0 || b < 0 || c < 0 || !output.write[a] || !output.write[b] ||
+          !output.write[c] || !target_->bones[a].calibrated ||
+          !target_->bones[b].calibrated || !target_->bones[c].calibrated ||
+          !descendant(b, a) || !descendant(c, b)) {
+        output.sizingStatus[limb] = -1;
+        continue;
+      }
+      bool uniform = true;
+      for (int i = c; i >= 0; i = target_->bones[i].parent) {
+        Vec3 scale = target_->bones[i].localScale;
+        if (!std::isfinite(scale.x + scale.y + scale.z) || scale.x <= 0 ||
+            std::fabs(scale.x - scale.y) > scale.x * .001f ||
+            std::fabs(scale.x - scale.z) > scale.x * .001f) {uniform = false; break;}
+      }
+      if (!uniform) {output.sizingStatus[limb] = -1; continue;}
+      Vec3 pa = output.worldPos[a], pb = output.worldPos[b], pc = output.worldPos[c];
+      float upper = Len(pb - pa), lower = Len(pc - pb);
+      if (upper < 1e-5f || lower < 1e-5f) {output.sizingStatus[limb] = -1; continue;}
+      // An anatomical frame follows the torso/pelvis, independent of arbitrary
+      // Biped local axes or the character's world heading.
+      int root = target_->roles[0];
+      int anchor = target_->bones[a].parent;
+      Quat body = basis_;
+      if (anchor >= 0)
+        body = NormQ(output.worldRot[anchor] * Conj(target_->bones[anchor].restRot) * basis_);
+      else if (root >= 0)
+        body = NormQ(output.worldRot[root] * Conj(target_->bones[root].restRot) * basis_);
+      // MMD model coordinates are left/up/back; expose forward-positive offsets.
+      LimbCalibration local = s; local.offset.z *= -1;
+      Vec3 goal = CalibratedLimbGoal(pa, pb, pc, body, local);
+      Vec3 axis = Norm(pc - pa), bend = pb - pa;
+      bend = bend - axis * Dot(bend, axis);
+      if (Len(bend) < (upper + lower) * 1e-4f) {
+        // Straight limbs have no bend plane. Pick an anatomical plane, not a
+        // world-space axis, so turning the actor cannot flip knees or elbows.
+        bend = body * Vec3{0, 0, limb < 2 ? 1.f : -1.f};
+        bend = bend - axis * Dot(bend, axis);
+        if (Len(bend) < 1e-5f) bend = body * Vec3{(limb & 1) ? -1.f : 1.f, 0, 0};
+      }
+      Vec3 pole = pa + Norm(bend) * (upper + lower);
+      Quat endRotation = output.worldRot[c];
+      Vec3 solvedA = pa, solvedB = pb, solvedC = pc;
+      SolveTwoBone(solvedA, solvedB, solvedC, goal, pole, true);
+      output.sizingStatus[limb] = Len(solvedC - goal) > 2e-4f ? 2 : 1;
+      setWorld(a, NormQ(Quat::FromTo(pb - pa, solvedB - pa) * output.worldRot[a]));
+      setWorld(b, NormQ(Quat::FromTo(output.worldPos[c] - output.worldPos[b],
+                                   solvedC - solvedB) * output.worldRot[b]));
+      setWorld(c, endRotation);
+    }
+  }
+  void applyAmplitude(const MotionAmplitude &amplitude, const MotionCalibration &calibration) {
     bool changed = false;
+    const MotionAmplitude originalAmplitude;
+    const auto &effectiveAmplitude = calibration.enabled ? amplitude : originalAmplitude;
     for (size_t i = 0; i < target_->bones.size(); ++i) {
-      float factor = amplitude.factor(target_->bones[i].role);
+      const int role = target_->bones[i].role;
+      const float factor = calibration.factor(role) * effectiveAmplitude.factor(role);
       if (output.write[i] && factor != 1) {
         output.localRot[i] = ScaleMotionRotation(neutralLocal_[i], output.localRot[i], factor);
+        changed = true;
+      }
+      const Vec3 offset = calibration.offset(role);
+      if (output.write[i] && (offset.x != 0 || offset.y != 0 || offset.z != 0)) {
+        // Reapply a constant local angular offset to this fresh sample after
+        // IK and amplitude. Never feed the corrected previous frame back in.
+        output.localRot[i] = NormQ(output.localRot[i] * Quat::FromEulerDeg(offset));
         changed = true;
       }
     }
     // Helpers use the same sampled time and amplitude as the mapped limb.
     // Their side-branch rotations cannot move the elbow, hand or fingers.
-    changed=ApplyArmTwists(armTwists_,eval_.pose,*target_,amplitude,output)||changed;
+    changed=ApplyArmTwists(armTwists_,eval_.pose,*target_,effectiveAmplitude,output,calibration)||changed;
     if (changed) world();
   }
 
@@ -512,14 +588,16 @@ public:
   }
   void sample(double frame, float scale, bool inPlace, float height,
               IkMode mode = IkMode::FollowMotion,
-              const MotionAmplitude &amplitude = {}) {
+              const MotionAmplitude &amplitude = {},
+              const MotionCalibration &calibration = {}) {
     eval_.sample(frame, mode);
     output.legIkActive = {false, false};
     output.rootOffset = {};
+    output.sizingStatus.fill(0);
     int hip = sourceRole_[0];
     if (hip >= 0 && affected_[0])
       output.rootOffset =
-          basis_ * (eval_.pose.positions[hip] - source_->bones[hip].rest) *
+          basis_ * CalibratedTravel(eval_.pose.positions[hip] - source_->bones[hip].rest, calibration) *
           scale;
     if (inPlace) {
       output.rootOffset.x = 0;
@@ -562,7 +640,7 @@ public:
       output.worldPos[i] = output.worldMatrix[i].position();
     }
     if (hip < 0) {
-      applyAmplitude(amplitude);
+      applyAmplitude(amplitude, calibration);
       return;
     }
     for (int side = 0; side < 2; side++) {
@@ -603,7 +681,8 @@ public:
                         output.worldRot[b]));
       setWorld(c, foot);
     }
-    applyAmplitude(amplitude);
+    applyMotionCalibration(calibration);
+    applyAmplitude(amplitude, calibration);
   }
 };
 } // namespace mmd

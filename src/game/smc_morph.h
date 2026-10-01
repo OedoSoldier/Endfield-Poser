@@ -1465,32 +1465,41 @@ static void SMCGazeBind(Vec3 origin,const std::vector<void *> &parents) {
   SMCGazeContext().binding=b;
   Log("[GAZE] neutral eyes ready=%d optical=%d generation=%llu",b.basis.ready,b.opticalReady,(unsigned long long)b.generation);
 }
-static void SMCGazeTick() {
+static void SMCGazeTick(const SMCMotionFrame *sample=nullptr) {
   auto &gaze=SMCGazeContext();
-  Quat fallback[2];bool haveFallback=gaze.lease.active;
+  const auto &motion=sample?*sample:s_motionFaceCurrent;
+  const bool motionValid=motion.active&&motion.animator==SMCAnimator()&&motion.generation==s_faceGeneration;
+  Quat fallback[2];bool haveFallback=true;
   for(int e=0;e<2;++e) {
+    bool valid=gaze.lease.active;
     fallback[e]=gaze.lease.original[e];
     if(s_driving&&SMCFrozen()&&s_faceBoneEvalOk)for(int i=0;i<s_faceBoneCount;++i)
       if(s_faceBones[i].transform==gaze.binding.eyes[e]) {
-        const auto &b=s_faceBones[i];fallback[e]={b.rx,b.ry,b.rz,b.rw};break;
+        const auto &b=s_faceBones[i];fallback[e]={b.rx,b.ry,b.rz,b.rw};valid=true;break;
       }
-    if(s_motionFaceCurrent.active&&s_motionFaceCurrent.animator==SMCAnimator()&&
-       s_motionFaceCurrent.generation==s_faceGeneration&&s_motionFaceCurrent.eyeDriven[e]&&
-       s_motionFaceCurrent.eyes[e]==gaze.binding.eyes[e])fallback[e]=s_motionFaceCurrent.eyeRotation[e];
+    if(motionValid&&motion.eyeDriven[e]&&motion.eyes[e]==gaze.binding.eyes[e]) {fallback[e]=motion.eyeRotation[e];valid=true;}
+    haveFallback&=valid;
   }
   auto settings=gaze.settings;
   settings.profile=poser_gaze::ProfileFor(gaze);
-  if(s_motionFaceCurrent.active&&s_motionFaceCurrent.gazeCamera&&s_motionFaceCurrent.animator==SMCAnimator()&&
-     s_motionFaceCurrent.generation==s_faceGeneration) {
-    settings.mode=eye_gaze::Mode::Camera;settings.strength=s_motionFaceCurrent.gazeStrength;
+  if(motionValid&&motion.gazeCamera) {
+    settings.mode=eye_gaze::Mode::Camera;settings.strength=motion.gazeStrength;
   }
   poser_gaze::Update(SMCFrozen()&&s_faceBonesCaptured&&!s_captureNeutral&&s_smcOwnershipVerified,
                      s_faceGeneration,haveFallback?fallback:nullptr,gaze,SMCAnimator(),&settings);
 }
 static void SMCGazeCameraTick(void *camera) {
   poser_gaze::SetCamera(camera);
-  {SMCActorScope scope(&s_editorSMC);SMCGazeTick();}
-  for(auto actor:s_squadSMC)if(actor&&actor!=&s_editorSMC) {SMCActorScope scope(actor);SMCGazeTick();}
+  auto apply=[](SMCActorState *actor) {
+    SMCActorScope scope(actor);
+    // A body sample may have been published since this actor's SMC Update.
+    // Camera callbacks must not reinstate the preceding frame's lock/settings.
+    SMCMotionFrame sample;
+    AcquireSRWLockShared(&s_motionFaceLock);sample=s_motionFaceMailbox;ReleaseSRWLockShared(&s_motionFaceLock);
+    SMCGazeTick(&sample);
+  };
+  apply(&s_editorSMC);
+  for(auto actor:s_squadSMC)if(actor&&actor!=&s_editorSMC)apply(actor);
 }
 static void SMCFaceBind() {
   if(!s_faceBonesCaptured||s_captureNeutral||s_faceBoneCount<=0||
@@ -1777,7 +1786,6 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
   // 必须限定在冻结态：hook 是启动时就装上的，解冻后若继续写，会永久盖住游戏的面部动画。
   if (s_driving && SMCFrozen() && s_faceBonesCaptured && s_frame > 5)
     SMCWriteTouchedBones();
-  SMCGazeTick();
 
   // 面部骨骼引用（m_allBonesTransforms，一次性）
   if (!s_faceBoneRefs && s_frame >= 1) {
@@ -2046,6 +2054,9 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
   // 覆盖写回（原始 Update 之后）
   if (s_driving && SMCFrozen() && s_faceBonesCaptured && s_frame > 5)
     SMCWriteTouchedBones();
+  // Native/SMC expression writes may replace the eye rotations. Gaze must be
+  // last even when the camera callback ran earlier or skipped a busy pose lock.
+  SMCGazeTick();
 
   // 未冻结时隔帧记录"当前脸"，供冻结瞬间反解使用（解冻后脸由游戏/动画驱动）
   if (!SMCFrozen() && !s_captureNeutral) {

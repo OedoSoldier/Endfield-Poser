@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/panel_scale.h"
 
 // 骨骼参数面板：选中骨（3D 里点选）的旋转/位置参数 + 复位。
 // 注：骨骼层级树、操作序列、撤销/重做、清空姿态、回 A-pose 都因实测有问题已移除
@@ -66,7 +67,7 @@ static void ResetBonePos(void *t) {
     SetBoneLocalPos(t, p);
 }
 
-// 选中骨的参数：滑条可拖也可填（每个轴都能 Ctrl+点击数值直接输入），
+// 选中骨的参数：滑条可拖也可填（每个轴都能双击或 Ctrl+点击直接输入），
 // 另有输入框用于精确键入；写回走 SetBoneLocalRot/Pos，从骨自动同步冻结快照。
 static void DrawBoneParams() {
   void *t = g_selectedTransform;
@@ -89,7 +90,7 @@ static void DrawBoneParams() {
   ImGui::PushID("rotstep");
   ImGui::TextDisabled(u8"步长");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(90);
+  ImGui::SetNextItemWidth(poser_ui::Scale(90));
   ImGui::InputFloat(u8"##v", &s_rotStep, 0.0f, 0.0f, "%.2f");
   ImGui::PopID();
   ImGui::TextDisabled("X");
@@ -125,7 +126,7 @@ static void DrawBoneParams() {
   ImGui::PushID("posstep");
   ImGui::TextDisabled(u8"步长");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(90);
+  ImGui::SetNextItemWidth(poser_ui::Scale(90));
   ImGui::InputFloat(u8"##v", &s_posStep, 0.0f, 0.0f, "%.3f");
   ImGui::PopID();
   ImGui::TextDisabled("X");
@@ -174,11 +175,7 @@ static void DrawBoneTreePanel() {
   if (!g_showBoneParams)
     return;
   // 默认放主面板右侧：主面板高度随状态变化（冻结后会多出 root 滑条），放左下会重叠
-  ImGui::SetNextWindowPos(ImVec2(380, 10), PanelPositionCondition());
-  // AlwaysAutoResize 配 SetNextItemWidth(-1) 会让窗口宽度塌得很窄（标签被挤出可视区），
-  // 所以给个最小宽度约束：高度自适应、宽度不低于 340。
-  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),
-                                      ImVec2(FLT_MAX, FLT_MAX));
+  poser_ui::NextPanel(u8"骨骼参数", {380, 10}, {}, {340, 100}, g_resetPanelLayoutFrames > 0);
   if (!ImGui::Begin(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams,
                     ImGuiWindowFlags_NoCollapse |
                         ImGuiWindowFlags_AlwaysAutoResize |

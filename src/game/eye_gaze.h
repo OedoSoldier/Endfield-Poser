@@ -20,7 +20,12 @@ struct Binding {
   Quat eyeInHead[2];
   bool opticalReady=false;
 };
-struct Lease {bool active=false;uint32_t owner=0,eyes[2]={};Quat original[2];};
+struct Lease {
+  bool active=false;uint32_t owner=0,eyes[2]={};Quat original[2];
+  bool hasCameraAim=false;
+  Quat cameraAim[2]; // Last valid target in neutral head space, before strength.
+  eye_gaze::Smoothing smoothing;
+};
 struct Context {
   eye_gaze::Settings settings;
   Binding binding;
@@ -84,7 +89,7 @@ static void ApplyReference(Context &context,const eye_gaze::Reference *reference
 // the same immutable, generation-checked mailbox as that actor's expression.
 static bool motionLock=false;
 static float motionStrength=1;
-static Vec3 cameraPosition;
+static Vec3 cameraPosition,cameraForward;
 static double cameraTime=-1e30;
 static bool Read(void *method,void *object,void *value,size_t size) {
   if(!method||!UnityObjAlive(object)||RuntimeClosing())return false;
@@ -118,11 +123,16 @@ static void Reset(bool restore=true,Context &context=editor) {
   Release(restore,nullptr,context);context={};
 }
 static void SetCamera(void *camera) {
-  cameraTime=-1e30;
   if(!UnityObjAlive(camera)||!g_component_get_transform)return;
   __try {
     void *error=nullptr,*t=il2cpp_runtime_invoke(g_component_get_transform,camera,nullptr,&error);
-    if(!error&&Read(g_transform_get_position,t,&cameraPosition,sizeof(cameraPosition))&&eye_gaze::Finite(cameraPosition))cameraTime=FrameNow();
+    Vec3 position;Quat rotation;
+    if(!error&&Read(g_transform_get_position,t,&position,sizeof(position))&&eye_gaze::Finite(position)&&
+       Read(g_transform_get_rotation,t,&rotation,sizeof(rotation))&&std::isfinite(QuatLen(rotation))&&QuatLen(rotation)>.5f) {
+      // Position and optical axis form one sample. A partial read must not
+      // temporarily cancel a user's focus-depth offset and flicker the eyes.
+      cameraPosition=position;cameraForward=NormQ(rotation)*Vec3{0,0,1};cameraTime=FrameNow();
+    }
   } __except(1){}
 }
 static bool Capture(Context &context=editor) {
@@ -152,8 +162,12 @@ static void Update(bool allowed,uint64_t generation,const Quat *fallback=nullptr
   if(settings.mode==eye_gaze::Mode::Camera&&!binding.opticalReady) {
     Release(true,fallback,context);status=u8"缺少虹膜参考点，请使用手动方向";return;
   }
-  if(settings.mode==eye_gaze::Mode::Camera&&FrameNow()-cameraTime>.5) {
-    Release(true,fallback,context);status=u8"等待当前镜头，暂时跟随原眼神";return;
+  const double now=FrameNow();
+  const bool waitingCamera=settings.mode==eye_gaze::Mode::Camera&&now-cameraTime>.5;
+  // Missing one camera callback must not drop ownership and visibly reset the
+  // eyes. A longer gap holds the last head-relative aim until a camera returns.
+  if(waitingCamera&&(!lease.active||!lease.hasCameraAim)) {
+    status=u8"等待当前镜头";return;
   }
   Quat head,parents[2];Vec3 points[2];
   if(!Read(g_transform_get_rotation,binding.head,&head,sizeof(head)))return;
@@ -166,7 +180,19 @@ static void Update(bool allowed,uint64_t generation,const Quat *fallback=nullptr
   auto inverseHead=Conj(NormQ(head));auto center=(points[0]+points[1])*.5f;
   auto direction=inverseHead*(cameraPosition-center);
   Vec3 offsets[2]={inverseHead*(points[0]-center),inverseHead*(points[1]-center)};
-  Quat eyeDelta[2];eye_gaze::AimEyes(binding.basis,settings,direction,offsets,eyeDelta);
+  Quat eyeDelta[2];
+  if(waitingCamera) {
+    for(int i=0;i<2;++i)eyeDelta[i]=lease.cameraAim[i];
+    lease.smoothing.time=now;
+  }
+  else {
+    eye_gaze::AimEyes(binding.basis,settings,direction,offsets,eyeDelta,inverseHead*cameraForward);
+    if(settings.mode==eye_gaze::Mode::Camera) {
+      eye_gaze::SmoothEyes(binding.basis,settings.profile,now,lease.smoothing,eyeDelta);
+      for(int i=0;i<2;++i)lease.cameraAim[i]=eyeDelta[i];
+      lease.hasCameraAim=true;
+    } else {lease.hasCameraAim=false;lease.smoothing={};}
+  }
   for(int i=0;i<2;++i) {
     auto q=NormQ(Conj(NormQ(parents[i]))*NormQ(head)*eyeDelta[i]*binding.eyeInHead[i]);
     float strength=std::isfinite(settings.strength)?(std::max)(0.f,(std::min)(1.f,settings.strength)):1.f;
@@ -180,6 +206,7 @@ static void Update(bool allowed,uint64_t generation,const Quat *fallback=nullptr
     }
     if(!Write(binding.eyes[i],q)){Release(true,fallback,context);status=u8"眼睛写入失败，已恢复";return;}
   }
-  status=settings.mode==eye_gaze::Mode::Manual?u8"手动眼睛方向（覆盖 MMD 眼神）":u8"眼神已锁定当前摄像机";
+  status=settings.mode==eye_gaze::Mode::Manual?u8"手动眼睛方向（覆盖 MMD 眼神）":
+      waitingCamera?u8"等待当前镜头，保持上次眼神方向":u8"眼神已锁定当前摄像机";
 }
 } // namespace poser_gaze

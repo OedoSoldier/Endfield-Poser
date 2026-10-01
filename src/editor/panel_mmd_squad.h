@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/panel_scale.h"
 #include "game/mmd_squad.h"
 #include "editor/panel_mmd.h"
 
@@ -6,8 +7,7 @@ static void DrawMmdSquadPanel() {
   auto &s = g_squad;
   if (!s.show)
     return;
-  ImGui::SetNextWindowSize(ImVec2(560, 650), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(540, 80), PanelPositionCondition());
+  poser_ui::NextPanel(u8"MMD 多人播放器", {540, 80}, {560, 650}, {400, 300}, g_resetPanelLayoutFrames > 0);
   if (!ImGui::Begin(u8"MMD 多人播放器", &s.show, g_pinPanels ? ImGuiWindowFlags_NoMove : 0)) {
     ImGui::End();
     return;
@@ -117,6 +117,7 @@ static void DrawMmdSquadPanel() {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"站位与适配")) {
+      if (ImGui::Button(u8"动作校准…")) {s.hotkeys = true; MmdOpenMotionCalibration();}
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
       int ik = int(s.ikMode);
       if (ImGui::Combo(u8"动作 IK", &ik, u8"跟随各自动作\0强制开启\0强制关闭\0"))
@@ -167,6 +168,9 @@ static void DrawMmdSquadPanel() {
           auto &slot = s.slots[i];
           ImGui::PushID(i);
           ImGui::Text(u8"第 %d 位", i + 1);
+          ImGui::SameLine();
+          if (ImGui::SmallButton(u8"单独校准动作…")) {s.hotkeys = true; MmdOpenMotionCalibration(i + 1);}
+          ImGui::TextDisabled(g_mmd.squadMotion[i].independent ? u8"使用独立动作校准" : u8"使用共用动作校准");
           ImGui::SliderFloat3(u8"左右 / 上下 / 前后", &slot.offset.x, -10, 10, "%.2f m");
           ImGui::SliderFloat(u8"朝向偏移", &slot.yaw, -180, 180, "%.1f");
           ImGui::SliderFloat(u8"高度修正", &slot.height, -1, 1, "%.3f");

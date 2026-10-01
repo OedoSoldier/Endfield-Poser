@@ -3343,13 +3343,15 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
     bool temp_input_is_active = temp_input_allowed && TempInputIsActive(id);
     if (!temp_input_is_active)
     {
-        // Tabbing or Ctrl+Click on Slider turns it into an input box
+        // Poser: double-click also enters numeric input, consistently with DragXXX.
+        // Tabbing or Ctrl+Click on Slider turns it into an input box.
         const bool clicked = hovered && IsMouseClicked(0, ImGuiInputFlags_None, id);
-        const bool make_active = (clicked || g.NavActivateId == id);
-        if (make_active && clicked)
+        const bool double_clicked = (hovered && g.IO.MouseClickedCount[0] == 2 && TestKeyOwner(ImGuiKey_MouseLeft, id));
+        const bool make_active = (clicked || double_clicked || g.NavActivateId == id);
+        if (make_active && (clicked || double_clicked))
             SetKeyOwner(ImGuiKey_MouseLeft, id);
         if (make_active && temp_input_allowed)
-            if ((clicked && g.IO.KeyCtrl) || (g.NavActivateId == id && (g.NavActivateFlags & ImGuiActivateFlags_PreferInput)))
+            if ((clicked && g.IO.KeyCtrl) || double_clicked || (g.NavActivateId == id && (g.NavActivateFlags & ImGuiActivateFlags_PreferInput)))
                 temp_input_is_active = true;
 
         // Store initial value (not used by main lib but available as a convenience but some mods e.g. to revert)

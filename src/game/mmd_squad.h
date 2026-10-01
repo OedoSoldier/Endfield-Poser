@@ -443,6 +443,13 @@ static bool MmdSquadStart() {
     return true;
   } catch(const std::exception &e) {MmdSquadStop();s.status=e.what();return false;}
 }
+static void MmdSquadSampleActor(int index, double frame) {
+  auto &s = g_squad;
+  if (index < 0 || index >= 4 || !s.actors[index]) return;
+  auto &a = *s.actors[index];
+  const auto settings = MmdMotionSettings(index + 1);
+  a.mapper.sample(frame, a.scale, false, 0, s.ikMode, settings.amplitude, settings.motion);
+}
 static void MmdSquadApply() {
   auto &s=g_squad;if(!s.active)return;
   const double frame=s.timeline.seconds*30.;
@@ -467,7 +474,7 @@ static void MmdSquadApply() {
     if(!UnityObjAlive(a.saved.animator)||!UnityObjAlive(a.saved.root)) {MmdSquadStop();s.status=u8"队员实例已失效，已停止全部动作";return;}
     for(const auto &bone:a.bones)if(!UnityObjAlive(bone.transform)) {MmdSquadStop();s.status=u8"队员骨架已变化，已停止全部动作";return;}
     for(const auto &component:a.saved.components)MmdEnable(component.component,false);
-    a.mapper.sample(frame,a.scale,false,0,s.ikMode,g_mmd.amplitude);
+    MmdSquadSampleActor(n,frame);
     auto &pose=a.mapper.output;
     auto placement=s.anchor.place(a.mapper.sourceBasis(),pose.rootOffset,slot.offset,slot.yaw,s.inPlace,s.height+slot.height);
     auto base=s.anchor.place(a.mapper.sourceBasis(),{},slot.offset,slot.yaw,false,0);
@@ -508,7 +515,9 @@ static void MmdSquadApply() {
       for(int e=0;e<2;++e) {int j=a.profile.roles[21+e];if(j>=0&&j<int(pose.write.size())&&pose.write[j]) {
         face.eyeDriven[e]=true;face.eyes[e]=a.bones[j].transform;face.eyeRotation[e]=pose.localRot[j];
       }}
-      SMCMotionPublish(face);slot.status=SMCSectionReady()?u8"身体 / 表情已就绪":u8"身体已就绪，等待表情系统";
+      SMCMotionPublish(face);
+      SMCGazeTick(&face);
+      slot.status=SMCSectionReady()?u8"身体 / 表情已就绪":u8"身体已就绪，等待表情系统";
     }
     MmdHideSessionProps(a.saved);
     {

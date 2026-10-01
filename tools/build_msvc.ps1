@@ -154,6 +154,8 @@ Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(
   @{ Name = 'test_user_agreement'; Src = 'tests\test_user_agreement.cpp' },
   @{ Name = 'test_agreement_ui'; Src = 'tests\test_agreement_ui.cpp' },
+  @{ Name = 'test_slider_input'; Src = 'tests\test_slider_input.cpp' },
+  @{ Name = 'test_panel_scale'; Src = 'tests\test_panel_scale.cpp' },
   @{ Name = 'test_runtime_shutdown'; Src = 'tests\test_runtime_shutdown.cpp' },
   @{ Name = 'test_runtime_bootstrap'; Src = 'tests\test_runtime_bootstrap.cpp' },
   @{ Name = 'test_plugin_paths'; Src = 'tests\test_plugin_paths.cpp' },

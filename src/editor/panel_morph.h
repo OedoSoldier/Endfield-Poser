@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/panel_scale.h"
 
 // Task 4.1：面部 BlendShape 面板。
 // 按网格（CollapsingHeader）分组展示全部形态键滑条（0-100），拖动实时写入；
@@ -32,7 +33,7 @@ static void DrawMmdFaceSection() {
   ImGui::InputTextWithHint("##mmd-face-search",u8"搜索表情",g_mmdFaceFilter,sizeof(g_mmdFaceFilter));
   ImGui::BeginDisabled(playing||!g_frozen||!ready);
   ImGui::Checkbox(u8"缺失时使用固定映射",&face.fallback);
-  ImGui::SetNextItemWidth((std::max)(80.f,ImGui::GetContentRegionAvail().x-94.f));
+  ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(80),ImGui::GetContentRegionAvail().x-poser_ui::Scale(94)));
   float strength=face.strength*100;
   if(ImGui::SliderFloat(u8"整体强度",&strength,0,200,"%.0f%%",ImGuiSliderFlags_AlwaysClamp)) {face.strength=strength*.01f;face.applied=true;}
   if(ImGui::Button(u8"全部归零"))face.clear();
@@ -69,7 +70,7 @@ static void DrawMmdFaceSection() {
         }
         ImGui::BeginDisabled(playing||!g_frozen||!ready||!source);
         float value=face.weights[i];
-        ImGui::SetNextItemWidth((std::max)(60.f,ImGui::GetContentRegionAvail().x-48.f));
+        ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(60),ImGui::GetContentRegionAvail().x-poser_ui::Scale(48)));
         if(ImGui::SliderFloat("##weight",&value,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp))face.set(i,value);
         ImGui::SameLine();if(ImGui::SmallButton(u8"归零"))face.set(i,0);
         ImGui::EndDisabled();ImGui::PopID();
@@ -117,7 +118,7 @@ static void DrawSMCSection() {
     ImGui::TextDisabled("%s", readStatus);
   ImGui::Separator();
 
-  ImGui::BeginChild("##smclist", ImVec2(0, s_blendShapes.empty()?0.f:260.f), false);
+  ImGui::BeginChild("##smclist", poser_ui::Size(0, s_blendShapes.empty()?0.f:260.f), false);
   int count = SMCSliderCount();
   auto catalog=SMCManualCatalog();
   for (int i = 0; i < count; i++) {
@@ -183,7 +184,7 @@ static void DrawGazeSection() {
   bool ready=poser_gaze::binding.basis.ready&&poser_gaze::binding.owner==g_charAnimator&&
       poser_gaze::binding.generation==s_faceGeneration;
   const bool motionOverride=poser_gaze::motionLock&&MmdOwnsPose();
-  if(motionOverride)ImGui::TextDisabled(u8"MMD 锁定生效中，校正与限位仍可调整。");
+  if(motionOverride)ImGui::TextDisabled(u8"MMD 锁定生效中，跟踪设置仍可调整。");
   auto profile=poser_gaze::ProfileFor();
   ImGui::BeginDisabled(!ready||motionOverride);
   int mode=int(poser_gaze::settings.mode);
@@ -194,22 +195,54 @@ static void DrawGazeSection() {
     ImGui::SliderFloat(u8"方向控制强度",&poser_gaze::settings.strength,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp);
   }
   if(mode==1) {
-    ImGui::SetNextItemWidth((std::max)(70.f,ImGui::GetContentRegionAvail().x-52.f));
+    ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(70),ImGui::GetContentRegionAvail().x-poser_ui::Scale(52)));
     ImGui::SliderFloat(u8"左右",&poser_gaze::settings.yaw,-profile.limits.left,profile.limits.right,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"正值向角色右侧，负值向角色左侧");
-    ImGui::SetNextItemWidth((std::max)(70.f,ImGui::GetContentRegionAvail().x-52.f));
+    ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(70),ImGui::GetContentRegionAvail().x-poser_ui::Scale(52)));
     ImGui::SliderFloat(u8"上下",&poser_gaze::settings.pitch,-profile.limits.down,profile.limits.up,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"正值向上，负值向下");
     if(ImGui::SmallButton(u8"方向归零"))poser_gaze::settings.yaw=poser_gaze::settings.pitch=0;
   }
   ImGui::EndDisabled();
   ImGui::BeginDisabled(!ready||poser_gaze::editor.modelKey.empty());
+  if(ImGui::TreeNode(u8"镜头跟踪（当前角色）")) {
+    bool changed=false,save=false;
+    auto slider=[&](const char *label,float &value,float low,float high,const char *format) {
+      ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(60),ImGui::GetContentRegionAvail().x-
+          ImGui::CalcTextSize(label).x-ImGui::GetStyle().ItemInnerSpacing.x));
+      changed|=ImGui::SliderFloat(label,&value,low,high,format,ImGuiSliderFlags_AlwaysClamp);
+      save|=ImGui::IsItemDeactivatedAfterEdit();
+    };
+    slider(u8"转动幅度",profile.response,0,2,"%.2f 倍");
+    ImGui::TextWrapped(u8"默认 1 倍，设为 0 回正。锁定强度用于混合动作眼神。");
+    slider(u8"注视深度",profile.focusDepth,-2,10,"%.2f m");
+    ImGui::TextWrapped(u8"正值看镜头后方，负值看前方；0 看镜头。近距离仍限制对眼。");
+    slider(u8"平滑时间",profile.smoothing,0,.2f,"%.3f s");
+    ImGui::TextWrapped(u8"默认 0.04 秒，越大跟随越柔和；0 关闭平滑。");
+    if(ImGui::TreeNode(u8"眼球中心微调")) {
+      slider(u8"左右（镜像）",profile.centerOffset.x,-.45f,.45f,"%.2f ×眼距");
+      slider(u8"上下偏移",profile.centerOffset.y,-.5f,.5f,"%.2f ×眼距");
+      slider(u8"前后偏移",profile.centerOffset.z,-.5f,.5f,"%.2f ×眼距");
+      ImGui::TextWrapped(u8"只调整跟踪计算起点，不移动眼球。正值向外 / 上 / 前；默认 0，以角色眼骨为基准。");
+      if(ImGui::SmallButton(u8"中心偏移归零")){profile.centerOffset={};changed=save=true;}
+      ImGui::TreePop();
+    }
+    if(ImGui::SmallButton(u8"重置跟踪设置")) {
+      profile.response=1;profile.focusDepth=0;profile.smoothing=.04f;profile.centerOffset={};changed=save=true;
+    }
+    if(changed)poser_gaze::profiles[poser_gaze::editor.modelKey]=eye_gaze::Sanitize(profile);
+    if(save)poser_gaze::SaveProfiles();
+    ImGui::TextWrapped(u8"按角色自动保存，单人和多人共用；仅看向镜头时生效。");
+    ImGui::TreePop();
+  }
   if(ImGui::TreeNode(u8"校正与限位（当前角色）")) {
     ImGui::TextWrapped("%s",poser_gaze::binding.pmxReference?
       (poser_gaze::binding.estimatedLimits?u8"PMX 虹膜基准 · 眼眶估算限位":u8"PMX 虹膜基准 · 通用限位"):
       u8"游戏骨骼基准 · 通用限位");
     bool changed=false,save=false;
     auto slider=[&](const char *label,float &value,float low,float high) {
+      ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(60),ImGui::GetContentRegionAvail().x-
+          ImGui::CalcTextSize(label).x-ImGui::GetStyle().ItemInnerSpacing.x));
       changed|=ImGui::SliderFloat(label,&value,low,high,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
       save|=ImGui::IsItemDeactivatedAfterEdit();
     };
@@ -224,11 +257,11 @@ static void DrawGazeSection() {
     if(ImGui::SmallButton(u8"恢复角色默认")){poser_gaze::profiles.erase(poser_gaze::editor.modelKey);save=true;}
     if(save)poser_gaze::SaveProfiles();
     ImGui::TextWrapped(u8"修改自动按角色保存，单人和多人共用。斜向转动也受限；估算值可按眼型收紧。");
-    if(!poser_gaze::profileError.empty()) {
-      ImGui::TextWrapped("%s",poser_gaze::profileError.c_str());
-      if(ImGui::SmallButton(u8"重试保存"))poser_gaze::SaveProfiles();
-    }
     ImGui::TreePop();
+  }
+  if(!poser_gaze::profileError.empty()) {
+    ImGui::TextWrapped("%s",poser_gaze::profileError.c_str());
+    if(ImGui::SmallButton(u8"重试保存"))poser_gaze::SaveProfiles();
   }
   ImGui::EndDisabled();
   ImGui::TextWrapped("%s",ready?poser_gaze::status:u8"冻结角色，等待眼睛控制就绪");

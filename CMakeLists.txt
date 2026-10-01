@@ -48,10 +48,10 @@ if(WIN32)
     src/core/user_agreement.h src/editor/panel_agreement.h
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
-    src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
+    src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/core/build_features.h
     src/core/game_hooks.h
-    src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h
+    src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h src/editor/panel_scale.h
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
@@ -59,6 +59,7 @@ if(WIN32)
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
     src/game/mmd_runtime_api.h src/game/mmd_avatar.h src/math/mmd_avatar.h
     src/math/mmd_thumb.h resources/character-thumbs/builtin.h
+    src/math/mmd_motion_calibration.h src/editor/panel_mmd_motion_calibration.h
     src/game/mmd_terrain.h src/math/mmd_terrain.h
     src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h src/cloth/core/cloth_actor_context.h
     src/math/cloth_playback_start.h src/cloth/bonecloth/cloth_bonecloth_limits.h
@@ -172,6 +173,10 @@ if(MSVC)
   add_poser_test(test_smc_ownership tests/test_smc_ownership.cpp)
   add_poser_test(test_agreement_ui tests/test_agreement_ui.cpp)
   target_include_directories(test_agreement_ui PRIVATE deps/imgui)
+  add_poser_test(test_slider_input tests/test_slider_input.cpp)
+  target_include_directories(test_slider_input PRIVATE deps/imgui)
+  add_poser_test(test_panel_scale tests/test_panel_scale.cpp)
+  target_include_directories(test_panel_scale PRIVATE deps/imgui)
   add_poser_test(test_mmd_camera_runtime tests/test_mmd_camera_runtime.cpp)
   add_poser_test(test_mmd_camera_settings tests/test_mmd_camera_settings.cpp)
   target_include_directories(test_mmd_camera_runtime PRIVATE deps/minhook_lib/include)

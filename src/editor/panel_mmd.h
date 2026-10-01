@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/panel_scale.h"
 #include "config.h"
 #include "game/mmd_player.h"
 #include "editor/panel_mmd_adaptation.h"
@@ -27,10 +28,9 @@ static void DrawMmdHotkeyHints() {
                                                   : u8"单人播放器");
 }
 
-static void DrawMmdAmplitude() {
+static bool DrawMmdAmplitude(mmd::MotionAmplitude &a, int scope) {
   if (!ImGui::CollapsingHeader(u8"动作幅度（全身 / 分部位）"))
-    return;
-  auto &a = g_mmd.amplitude;
+    return false;
   bool changed = false;
   auto slider = [&](const char *label, float &value) {
     float percent = value * 100.f;
@@ -45,7 +45,8 @@ static void DrawMmdAmplitude() {
     changed = true;
   }
   if (ImGui::TreeNode(u8"分部位调整")) {
-    static bool linked = false;
+    static bool linkedTargets[5] = {};
+    bool &linked = linkedTargets[scope];
     if (ImGui::Checkbox(u8"左右联动（开启时以左侧为准）", &linked) && linked) {
       for (int i = 2; i < int(mmd::MotionPart::Count); i += 2)
         a.parts[i + 1] = a.parts[i];
@@ -70,8 +71,8 @@ static void DrawMmdAmplitude() {
   }
   ImGui::TextWrapped(u8"全身与部位强度相乘；100% 保留原动作。");
 
-  if (changed)
-    MmdApplyFrame();
+  // Both active and paused players sample these settings on the game thread.
+  return changed;
 }
 
 static void DrawMmdCloth() {
@@ -255,15 +256,16 @@ static void DrawMmdPanel() {
   auto &m = g_mmd;
   if (!m.show)
     return;
-  const bool wide = ImGui::GetIO().DisplaySize.x >= 1630;
-  ImGui::SetNextWindowPos(ImVec2(wide ? 1130.f : 380.f, wide ? 10.f : 370.f), PanelPositionCondition());
-  ImGui::SetNextWindowSize(ImVec2(470, 520), ImGuiCond_FirstUseEver);
+  const bool wide = ImGui::GetIO().DisplaySize.x >= poser_ui::Scale(1630);
+  poser_ui::NextPanel(u8"MMD 播放器", {wide ? 1130.f : 380.f, wide ? 10.f : 370.f},
+                     {470, 520}, {360, 300}, g_resetPanelLayoutFrames > 0);
   if (!ImGui::Begin(u8"MMD 播放器", &m.show, g_pinPanels ? ImGuiWindowFlags_NoMove : 0)) {
     ImGui::End();
     return;
   }
   if (MmdSquadBusy()) {
     ImGui::TextWrapped(u8"多人播放器正在控制小队，请在多人面板暂停或停止。");
+    if (ImGui::Button(u8"动作校准…")) MmdOpenMotionCalibration();
     ImGui::End();
     return;
   }
@@ -361,7 +363,10 @@ static void DrawMmdPanel() {
           ImGui::SliderFloat(u8"贴地强度", &m.terrain.strength, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
           ImGui::TextWrapped("%s", m.session.terrain.status);
         }
-        DrawMmdAmplitude();
+        if (ImGui::Button(u8"动作校准…")) {
+          if (g_mmdSquadBridge.selectSingle) g_mmdSquadBridge.selectSingle();
+          MmdOpenMotionCalibration();
+        }
         DrawMmdCloth();
         ImGui::EndDisabled();
         ImGui::EndTabItem();
@@ -491,7 +496,7 @@ static void DrawMmdPanel() {
             float &gain = native ? kv.second.nativeGain : kv.second.gain;
             ImGui::PushID(kv.first.c_str());
             ImGui::TextUnformatted(kv.first.c_str());
-            ImGui::SetNextItemWidth(185);
+            ImGui::SetNextItemWidth(poser_ui::Scale(185));
             bool valid =
                 slider >= 0 && (native ? slider < SMCSliderCount()
                                        : m.characterFace && slider < int(m.characterFace->morphs.size()));
@@ -518,7 +523,7 @@ static void DrawMmdPanel() {
               ImGui::EndCombo();
             }
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(130);
+            ImGui::SetNextItemWidth(poser_ui::Scale(130));
             changed |= ImGui::SliderFloat("##gain", &gain, 0, 2, "%.2f");
             if (!native && valid && m.characterFace->morphs[slider].residual > .1f)
               ImGui::TextDisabled(u8"此表情部分形状为近似");
@@ -606,7 +611,7 @@ static void DrawMmdPanel() {
           {
             if (m.report.empty())
               ImGui::TextDisabled(u8"没有发现未映射轨道");
-            ImGui::BeginChild("##mmdreport", ImVec2(0, 130), true);
+            ImGui::BeginChild("##mmdreport", poser_ui::Size(0, 130), true);
             for (auto &line : m.report)
               ImGui::TextWrapped("%s", line.c_str());
             ImGui::EndChild();

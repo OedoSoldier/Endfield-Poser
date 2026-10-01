@@ -1,6 +1,6 @@
 #pragma once
 #include "math/mmd_rig.h"
-#include "math/mmd_amplitude.h"
+#include "math/mmd_motion_calibration.h"
 
 namespace mmd {
 // Endfield's two serial twist helpers share one MMD twist: half locally at
@@ -100,14 +100,15 @@ std::vector<ArmTwistBinding> BindArmTwists(const RigDefinition &source,
 }
 template<class Profile,class Pose>
 bool ApplyArmTwists(const std::vector<ArmTwistBinding> &bindings,
-    const RigPose &source,const Profile &target,const MotionAmplitude &amplitude,Pose &output) {
+    const RigPose &source,const Profile &target,const MotionAmplitude &amplitude,Pose &output,
+    const MotionCalibration &calibration = {}) {
   bool changed=false;
   for(const auto &b:bindings) {
     if(!output.write[b.start]||!output.write[b.end])continue;
     const auto delta=NormQ(Conj(source.rotations[b.sourceStart])*source.rotations[b.sourceEndParent]);
     float angle=0;
     if(!ArmTwistAngle(delta,b.sourceAxis,angle))continue;
-    angle*=amplitude.factor(b.endRole);
+    angle*=amplitude.factor(b.endRole)*calibration.factor(b.endRole);
     for(int link=0;link<2;++link) {
       const int i=b.helpers[link];
       output.localRot[i]=NormQ(Quat::AxisAngle(b.axes[link],angle*.5f)*target.bones[i].localRot);

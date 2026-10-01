@@ -109,12 +109,16 @@ static void HandleRequest(SOCKET c, const std::string &path,
     auto &s=g_squad;nlohmann::json slots=nlohmann::json::array();
     for(int i=0;i<4;++i) {
       auto &slot=s.slots[i];auto *a=s.actors[i].get();
+      const auto motion=MmdMotionSettings(i+1);
       ClothActorScope clothScope(unsigned(i)+1);
       s_collisionInspect.store(true);
       const auto cloth=CollisionGetUi();
       slots.push_back({{"slot",i+1},{"enabled",slot.enabled},{"member",slot.member},
         {"ready",s.roster.members[i].animator!=nullptr},{"file",slot.file},{"status",slot.status},
         {"calibrated",slot.calibrated},{"calibration",slot.calibration},
+        {"independent_motion_calibration",g_mmd.squadMotion[i].independent},
+        {"motion_calibration",mmd::MotionCalibrationJson(motion.motion)},
+        {"motion_amplitude",mmd::AmplitudeJson(motion.amplitude)},
         {"active",a!=nullptr},{"bones",a?a->bones.size():0},
         {"thumb_calibration",a?a->thumbStatus:""},
         {"terrain_status",a?a->saved.terrain.status:""},{"terrain_root",a?a->saved.terrain.rootOffset:0},
@@ -187,6 +191,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"source_rig",m.rig.name},{"source_preset",m.sourcePreset},
         {"ik_mode",int(m.ikMode)},{"pmx_reference",m.reference},
         {"motion_amplitude",mmd::AmplitudeJson(m.amplitude)},
+        {"motion_calibration",mmd::MotionCalibrationJson(m.motionCalibration)},
       {"leg_ik_left",m.session.active && !m.preview && m.mapper.output.legIkActive[0]},
       {"leg_ik_right",m.session.active && !m.preview && m.mapper.output.legIkActive[1]},
       {"rig_bones",m.rig.bones.size()},
@@ -759,9 +764,25 @@ cv.addEventListener('mousemove',e=>{
 });
 cv.addEventListener('mouseup',()=>{drag=-1;});
 // 滑条：按下拖动时发送增量
+function manualSlider(el,lab,begin){
+  const edit=e=>{
+    e.preventDefault();
+    if(el.disabled)return;
+    const text=window.prompt('输入数值（'+el.min+' ～ '+el.max+'）',el.value);
+    if(text===null||text.trim()==='')return;
+    const value=Number(text);
+    if(!Number.isFinite(value))return;
+    begin();
+    el.value=String(Math.max(Number(el.min),Math.min(Number(el.max),value)));
+    el.dispatchEvent(new Event('input',{bubbles:true}));
+  };
+  el.addEventListener('dblclick',edit);lab.addEventListener('dblclick',edit);
+  el.title=lab.title='双击输入数值';
+}
 function slider(id,axis){
   const el=document.getElementById(id),lab=document.getElementById(id+'v');
   let base=0;
+  manualSlider(el,lab,()=>{base=parseFloat(el.value);});
   el.addEventListener('pointerdown',()=>{base=parseFloat(el.value);});
   el.addEventListener('input',()=>{
     const d=parseFloat(el.value)-base;
@@ -774,6 +795,7 @@ document.getElementById('chkAcc').addEventListener('change',e=>{post('/api/freez
 function posSlider(id,key){
   const el=document.getElementById(id),lab=document.getElementById(id+'v');
   let base=0;
+  manualSlider(el,lab,()=>{base=parseFloat(el.value);});
   el.addEventListener('pointerdown',()=>{base=parseFloat(el.value);});
   el.addEventListener('input',()=>{
     const d=parseFloat(el.value)-base;

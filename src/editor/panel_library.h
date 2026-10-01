@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/panel_scale.h"
 
 // Task 3.3：姿态预设库面板。
 // 展示 plugin/poses/*.poser.json，点选加载/覆盖/删除；输入名字可另存为。
@@ -126,7 +127,7 @@ static void DrawLibraryPanel() {
   if (g_poseFiles.empty()) {
     ImGui::TextDisabled(u8"\uff08\u6682\u65e0\u9884\u8bbe\uff09");
   } else {
-    ImGui::BeginChild("##poselist", ImVec2(0, 160), true);
+    ImGui::BeginChild("##poselist", poser_ui::Size(0, 160), true);
     for (size_t i = 0; i < g_poseFiles.size(); i++) {
       bool sel = ((int)i == g_selectedPose);
       if (ImGui::Selectable(g_poseFiles[i].c_str(), sel))

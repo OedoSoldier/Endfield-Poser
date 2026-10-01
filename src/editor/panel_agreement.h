@@ -3,6 +3,7 @@
 // https://github.com/Sasye/EIEM (AGPL-3.0). Text adapted for Endfield Poser.
 #include "imgui.h"
 #include "core/user_agreement.h"
+#include "editor/panel_scale.h"
 
 static bool g_showUserAgreement = false; // GUI thread only; reopen from main panel.
 
@@ -14,9 +15,10 @@ static bool DrawUserAgreement() {
   const ImVec2 display = ImGui::GetIO().DisplaySize;
   ImGui::SetNextWindowPos(ImVec2(display.x * .5f, display.y * .5f),
                           ImGuiCond_Always, ImVec2(.5f, .5f));
-  ImGui::SetNextWindowSize(ImVec2((std::min)(680.f, (std::max)(280.f, display.x - 24.f)),
-                                 (std::min)(680.f, (std::max)(300.f, display.y - 24.f))));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 14));
+  const auto available = poser_ui::AvailableSize();
+  ImGui::SetNextWindowSize(ImVec2((std::min)(poser_ui::Scale(680), available.x),
+                                 (std::min)(poser_ui::Scale(680), available.y)));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, poser_ui::Size(18, 14));
   ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(.075f, .085f, .11f, .98f));
   static DWORD saveError = ERROR_SUCCESS;
   if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoResize |
@@ -30,7 +32,7 @@ static bool DrawUserAgreement() {
     ImGui::Separator();
     const float footer = ImGui::GetFrameHeightWithSpacing() * 2.f +
                          ImGui::GetTextLineHeightWithSpacing() * (saveError ? 4.f : 2.f);
-    ImGui::BeginChild("##agreement_text", ImVec2(0, (std::max)(40.f,
+    ImGui::BeginChild("##agreement_text", ImVec2(0, (std::max)(poser_ui::Scale(40),
                       ImGui::GetContentRegionAvail().y - footer)), true);
     ImGui::PushStyleColor(ImGuiCol_Text, gold);
     ImGui::TextWrapped(u8"重要提示：不得制作或传播违反鹰角官方创作限制的产物。使用及创作、传播后果由用户自行承担；在法律允许的最大范围内，作者、维护者及贡献者不承担由此产生的责任。依法不得免责的情形除外。");
@@ -64,7 +66,7 @@ static bool DrawUserAgreement() {
       ImGui::TextWrapped(u8"确认记录保存失败（Windows 错误 %lu），请检查 plugin 目录写入权限后重试。", saveError);
     if (required) {
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.78f, .61f, .08f, 1));
-      if (ImGui::Button(u8"我已阅读并同意", ImVec2(0, 32))) {
+      if (ImGui::Button(u8"我已阅读并同意", poser_ui::Size(0, 32))) {
         if (poser_agreement::state.accept(PoserFilePath(poser_agreement::kFileName), saveError)) {
           // Do not replay controls pressed while the agreement was on screen.
           InterlockedExchange(&g_hotkeyFreezeReq, 0);
@@ -77,13 +79,13 @@ static bool DrawUserAgreement() {
       }
       ImGui::PopStyleColor();
       ImGui::SameLine();
-      if (ImGui::Button(u8"暂不使用", ImVec2(0, 32))) {
+      if (ImGui::Button(u8"暂不使用", poser_ui::Size(0, 32))) {
         g_guiVisible = false;
         saveError = ERROR_SUCCESS;
         ImGui::CloseCurrentPopup();
         Log("[AGREEMENT] deferred; plugin controls remain unavailable");
       }
-    } else if (ImGui::Button(u8"关闭", ImVec2(140, 32))) {
+    } else if (ImGui::Button(u8"关闭", poser_ui::Size(140, 32))) {
       g_showUserAgreement = false;
       ImGui::CloseCurrentPopup();
     }

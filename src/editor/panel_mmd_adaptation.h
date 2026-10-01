@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/panel_scale.h"
 #include "game/mmd_player.h"
 #include "imgui.h"
 
@@ -211,7 +212,7 @@ static void DrawMmdAdaptationPanel() {
     auto defaults = draft;
     defaults.roles.clear();
     auto resolved = mmd::AdaptedRoles(defaults);
-    ImGui::BeginChild("##mmdroles", ImVec2(0, 240), true);
+    ImGui::BeginChild("##mmdroles", poser_ui::Size(0, 240), true);
     for (int role = 0; role < 55; ++role) {
       ImGui::PushID(role);
       std::string fallback =
