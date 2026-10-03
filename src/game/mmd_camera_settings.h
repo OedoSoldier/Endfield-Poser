@@ -6,13 +6,14 @@ namespace mmd {
 inline nlohmann::json WriteFixedCameraSettings(const FixedCameraSettings &s) {
   return {{"version",1},{"distance",s.distance},{"focal_length",s.focalLength},
     {"yaw",s.yaw},{"pitch",s.pitch},{"offset",{s.offset.x,s.offset.y,s.offset.z}},
-    {"ignore_jump",s.ignoreJump}};
+    {"ignore_jump",s.ignoreJump},{"smooth_time",s.smoothTime}};
 }
 inline FixedCameraSettings ReadFixedCameraSettings(const nlohmann::json &j) {
   if(!j.is_object()||j.value("version",0)!=1)throw std::runtime_error("Invalid fixed camera settings");
   FixedCameraSettings s;s.distance=j.value("distance",4.f);s.focalLength=j.value("focal_length",35.f);
   s.yaw=j.value("yaw",0.f);s.pitch=j.value("pitch",0.f);
   s.ignoreJump=j.value("ignore_jump",false);
+  s.smoothTime=j.value("smooth_time",.15f);
   auto xyz=j.value("offset",std::vector<float>{0,1,0});
   if(xyz.size()!=3)throw std::runtime_error("Invalid fixed camera offset");
   s.offset={xyz[0],xyz[1],xyz[2]};

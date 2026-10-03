@@ -82,14 +82,31 @@ struct FixedCameraSettings {
   float distance=4, focalLength=35, yaw=0, pitch=0;
   Vec3 offset{0,1,0}; // Horizontal viewing axes; Y remains world up.
   bool ignoreJump=false;
+  float smoothTime=.15f;
 };
 inline bool ValidFixedCamera(const FixedCameraSettings &s) {
   return std::isfinite(s.distance)&&s.distance>=.2f&&s.distance<=100&&
     std::isfinite(s.focalLength)&&s.focalLength>=5&&s.focalLength<=300&&
     std::isfinite(s.yaw)&&std::fabs(s.yaw)<=180&&std::isfinite(s.pitch)&&std::fabs(s.pitch)<=85&&
     std::isfinite(s.offset.x)&&std::isfinite(s.offset.y)&&std::isfinite(s.offset.z)&&
-    std::fabs(s.offset.x)<=10&&std::fabs(s.offset.y)<=10&&std::fabs(s.offset.z)<=10;
+    std::fabs(s.offset.x)<=10&&std::fabs(s.offset.y)<=10&&std::fabs(s.offset.z)<=10&&
+    std::isfinite(s.smoothTime)&&s.smoothTime>=0&&s.smoothTime<=1;
 }
+struct FixedCameraSmoother {
+  Vec3 position,previous;
+  double lastTime=0;
+  bool ready=false;
+  Vec3 step(Vec3 target,float seconds,double now) {
+    const double dt=now-lastTime;
+    // Rebase after loading, a long callback gap or a large teleport. Never
+    // interpolate across sessions or use a frame-count-dependent gain.
+    if(!ready||!std::isfinite(now)||dt<0||dt>.5||Len(target-previous)>5||
+       !std::isfinite(seconds)||seconds<=0)position=target;
+    else if(dt>0)position=position+(target-position)*float(-std::expm1(-dt/seconds));
+    previous=target;lastTime=now;ready=std::isfinite(now);
+    return position;
+  }
+};
 inline CameraPose FixedCameraPose(const FixedCameraSettings &s,Vec3 target,Quat reference) {
   CameraPose p;
   Vec3 forward=reference*Vec3{0,0,1};forward.y=0;

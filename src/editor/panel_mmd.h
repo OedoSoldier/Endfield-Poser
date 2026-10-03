@@ -268,6 +268,8 @@ static void DrawFixedCameraControls() {
   ImGui::EndDisabled();
   changed|=ImGui::Checkbox(u8"不跟踪跳跃",&s.ignoreJump);
   if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"锁定勾选时的高度，仅跟随水平位移；上下偏移仍可调整。也不会跟随坡道、台阶的高度变化。");
+  changed|=ImGui::SliderFloat(u8"跟随平滑（秒）",&s.smoothTime,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"默认 0.15 秒；数值越大，跟随越柔和，滞后也越明显。0 关闭平滑，双击可输入数值。");
   changed|=ImGui::SliderFloat(u8"固定距离（米）",&s.distance,.2f,20,"%.2f",ImGuiSliderFlags_AlwaysClamp);
   changed|=ImGui::SliderFloat(u8"固定焦距（mm）",&s.focalLength,5,200,"%.1f",ImGuiSliderFlags_AlwaysClamp);
   changed|=ImGui::SliderFloat3(u8"跟踪点偏移（左右／上下／前后）",&s.offset.x,-3,3,"%.3f",ImGuiSliderFlags_AlwaysClamp);

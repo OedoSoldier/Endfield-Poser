@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.5.16**。新增固定跟踪镜头和“不跟踪跳跃”，增强衣物惯性与第二骨骼物理，支持中文组合表情绑定及预览，并更新角色口型校准。
+**当前预发布版：0.5.17**。固定跟踪镜头新增可调平滑，兼容“不跟踪跳跃”；补充 SBM 来源说明。保留衣物惯性与第二骨骼物理增强、组合表情绑定及角色口型修正。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.16/Endfield-Poser-v0.5.16-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.17/Endfield-Poser-v0.5.17-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 下载 **Endfield-Poser-v0.5.16-win64.zip** 安装包。
+1. 下载 **Endfield-Poser-v0.5.17-win64.zip** 安装包。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装或更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -32,7 +32,7 @@
 | 坡面和台阶播放 | 开启播放器的 **地形跟随**，按需调整贴地强度 |
 | 调整动作中的表情 | 在播放器 **表情 → 角色表情与强度** 中选择映射和强度 |
 | 配合音乐、镜头 | 在播放器 **镜头与音乐** 页选择文件和调整构图 |
-| 固定跟踪人物 | 在 **镜头与音乐 → 固定跟踪镜头** 锁定当前角色，调整距离、焦距，可勾选 **不跟踪跳跃** |
+| 固定跟踪人物 | 在 **镜头与音乐 → 固定跟踪镜头** 调整距离、焦距与跟随平滑，可勾选 **不跟踪跳跃** |
 | 自定义组合表情 | 在 **表情 → 手动绑定（高级）** 为一条表情添加多个目标，支持中文搜索和按住预览 |
 | 调整衣物物理 | 在播放器 **动作 → 衣物物理** 开关碰撞增强；飘带抖动时可在停止后调整 **飘带减振** |
 | 增强衣物惯性 | 在播放器 **动作 → 衣物物理** 调整 **衣物惯性物理增强**，让衣物、头发、尾巴等随动作摆动 |
@@ -43,7 +43,7 @@
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
-多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.16 更新说明](docs/releases/v0.5.16.md)。
+多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.17 更新说明](docs/releases/v0.5.17.md)。
 
 ## 常见问题
 
@@ -94,6 +94,8 @@ XXMI 联动仅供单独构建：运行 `build.bat -EnableXxmiBridge`，产物输
 ## 项目与许可
 
 MMD 表情参考自[茶叶味香皂](https://space.bilibili.com/3546783156276148)制作的《明日方舟：终末地》MMD 模型，感谢其模型制作与分享。模型及游戏资产的权利归各自权利人所有，使用相关素材请遵守原作者的使用规则。
+
+第二骨骼物理增强的角色骨骼名称与候选表参考自 [SBM（ShakingBreastManager）](https://github.com/Sp1cHless/Arknights-Endfield-Plugin-Secondary-bodyphysics)，感谢原项目作者的开发与分享。来源与许可说明见[许可文件](licenses/secondary-bodyphysics.txt)。
 
 本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，按 [AGPL-3.0](LICENSE) 提供。依赖许可证保存在 [licenses](licenses/) 中。
 

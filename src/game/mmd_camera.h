@@ -268,6 +268,7 @@ struct FixedLease {
   uint64_t session=0;void *actor=nullptr,*target=nullptr;
   uint32_t actorRef=0,targetRef=0;Quat reference;
   bool heightLocked=false;float lockedHeight=0;
+  mmd::FixedCameraSmoother smoother;
 } static fixedLease;
 static void ReleaseFixed() {
   if(il2cpp_gchandle_free) {
@@ -276,7 +277,7 @@ static void ReleaseFixed() {
   }
   fixedLease={};fixedHolding=false;
 }
-static bool BuildFixed(void *camera,const FixedRequest &f,Request &out) {
+static bool BuildFixed(void *camera,const FixedRequest &f,Request &out,double now=FrameNow()) {
   if(!f.actor||CharacterSwitchInProgress()||f.actor!=g_charAnimator||!UnityObjAlive(f.actor)||
      !mmd::ValidFixedCamera(f.settings)) {
     fixedEnabled=false;fixedStatus=u8"角色已切换或失效，固定跟踪已退出";ReleaseFixed();return false;
@@ -303,11 +304,16 @@ static bool BuildFixed(void *camera,const FixedRequest &f,Request &out) {
   // Latch only on activation, not on every settings update. The lease resets
   // this height when following restarts or the target changes.
   if(f.settings.ignoreJump) {
-    if(!fixedLease.heightLocked)fixedLease.lockedHeight=position.y;
+    if(!fixedLease.heightLocked)fixedLease.lockedHeight=
+      fixedLease.smoother.ready?fixedLease.smoother.position.y:position.y;
     position.y=fixedLease.lockedHeight;
   }
   fixedLease.heightLocked=f.settings.ignoreJump;
-  out={true,f.session,f.actor,mmd::FixedCameraPose(f.settings,position,fixedLease.reference)};
+  const Vec3 smoothPosition=fixedLease.smoother.step(position,f.settings.smoothTime,now);
+  auto pose=mmd::FixedCameraPose(f.settings,smoothPosition,fixedLease.reference);
+  // Focus on the current subject plane, not the delayed follow point.
+  pose.target=pose.target+(position-smoothPosition);
+  out={true,f.session,f.actor,pose};
   fixedStatus=u8"固定跟踪中：距离与焦距已锁定";return true;
 }
 // The native game uses instance void TailLateTick(float), including MethodInfo.
