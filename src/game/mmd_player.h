@@ -793,7 +793,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}, int motionTa
     saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
     saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
     saved["motion_calibration"] = mmd::MotionCalibrationJson(m.motionCalibration);
-    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load(),s_clothAutoEnabled.load(),s_collisionGeometry.load(),s_clothRibbonDamping.load(),s_clothLightness});
+    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load(),s_clothAutoEnabled.load(),s_collisionGeometry.load(),s_clothRibbonDamping.load(),s_clothLightness,s_clothHairStrength});
     saved["requires_pmx"] = m.reference;
     // Portable source structure check, never store a required local PMX path.
     if (m.reference) {
@@ -984,6 +984,7 @@ static void MmdPollLoad() {
         s_collisionGeometry.store(cloth.geometry);
         s_clothRibbonDamping.store(cloth.ribbonDamping);
         s_clothLightness=cloth.lightness;
+        s_clothHairStrength=cloth.hairStrength;
         ClothBoneQueueCommand(0,!cloth.enhancement);
         s_skirtDirty.store(true);
         m.ikMode = ik; m.adaptationFile = r.file;

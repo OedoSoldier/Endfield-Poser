@@ -4,10 +4,10 @@
 #include "nlohmann/json.hpp"
 
 namespace mmd {
-struct NativeClothPreset { float hipRadius = .124f; bool enhancement = true; int geometry = 1; float ribbonDamping = .3f; float lightness = 0; };
+struct NativeClothPreset { float hipRadius = .124f; bool enhancement = true; int geometry = 1; float ribbonDamping = .3f; float lightness = 0; float hairStrength = 1; };
 inline nlohmann::json NativeClothJson(const NativeClothPreset &c) {
   return {{"hip_radius", c.hipRadius}, {"enhancement", c.enhancement}, {"geometry", c.geometry},
-          {"ribbon_damping", c.ribbonDamping},{"lightness",c.lightness}};
+          {"ribbon_damping", c.ribbonDamping},{"lightness",c.lightness},{"hair_strength",c.hairStrength}};
 }
 inline NativeClothPreset ReadNativeCloth(const nlohmann::json &preset) {
   NativeClothPreset c;
@@ -26,6 +26,9 @@ inline NativeClothPreset ReadNativeCloth(const nlohmann::json &preset) {
   c.lightness=j.value("lightness",0.f);
   if(!std::isfinite(c.lightness)||c.lightness<0||c.lightness>1)
     throw std::runtime_error(u8"衣物轻盈度必须在 0–100% 之间");
+  c.hairStrength=j.value("hair_strength",1.f);
+  if(!std::isfinite(c.hairStrength)||c.hairStrength<0||c.hairStrength>3)
+    throw std::runtime_error(u8"头发惯性强度必须在 0–3 之间");
   return c;
 }
 inline const std::array<const char *, int(MotionPart::Count)> &MotionPartKeys() {

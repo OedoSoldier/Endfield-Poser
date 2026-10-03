@@ -83,7 +83,10 @@ static void DrawMmdSecondaryControls() {
   ImGui::Checkbox(u8"衣物惯性物理增强",&s_clothTurnEnabled);
   if(s_clothTurnEnabled) {
     ImGui::SliderFloat(u8"衣物惯性强度",&s_clothTurnStrength,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"响应横移、转身及起跳和落地。衣物跟随身体，头发和耳部跟随头部，尾巴跟随髋部。已有物理的挂件也会响应。暂停后自然收敛；冻结衣物时不生效。单人和多人共用此设置。");
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"控制衣物、尾巴、耳部和挂件的惯性响应，头发使用下方独立强度。暂停后自然收敛；冻结衣物时不生效。单人和多人共用此设置。");
+    ImGui::SliderFloat(u8"头发惯性强度",&s_clothHairStrength,0,3,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"独立控制头发对跳跃、移动和转身的响应，也缩放轻盈度带来的额外受力。默认 1，0 仅关闭额外惯性，保留游戏原有物理。支持双击输入和随适配预设保存；单人和多人共用。原有约束及受力上限仍然保留。");
+    ImGui::SameLine();if(ImGui::SmallButton(u8"复位##hairStrength"))s_clothHairStrength=1;
     float lightness=s_clothLightness*100.f;
     if(ImGui::SliderFloat(u8"衣物轻盈度",&lightness,0,100,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))
       s_clothLightness=lightness*.01f;

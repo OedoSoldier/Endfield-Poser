@@ -4,6 +4,7 @@
 
 static bool s_clothTurnEnabled=true;
 static float s_clothTurnStrength=1;
+static float s_clothHairStrength=1;
 static float s_clothLightness=0;
 struct ClothTurnState {
   uint64_t session=0,submissions=0,enhancedSubmissions=0,shapeRevisions=0;
@@ -73,7 +74,7 @@ static const cloth_turn::Shape *ClothTurnShape(const ClothRef &ref,cloth_turn::P
   return &entry.shape;
 }
 static bool ClothTurnNeeded() {
-  return s_clothTurnEnabled&&(s_clothTurnStrength>0||s_clothLightness>0)&&!s_clothTurn.fault&&s_cloth.active&&!s_cloth.releasing&&
+  return s_clothTurnEnabled&&(s_clothTurnStrength>0||s_clothHairStrength>0||s_clothLightness>0)&&!s_clothTurn.fault&&s_cloth.active&&!s_cloth.releasing&&
       s_clothRequested&&s_clothTurn.session==s_cloth.owner.session&&s_clothTurn.mailbox.count;
 }
 struct ClothTurnApi {void *force=nullptr,*center=nullptr,*valid=nullptr,*process=nullptr;int mode=0,enhancedMode=0;};
@@ -143,6 +144,8 @@ static void ClothTurnReadback(const ClothRef &ref,void *process,int expectedMode
 // TeamManager consumes external forces. No job buffer or mesh access.
 static bool ClothTurnForce(void *obj,const ClothRef &ref,cloth_turn::Part part,double now,
     const ClothInstance *source,const ClothBoneRuntime *enhanced,unsigned &budget) {
+  const float strength=part==cloth_turn::Part::Hair?s_clothHairStrength:s_clothTurnStrength;
+  if(part==cloth_turn::Part::Hair&&(!std::isfinite(strength)||strength<=0))return false;
   auto api=ClothTurnResolve(il2cpp_object_get_class(obj));
   if(!api.force||!api.center||!api.valid||!api.process||(enhanced&&!api.enhancedMode)) {s_clothTurn.status=u8"当前 BBC 不支持运动受力接口";return false;}
   bool enabled=false,valid=false;Vector3 center{};void *process=nullptr;
@@ -153,7 +156,7 @@ static bool ClothTurnForce(void *obj,const ClothRef &ref,cloth_turn::Part part,d
   // BBC adds impactForce to gravity/wind, then multiplies by its own fixed
   // simulationDeltaTime. Native API's historical velocity label is misleading
   // for this game build. Supply acceleration, not our sample's delta velocity.
-  Vec3 force=s_clothTurn.mailbox.force(part,{center.x,center.y,center.z},s_clothTurnStrength,now,s_clothLightness,shape);
+  Vec3 force=s_clothTurn.mailbox.force(part,{center.x,center.y,center.z},strength,now,s_clothLightness,shape);
   const float magnitude=Len(force);
   if(!std::isfinite(magnitude))return false;
   // Zero motion must not erase native wind or another system's force.
@@ -218,7 +221,7 @@ template<class Profile,class Bones>
 static void ClothTurnSubmit(const Profile &profile,const Bones &bones,double cursor,uint64_t epoch,bool playing,bool bodyMotion) {
   if(!ClothOnMainThread())return;
   auto &s=s_clothTurn;
-  if(!s_clothTurnEnabled||(s_clothTurnStrength<=0&&s_clothLightness<=0)||!bodyMotion||!s_clothRequested||!s_cloth.active||s_cloth.releasing) {
+  if(!s_clothTurnEnabled||(s_clothTurnStrength<=0&&s_clothHairStrength<=0&&s_clothLightness<=0)||!bodyMotion||!s_clothRequested||!s_cloth.active||s_cloth.releasing) {
     ClothTurnClear();s.status=u8"衣物惯性物理增强未启用";return;
   }
   if(s.session!=s_cloth.owner.session) {ClothTurnClear();s.session=s_cloth.owner.session;}

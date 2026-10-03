@@ -88,7 +88,10 @@ struct Motion {
     const Vec3 linear=acceleration*(-.35f)+Vec3{0,-.40f*acceleration.y,0};
     const Vec3 a=linear+Cross(alpha,radius)*(-.65f)
       +Cross(omega,tangent)*(-.65f)+tangent*(-.25f*Len(omega));
-    return Limited(a*(response*std::clamp(strength,0.f,2.f))+airResponse(pose.position+radius,lightness,part),12.f)*dt;
+    // Hair has an independent gain covering both inertia and moving-air
+    // response. Zero disables our extra force, leaving native physics alone.
+    const float gain=std::clamp(strength,0.f,part==Part::Hair?3.f:2.f);
+    return Limited(a*(response*gain)+airResponse(pose.position+radius,lightness,part)*(part==Part::Hair?gain:1.f),12.f)*dt;
   }
 };
 struct Tracker {
