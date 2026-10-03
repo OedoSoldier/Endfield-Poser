@@ -29,6 +29,22 @@ static void Publish(const Request &next) {
 }
 static void Stop() {desiredActive.store(false);request.active=false;}
 static uint64_t nextSession = 0;
+struct FixedRequest {uint64_t session=0;void *actor=nullptr;mmd::FixedCameraSettings settings;};
+static mmd::FixedCameraSettings fixedSettings;
+static FixedRequest fixedRequest;
+static std::shared_ptr<const FixedRequest> fixedPublished;
+static std::atomic<bool> fixedEnabled{false},fixedHolding{false};
+static std::atomic<const char*> fixedStatus{u8"固定跟踪未开启"};
+// UI publishes settings only. All target reads and retained handles belong to
+// the verified camera callback, including handoff and release.
+static void SetFixed(bool enabled,void *actor=nullptr) {
+  if(!enabled){fixedEnabled=false;fixedStatus=u8"固定跟踪已关闭";return;}
+  if(!mmd::ValidFixedCamera(fixedSettings)){fixedStatus=u8"跟踪参数无效，请复位";return;}
+  if(!fixedEnabled||fixedRequest.actor!=actor)fixedRequest.session=++nextSession;
+  fixedRequest.actor=actor;fixedRequest.settings=fixedSettings;
+  std::atomic_store(&fixedPublished,std::make_shared<const FixedRequest>(fixedRequest));
+  fixedEnabled=true;
+}
 static std::atomic<uint64_t> applied{0},callbacks{0},lastSequence{0},repeatedFrames{0};
 static std::atomic<double> lastCallback{-1e30},sourceFrame{0};
 static std::atomic<bool> restorePending{false},driverPaused{false};
@@ -200,14 +216,14 @@ static bool Apply(void *camera,void *transform,const mmd::CameraPose &p) {
   ok=Write(setOrtho,camera,!p.perspective)&&ok;
   if(lease.physicalLens) {
     LensVector sensor;
-    if(!Read(getSensor,camera,sensor)) return false;
-    float focal=mmd::CameraFocalLength(p.fov,sensor.y);
+    if(!Read(getSensor,camera,sensor)||!std::isfinite(sensor.y)||sensor.y<=0) return false;
+    float focal=p.focalLength>0?p.focalLength:mmd::CameraFocalLength(p.fov,sensor.y);
     if(!std::isfinite(focal) || focal<=0) return false;
     // Vertical gate fit preserves the VMD vertical FOV at any window aspect.
     ok=Write(setGate,camera,1)&&ok;
     ok=Write(setShift,camera,LensVector{})&&ok;
     ok=Write(setFocal,camera,focal)&&ok;
-  } else ok=Write(setFov,camera,p.fov)&&ok;
+  } else ok=Write(setFov,camera,p.focalLength>0?mmd::CameraVerticalFov(p.focalLength):p.fov)&&ok;
   ok=Write(setSize,camera,p.orthoSize)&&ok;
   ok=Write(g_transform_set_position,transform,p.position)&&ok;
   ok=Write(g_transform_set_rotation,transform,p.rotation)&&ok;
@@ -219,33 +235,81 @@ static bool Apply(void *camera,void *transform,const mmd::CameraPose &p) {
   } else {focusActive=false;focusDistance=0;}
   return ok;
 }
-static void Pump(void *camera,const Request &sample) {
+static bool Pump(void *camera,const Request &sample) {
   ++callbacks;lastCallback=FrameNow();
   bool active=sample.active && !CharacterSwitchInProgress() &&
               sample.actor==g_charAnimator && UnityObjAlive(sample.actor) &&
               (!sample.followActor || UnityObjAlive(sample.followActor));
   if (!active) {
     if (Restore()) status=u8"镜头已停止，原相机已恢复";
-    return;
+    return false;
   }
   const auto &p=sample.pose;
   auto finite=[](Vec3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
   if (!finite(p.position) || !finite(p.target) || !std::isfinite(p.fov) || !std::isfinite(p.orthoSize) ||
+      !std::isfinite(p.focalLength) || p.focalLength<0 ||
       !std::isfinite(QuatLen(p.rotation)) || QuatLen(p.rotation)<.5f) {
-    desiredActive=false;Restore();status=u8"镜头参数不是有限数值，请复位镜头调整";return;
+    desiredActive=false;Restore();status=u8"镜头参数不是有限数值，请复位镜头调整";return false;
   }
   if (lease.camera && (lease.camera!=camera || lease.session!=sample.session))
-    if (!Restore()) return;
-  if (!UnityObjAlive(camera)) {status=u8"等待游戏主相机";return;}
-  if (!lease.camera && !Capture(camera,sample)) {status=u8"无法保存原相机状态，未接管";return;}
-  if (!UnityObjAlive(lease.transform)) {Restore();status=u8"相机实例已失效";return;}
-  if (!Apply(camera,lease.transform,p)) {desiredActive=false;Restore();status=u8"相机写入失败，已退出接管";return;}
+    if (!Restore()) return false;
+  if (!UnityObjAlive(camera)) {status=u8"等待游戏主相机";return false;}
+  if (!lease.camera && !Capture(camera,sample)) {status=u8"无法保存原相机状态，未接管";return false;}
+  if (!UnityObjAlive(lease.transform)) {Restore();status=u8"相机实例已失效";return false;}
+  if (!Apply(camera,lease.transform,p)) {desiredActive=false;Restore();status=u8"相机写入失败，已退出接管";return false;}
   lease.lastPose=p;lease.hasPose=true;
   if(sample.sequence && sample.sequence==lastSequence.load())++repeatedFrames;
   lastSequence=sample.sequence;sourceFrame=sample.sourceFrame;
   ++applied;status=u8"镜头播放中（暂停时保持当前镜头）";
+  return true;
 }
 static void Pump(void *camera) {Pump(camera,request);}
+struct FixedLease {
+  uint64_t session=0;void *actor=nullptr,*target=nullptr;
+  uint32_t actorRef=0,targetRef=0;Quat reference;
+  bool heightLocked=false;float lockedHeight=0;
+} static fixedLease;
+static void ReleaseFixed() {
+  if(il2cpp_gchandle_free) {
+    if(fixedLease.actorRef)il2cpp_gchandle_free(fixedLease.actorRef);
+    if(fixedLease.targetRef)il2cpp_gchandle_free(fixedLease.targetRef);
+  }
+  fixedLease={};fixedHolding=false;
+}
+static bool BuildFixed(void *camera,const FixedRequest &f,Request &out) {
+  if(!f.actor||CharacterSwitchInProgress()||f.actor!=g_charAnimator||!UnityObjAlive(f.actor)||
+     !mmd::ValidFixedCamera(f.settings)) {
+    fixedEnabled=false;fixedStatus=u8"角色已切换或失效，固定跟踪已退出";ReleaseFixed();return false;
+  }
+  if(fixedLease.session!=f.session||fixedLease.actor!=f.actor) {
+    ReleaseFixed();void *target=nullptr,*view=nullptr;Quat reference;
+    if(!UnityObjAlive(camera)||!Call(g_component_get_transform,f.actor,nullptr,&target)||!UnityObjAlive(target)||
+       !Call(g_component_get_transform,camera,nullptr,&view)||!UnityObjAlive(view)||
+       !Read(g_transform_get_rotation,view,reference)||!std::isfinite(QuatLen(reference))||QuatLen(reference)<.5f||
+       !il2cpp_gchandle_new||!il2cpp_gchandle_free) {
+      fixedStatus=u8"等待角色和相机就绪";return false;
+    }
+    fixedLease={f.session,f.actor,target,il2cpp_gchandle_new(f.actor,false),il2cpp_gchandle_new(target,false),NormQ(reference)};
+    if(!fixedLease.actorRef||!fixedLease.targetRef) {
+      ReleaseFixed();fixedEnabled=false;fixedStatus=u8"无法保留跟踪对象，未接管";return false;
+    }
+    fixedHolding=true;
+  }
+  Vec3 position;
+  if(!UnityObjAlive(fixedLease.target)||!Read(g_transform_get_position,fixedLease.target,position)||
+     !std::isfinite(position.x)||!std::isfinite(position.y)||!std::isfinite(position.z)) {
+    fixedEnabled=false;ReleaseFixed();fixedStatus=u8"跟踪对象位置失效，已退出";return false;
+  }
+  // Latch only on activation, not on every settings update. The lease resets
+  // this height when following restarts or the target changes.
+  if(f.settings.ignoreJump) {
+    if(!fixedLease.heightLocked)fixedLease.lockedHeight=position.y;
+    position.y=fixedLease.lockedHeight;
+  }
+  fixedLease.heightLocked=f.settings.ignoreJump;
+  out={true,f.session,f.actor,mmd::FixedCameraPose(f.settings,position,fixedLease.reference)};
+  fixedStatus=u8"固定跟踪中：距离与焦距已锁定";return true;
+}
 // The native game uses instance void TailLateTick(float), including MethodInfo.
 using TailFn=void(__fastcall *)(void*,float,void*);
 static TailFn original=nullptr;
@@ -264,11 +328,20 @@ static void __fastcall Tail(void *self,float dt,void *method) {
     sample.active=sample.active && desiredActive.load() && sample.session==desiredSession.load();
     void *camera=nullptr;
     Call(getMain,self,nullptr,&camera);
-    Pump(camera,sample);
+    const bool tracking=fixedEnabled.load();
+    if(tracking) {
+      auto fixed=std::atomic_load(&fixedPublished);sample={};
+      if(fixed)BuildFixed(camera,*fixed,sample);
+    } else ReleaseFixed();
+    const bool appliedSample=Pump(camera,sample);
+    if(tracking&&sample.active) {
+      if(appliedSample)status=u8"固定跟踪中（关闭跟踪恢复原相机）";
+      else {fixedEnabled=false;fixedStatus=status.load();}
+    }
     // Observe the final game/MMD camera, after any playback offset is applied.
     std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
     if(lock.owns_lock() && afterCamera)afterCamera(camera);
-  } catch (...) {desiredActive=false;status=u8"相机回调异常，等待恢复";}
+  } catch (...) {desiredActive=false;fixedEnabled=false;status=u8"相机回调异常，等待恢复";}
 }
 static bool Signature(void *method,bool isStatic,int result,int argument=-1) {
   if (!method || !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||

@@ -600,7 +600,7 @@ static void ClothInputCompleted(void *manager, void *caller) {
 static void ClothSurfaceBeforeTeam(void *self, void *caller) {
   if (!ClothOnMainThread() || !s_clothSurfaceHook || !s_clothInputHooks ||
       s_clothInputUpdateDepth != 1 || s_clothSurfaceAtBoundary ||
-      caller != s_clothSurfaceTeamCallsite || (!ClothBonePending()&&!ClothPrefetchNeedsHooks())) return;
+      caller != s_clothSurfaceTeamCallsite || (!ClothBonePending()&&!ClothPrefetchNeedsHooks()&&!ClothTurnNeeded())) return;
   __try {
     const bool fingerprint = s_clothInputUpdateCode && s_clothSurfaceTeamCode &&
         eiem_cloth_input::Fingerprint(s_clothInputUpdateCode, ClothInputAuditedBytes) == s_clothInputPatchedFingerprint &&
@@ -612,7 +612,7 @@ static void ClothSurfaceBeforeTeam(void *self, void *caller) {
     if (!ClothInvoke(ClothMethod(s_clothInputManagerClass, "get_Team", "BeyondDynamicBone.TeamManager", nullptr, true),
                      nullptr, nullptr, team) || team != self) return;
     s_clothSurfaceAtBoundary = true;
-    __try { ClothPrefetchBoundary();if(ClothBonePending())ClothBoneBoundary(); }
+    __try { ClothPrefetchBoundary();if(ClothBonePending())ClothBoneBoundary();ClothTurnBoundary(); }
     __finally { s_clothSurfaceAtBoundary = false; }
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     ClothBoneRelease("lifetime-boundary-native-exception");

@@ -195,24 +195,9 @@ static void MmdSquadCollectWriters(MmdSquadActor &actor) {
 static void MmdSquadFaceMap(MmdSquadActor &actor,const mmd::MotionClip &clip) {
   const auto key=character_face::ModelKey(actor.profile.model);
   if(!actor.faceProfile)for(auto &profile:g_mmd.faceLibrary) if(profile->key==key) {actor.faceProfile=profile;break;}
-  for(const auto &track:clip.morphs) {
-    MmdMorphMapping map;std::string name=track.first;
-    if(actor.faceProfile) {
-      const auto &all=g_mmd.faceSavedMappings;
-      if(all.contains(key)&&all[key].contains(name)) {
-        const auto &v=all[key][name];name=v.value("morph",name);map.gain=face_geometry::Clamp(v.value("gain",1.f),0,2);
-      }
-      map.slider=character_face::FindMorph(*actor.faceProfile,name);
-    }
-    for(const auto &native:SMCManualCatalog())if(mmd::Name(native.name)==track.first)map.nativeSlider=native.channel;
-    const auto &fixed=g_mmd.faceSavedNativeMappings;
-    if(fixed.contains(track.first)) {
-      map.nativeSlider=fixed[track.first].value("slider",map.nativeSlider);
-      map.nativeGain=face_geometry::Clamp(fixed[track.first].value("gain",1.f),0,2);
-    }
-    if(map.nativeSlider<0||map.nativeSlider>=SMCSliderCount())map.nativeSlider=-1;
-    actor.morphs[track.first]=map;
-  }
+  const auto catalog=SMCManualCatalog();
+  for(const auto &track:clip.morphs)actor.morphs[track.first]=mmd_face_bindings::Resolve(
+      track.first,actor.faceProfile.get(),catalog,g_mmd.faceSavedMappings,g_mmd.faceSavedNativeMappings);
 }
 static void MmdSquadCapture(int slot,const poser_squad::Member &member) {
   auto &s=g_squad;auto &ptr=s.actors[slot];ptr=std::make_unique<MmdSquadActor>();auto &a=*ptr;
@@ -282,6 +267,8 @@ static void MmdSquadLoadActorCalibration(int slot) {
   {SMCActorScope face(a.face.get());SMCFaceSelectProfile(a.faceProfile,a.profile.model);SMCMotionNeutral(a.member.animator);}
   s.slots[slot].calibrated=true;s.slots[slot].calibration=a.profile.fingerprint.find("avatar1-")==0?u8"Avatar 自动适配完成":u8"已读取保存的备用校准";
   s.slots[slot].status=u8"骨架与校准就绪";
+  if(poser_secondary::enabled&&!s.slots[slot].clip.bones.empty())
+    poser_secondary::Prepare(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,MmdNow());
 }
 static void MmdSquadStop() {
   auto &s=g_squad;MmdSquadCancelStart();s.stopRequested=false;s.timeline.stop();
@@ -310,6 +297,7 @@ static void MmdSquadStop() {
       for(const auto &bone:a.saved.transforms)MmdRawPose(bone.transform,bone.pos,bone.rot);
       MmdRawPose(a.saved.root,a.saved.rootPos,a.saved.rootRot);
       if(a.member.animator==g_charAnimator)CapturePoseSnapshot();
+      poser_secondary::Stop(a.saved.secondary,true,false);
       for(const auto &component:a.saved.components)MmdEnable(component.component,component.enabled);
       for(const auto &prop:a.saved.props)MmdSetActive(prop.object,prop.active);
     }
@@ -319,6 +307,7 @@ static void MmdSquadStop() {
           s_humanBones[n].localPos=bone.pos;s_humanBones[n].localRot=bone.rot;break;
         }
     }
+    poser_secondary::Stop(a.saved.secondary,false,false);
     ptr.reset();
   }
   if(occupied) {
@@ -384,6 +373,7 @@ static void MmdSquadDuration() {
     g_mmd.cameraSettings.enabled?mmd::CameraDuration(keys,g_mmd.cameraSettings):0);
 }
 static bool MmdSquadStart() {
+  SMCClearBindingPreview();
   auto &s=g_squad;
   if(s.loading||g_mmd.loading||g_mmd.preview||g_mmd.session.active) {MmdSquadCancelStart();s.status=u8"请先完成导入或停止单人播放 / 校准";return false;}
   MmdSquadQueueStart();if(!MmdSquadPendingValid())return false;
@@ -505,12 +495,10 @@ static void MmdSquadApply() {
       face.profile=a.faceProfile;face.settings=g_mmd.faceSettings;
       for(const auto &track:a.morphs) {
         const auto &map=track.second;float value=mmd::SampleMorph(slot.clip.morphs.at(track.first),frame);
-        bool calibrated=map.slider>=0&&s_characterBinding.ready&&map.slider<int(s_characterBinding.usable.size())&&s_characterBinding.usable[map.slider];
-        if(calibrated)face.expressions[map.slider]=(std::max)(face.expressions[map.slider],face_geometry::Clamp(value*map.gain,0,1));
-        if(map.nativeSlider>=0) {
-          int id=map.nativeSlider;face.weights[id]=face_geometry::Clamp(face.weights[id]+value*map.nativeGain,0,1);
-          if(!calibrated)face.fallbackWeights[id]=face_geometry::Clamp(face.fallbackWeights[id]+value*map.nativeGain,0,1);
-        }
+        mmd_face_bindings::Apply(map,value,face,[&](int id) {
+          return a.faceProfile&&s_characterProfile==a.faceProfile&&s_characterBinding.ready&&
+            s_characterBindingGeneration==s_faceGeneration&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id];
+        });
       }
       for(int e=0;e<2;++e) {int j=a.profile.roles[21+e];if(j>=0&&j<int(pose.write.size())&&pose.write[j]) {
         face.eyeDriven[e]=true;face.eyes[e]=a.bones[j].transform;face.eyeRotation[e]=pose.localRot[j];
@@ -523,7 +511,11 @@ static void MmdSquadApply() {
     {
       ClothActorScope scope(unsigned(n)+1);
       ClothService(true,MmdSquadClothMayAdjustAnchor,frame);
+      ClothTurnSubmit(a.profile,a.bones,s.timeline.seconds,a.saved.terrain.epoch,
+          s.timeline.state==mmd::PlayState::Playing&&!s.timeline.clockHeld,!slot.clip.bones.empty());
     }
+    poser_secondary::Tick(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,
+        MmdNow(),s.timeline.seconds,a.saved.terrain.epoch,s.timeline.state==mmd::PlayState::Playing&&!s.timeline.clockHeld,!slot.clip.bones.empty());
   }
   const auto &keys=MmdCameraKeys();
   if(g_mmd.cameraSettings.enabled&&!keys.empty()&&mmd_camera::ready) {

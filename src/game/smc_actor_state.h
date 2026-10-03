@@ -163,6 +163,8 @@ struct SMCActorState {
   SRWLOCK motionFaceLock = SRWLOCK_INIT;
   SMCMotionFrame motionFaceMailbox{};
   SMCMotionFrame motionFaceCurrent{};
+  SMCMotionFrame bindingPreview{};
+  ULONGLONG bindingPreviewDeadline=0;
   bool motionFaceSaved=false;
   bool motionSavedDriving=false;
   bool motionSavedBaseReady=false;

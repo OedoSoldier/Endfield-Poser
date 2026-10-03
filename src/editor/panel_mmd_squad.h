@@ -127,6 +127,9 @@ static void DrawMmdSquadPanel() {
       if (s.terrain.enabled)
         ImGui::SliderFloat(u8"贴地强度", &s.terrain.strength, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       bool clothEnabled = s_clothSquadAutoEnabled.load();
+      DrawMmdSecondaryControls();
+      if(poser_secondary::enabled)for(unsigned i=0;i<4;++i)if(s.actors[i])
+        ImGui::TextWrapped(u8"第 %u 位第二骨骼：%s",i+1,s.actors[i]->saved.secondary.status.c_str());
       if (ImGui::Checkbox(u8"全队衣物物理增强", &clothEnabled))
         ClothSetSquadEnhancementEnabled(clothEnabled);
       if (ImGui::IsItemHovered())
@@ -135,6 +138,7 @@ static void DrawMmdSquadPanel() {
         if (!s.actors[i] && !ClothActorEngaged(i + 1))
           continue;
         ClothActorScope scope(i + 1);
+        if(s_clothTurnEnabled&&s.actors[i])ImGui::TextWrapped(u8"第 %u 位衣物惯性：%s（衣物 %u / 头发 %u / 尾巴 %u / 耳部 %u / 挂件 %u；其中增强 %u）",i+1,s_clothTurn.status,s_clothTurn.clothing,s_clothTurn.hair,s_clothTurn.tail,s_clothTurn.ears,s_clothTurn.accessories,s_clothTurn.enhancedCount);
         const auto cloth = CollisionGetUi();
         const int applied = cloth.authoredApplied + cloth.autoConnectionsApplied +
                             cloth.autoSkinApplied + cloth.autoPartialApplied;
@@ -185,6 +189,7 @@ static void DrawMmdSquadPanel() {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"镜头与音乐")) {
+      DrawFixedCameraControls();
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
       {
         ImGui::TextWrapped(u8"与单人面板共用音乐和镜头文件；由全队时间轴同步播放。");

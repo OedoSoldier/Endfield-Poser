@@ -883,6 +883,7 @@ static bool ClothRestore() {
 }
 static void ClothReleaseImpl(const char *reason) {
   if (!ClothOnMainThread()) { ClothRequestInvalidation(); return; }
+  ClothTurnClear();
   ClothInputClear();
   ClothCollisionRelease(reason);
   if (!s_cloth.active) return;

@@ -65,7 +65,11 @@ static void DrawModBridgeTargets() {
     const std::string &name = track.first;
     auto bound = b.morphs.find(name);
     auto face = m.morphMap.find(name);
-    bool faceMapped = face != m.morphMap.end() && (face->second.slider >= 0 || face->second.nativeSlider >= 0);
+    bool faceMapped=false;
+    if(face!=m.morphMap.end()) {
+      for(const auto &t:face->second.character)faceMapped|=t.index>=0;
+      for(const auto &t:face->second.native)faceMapped|=t.index>=0;
+    }
     if (!showAll && faceMapped && (bound == b.morphs.end() || bound->second.empty())) continue;
     ImGui::PushID(name.c_str());
     ImGui::TextUnformatted(name.c_str());

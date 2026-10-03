@@ -49,6 +49,9 @@ if(WIN32)
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
+    src/game/mmd_secondary_motion.h src/math/mmd_secondary_motion.h src/integrations/sbm_mmd_api.h
+    src/math/secondary_body_motion.h src/game/secondary_body_runtime.h src/game/secondary_body_settings.h src/integrations/secondary_bone_profiles.h
+    src/cloth/native/cloth_turn_runtime.h src/math/cloth_turn_motion.h
     src/core/build_features.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h src/editor/panel_scale.h
@@ -157,6 +160,8 @@ add_poser_test(test_ik tests/test_ik.cpp)
 add_poser_test(test_native_cloth tests/test_native_cloth.cpp)
 add_poser_test(test_pose_file tests/test_pose_file.cpp)
 add_poser_test(test_mmd tests/test_mmd.cpp)
+add_poser_test(test_mmd_secondary tests/test_mmd_secondary.cpp)
+add_poser_test(test_cloth_turn tests/test_cloth_turn.cpp)
 add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
 add_poser_test(test_mmd_avatar tests/test_mmd_avatar.cpp)
 add_poser_test(test_mmd_terrain tests/test_mmd_terrain.cpp)
@@ -215,6 +220,8 @@ if(MSVC)
   target_compile_options(test_frame_driver PRIVATE /EHa)
   target_link_libraries(test_frame_driver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  add_poser_test(test_mmd_secondary_runtime tests/test_mmd_secondary_runtime.cpp)
+  target_compile_options(test_mmd_secondary_runtime PRIVATE /EHa)
   add_poser_test(test_mmd_runtime tests/test_mmd_runtime.cpp)
   add_poser_test(test_mmd_environment_runtime tests/test_mmd_environment_runtime.cpp)
   target_include_directories(test_mmd_environment_runtime PRIVATE deps/minhook_lib/include)

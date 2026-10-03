@@ -5,6 +5,7 @@ copied into profiles. Input models and diagnostic reports stay local; reusable
 calibration profiles can be maintained under resources/character-faces.
 """
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -241,6 +242,192 @@ def recover_teeth_weights(model, selected):
     return indices,weights,report
 
 
+def refit_mouth(model, profile, *, vertex_importance=None, fit_jaw=False):
+    """Refit lip translations with neutral rotations, preserving other controls.
+
+    The old positional fit can rotate tiny lip controls to reduce vertex error
+    while changing their skinned surface normals. Keep the lip orientation and
+    solve the positions again; simply dropping rotations changes the mouth.
+    Teeth, tongue, other regions and unsupported shapes remain untouched.
+    Offline references may prioritize the lip contour and include the lower
+    jaw in the solve. The default keeps the jaw and uses uniform importance.
+    This also updates existing profiles without losing gaze or manual fixes.
+    """
+    if profile.get('source_hash') != model['hash']:
+        raise ValueError('Mouth refit requires the exact source PMX')
+    skin_reference=model.get('mouth_skin_reference')
+    if profile.get('mouth_skin_reference') and profile['mouth_skin_reference']!=skin_reference:
+        raise ValueError('Mouth refit requires the matching offline skin reference')
+    importance=np.ones(len(model['vertices'])) if vertex_importance is None else np.asarray(vertex_importance,dtype=float)
+    if importance.shape!=(len(model['vertices']),) or not np.isfinite(importance).all() or np.any(importance<=0) or np.any(importance>10000):
+        raise ValueError('Invalid mouth vertex importance')
+    result=copy.deepcopy(profile)
+    targets={}
+    for i,b in enumerate(model['bones']):
+        name=game_bone(b['name']).lower()
+        if name not in targets or name==b['name'].lower():targets[name]=i
+    names=[b['name'].lower() for b in profile['bones']]
+    if len(set(names))!=len(names) or any(n not in targets for n in names):
+        raise ValueError('Mouth refit has missing or duplicate source bones')
+    selected=[targets[n] for n in names]
+    positions=np.array([b['rest'] for b in profile['bones']],dtype=float)
+    expected=np.array([model['bones'][i]['rest'] for i in selected],dtype=float)
+    if not np.allclose(positions,expected,atol=1e-6,rtol=0):
+        raise ValueError('Mouth refit has mismatched reference positions')
+    lips=[i for i,n in enumerate(names) if n.startswith('lip') or (fit_jaw and n=='facemdjawdnjoint')]
+    if not lips:return result,{'method':'lip_translation_v1','shapes':[]}
+    indices,weights,_=recover_teeth_weights(model,selected)
+    # Limit the solve to vertices actually influenced by face controls. The
+    # unmodeled surface still counts in the final full-expression error.
+    covered=np.any(np.isin(indices,selected)&(weights>1e-7),axis=1)
+    ids=np.flatnonzero(covered);vertices=model['vertices'][ids]
+    W=np.column_stack([np.sum(np.where(indices[ids]==i,weights[ids],0),axis=1) for i in selected])
+    lip_mask=np.any(W[:,lips]>1e-7,axis=1)
+    if np.count_nonzero(lip_mask)<3:raise ValueError('Insufficient weighted lip vertices')
+    mouth=[i for i,n in enumerate(names) if region(n)=='mouth']
+    mouth_mask=np.any(W[:,mouth]>1e-7,axis=1)
+    mouth_points=positions[mouth]
+    span=float(np.max(np.linalg.norm(mouth_points[:,None]-mouth_points,axis=2)))
+    # A small zero-centered regularizer keeps shared/zero-weight controls
+    # bounded and makes repeated offline refits independent of previous output.
+    row_scale=np.sqrt(importance[ids][lip_mask])
+    reg=.02;A=np.vstack([W[lip_mask][:,lips]*row_scale[:,None],np.eye(len(lips))*reg])
+    source_morphs={normalize(m['name']):i for i,m in enumerate(model['morphs'])}
+    if len(source_morphs)!=len(model['morphs']):raise ValueError('Ambiguous source morph names')
+    def vertex_delta(index,stack=()):
+        if index<0 or index>=len(model['morphs']) or index in stack or len(stack)>32:
+            raise ValueError('Invalid/cyclic group morph')
+        m=model['morphs'][index];delta=np.zeros_like(model['vertices'])
+        if m['type']==1:np.add.at(delta,m['ids'],m['offsets'])
+        elif m['type']==0:
+            for child,weight in m['groups']:delta+=vertex_delta(child,stack+(index,))*weight
+        else:raise ValueError('Mouth refit requires vertex or group morphs')
+        return delta
+    reports=[]
+    for old,out in zip(profile['morphs'],result['morphs']):
+        if old.get('panel')!=3 or not old['supported']:continue
+        full=vertex_delta(source_morphs[normalize(old['name'])]);target=full[ids]
+        other=np.zeros_like(vertices);before=np.zeros_like(vertices)
+        for d in old['deltas']:
+            i=d['bone'];x=vertices-positions[i]
+            contribution=W[:,i,None]*(x@Rotation.from_rotvec(d['rotation']).as_matrix().T-x+d['position'])
+            before+=contribution
+            if i not in lips:other+=contribution
+        fitted=lstsq(A,np.vstack([(target-other)[lip_mask]*row_scale[:,None],np.zeros((len(lips),3))]),cond=1e-7,lapack_driver='gelsy')[0]
+        if not np.isfinite(fitted).all() or np.any(np.linalg.norm(fitted,axis=1)>5):
+            raise ValueError('Unstable lip translation fit')
+        # Measure exactly what the runtime will read, including quantization.
+        fitted=fitted.round(8);predicted=other+W[:,lips]@fitted
+        error=np.sum((target-predicted)**2)+np.sum(full[~covered]**2)
+        energy=float(np.sum(full*full));residual=float(np.sqrt(error/max(energy,1e-20)))
+        mouth_error=float(np.sum((target-predicted)[mouth_mask]**2))
+        mouth_energy=float(np.sum(target[mouth_mask]**2))
+        mouth_rms=float(np.sqrt(mouth_error/max(1,np.count_nonzero(mouth_mask))))
+        mouth_residual=float(np.sqrt(mouth_error/mouth_energy)) if mouth_energy>1e-12 else 0.
+        records=[copy.deepcopy(d) for d in old['deltas'] if d['bone'] not in lips]
+        records.extend({'bone':i,'position':fitted[k].tolist(),'rotation':[0.,0.,0.]}
+                       for k,i in enumerate(lips) if np.linalg.norm(fitted[k])>=1e-6)
+        records.sort(key=lambda d:d['bone'])
+        # Same mouth quality policy as initial calibration. A shape that cannot
+        # be represented reliably uses the existing optional fixed fallback.
+        supported=bool(records) and residual<.98 and not (mouth_residual>.5 and mouth_rms>span*.02)
+        out['supported']=supported;out['residual']=round(residual,6)
+        out['reason']=('' if residual<.1 else '源顶点形变只能由现有骨骼近似') if supported else '嘴部形状还原误差过大'
+        out['deltas']=records if supported else []
+        rms=lambda value:float(np.sqrt(np.mean(np.sum((target-value)[lip_mask]**2,axis=1))))
+        reports.append({'name':old['name'],'supported':supported,'residual':residual,
+                        'mouth_residual':mouth_residual,'mouth_rms':mouth_rms,
+                        'lip_rms_before':rms(before),'lip_rms_after':rms(predicted)})
+    method='lip_contour_translation_v1' if vertex_importance is not None or fit_jaw else 'lip_translation_v1'
+    result['mouth_calibration']=method
+    if skin_reference:result['mouth_skin_reference']=skin_reference
+    return result,{'method':method,'shapes':reports}
+
+
+def refit_teeth(model, profile):
+    """Keep rigid tooth controls behind the source morph's forward envelope.
+
+    PMX vertex morphs can compress a tooth surface in depth. A rigid rotation /
+    translation fit cannot reproduce that compression: its centroid may match
+    while its front vertices protrude through the chin. Add the minimum inward
+    translation required by the source surface, including intermediate weights.
+    Lip motion, tooth rotations, neutral poses and non-mouth shapes are retained.
+    This is an offline approximation, not runtime mesh collision detection.
+    """
+    if profile.get('source_hash') != model['hash']:
+        raise ValueError('Tooth refit requires the exact source PMX')
+    result=copy.deepcopy(profile);targets={}
+    for i,b in enumerate(model['bones']):
+        name=game_bone(b['name']).lower()
+        if name not in targets or name==b['name'].lower():targets[name]=i
+    names=[b['name'].lower() for b in profile['bones']]
+    if len(set(names))!=len(names) or any(n not in targets for n in names):
+        raise ValueError('Tooth refit has missing or duplicate source bones')
+    selected=[targets[n] for n in names]
+    positions=np.array([b['rest'] for b in profile['bones']],dtype=float)
+    if not np.allclose(positions,[model['bones'][i]['rest'] for i in selected],atol=1e-6,rtol=0):
+        raise ValueError('Tooth refit has mismatched reference positions')
+    teeth=[i for i,n in enumerate(names) if n in ('facemdtoothdnjoint','facemdtoothupjoint','line_toothjoint')]
+    indices,weights,_=recover_teeth_weights(model,selected)
+    covered=np.any(np.isin(indices,[selected[i] for i in teeth])&(weights>1e-7),axis=1)
+    ids=np.flatnonzero(covered);vertices=model['vertices'][ids]
+    W=np.column_stack([np.sum(np.where(indices[ids]==i,weights[ids],0),axis=1) for i in selected])
+    source_morphs={normalize(m['name']):i for i,m in enumerate(model['morphs'])}
+    if len(source_morphs)!=len(model['morphs']):raise ValueError('Ambiguous source morph names')
+    def vertex_delta(index,stack=()):
+        if index<0 or index>=len(model['morphs']) or index in stack or len(stack)>32:
+            raise ValueError('Invalid/cyclic group morph')
+        m=model['morphs'][index];delta=np.zeros_like(model['vertices'])
+        if m['type']==1:np.add.at(delta,m['ids'],m['offsets'])
+        elif m['type']==0:
+            for child,weight in m['groups']:delta+=vertex_delta(child,stack+(index,))*weight
+        else:raise ValueError('Tooth refit requires vertex or group morphs')
+        return delta
+    samples=np.array([.125,.25,.5,.75,1.]);reports=[]
+    for old,out in zip(profile['morphs'],result['morphs']):
+        if old.get('panel')!=3 or not old['supported']:continue
+        records={d['bone']:d for d in out['deltas']}
+        affected=[i for i in teeth if i in records and np.any(W[:,i]>.5)]
+        if not affected:continue
+        full=vertex_delta(source_morphs[normalize(old['name'])]);target=full[ids]
+        predicted=np.zeros((len(samples),len(ids),3))
+        for d in old['deltas']:
+            i=d['bone']
+            if not np.any(W[:,i]>1e-7):continue
+            x=vertices-positions[i]
+            for k,t in enumerate(samples):
+                predicted[k]+=W[:,i,None]*(x@Rotation.from_rotvec(np.array(d['rotation'])*t).as_matrix().T-x+np.array(d['position'])*t)
+        before=predicted[-1].copy();corrections=[]
+        for i in affected:
+            # Tiny secondary weights must not turn a submillimetre mismatch
+            # into an unbounded translation. Tooth surfaces have a dominant
+            # tooth control; uncertain skinning remains outside this refit.
+            mask=W[:,i]>.5
+            required=(target[mask,2][None,:]*samples[:,None]-predicted[:,mask,2])/(samples[:,None]*W[mask,i])
+            correction=max(0.,float(np.max(required)))
+            if correction<=1e-6:continue
+            # PMX uses -Z towards the front of the face. Round inward so saved
+            # profiles retain the bound; rerunning the refit is idempotent.
+            d=records[i];prior=d['position'][2]
+            value=float(np.ceil((prior+correction)*1e8)/1e8)
+            if not math.isfinite(value) or np.linalg.norm([*d['position'][:2],value])>5:
+                raise ValueError('Unstable tooth clearance fit')
+            d['position'][2]=value;shift=value-prior
+            predicted[:,:,2]+=samples[:,None]*W[:,i][None,:]*shift
+            corrections.append({'bone':names[i],'inward':shift})
+        if corrections:
+            # Only tooth vertices changed. Update the full-expression error
+            # without re-fitting or weakening any lip/eye/brow control.
+            energy=float(np.sum(full*full))
+            error=old['residual']**2*energy+float(np.sum((target-predicted[-1])**2)-np.sum((target-before)**2))
+            out['residual']=round(math.sqrt(max(0.,error)/max(energy,1e-20)),6)
+        reports.append({'name':old['name'],'corrections':corrections,
+                        'forward_excess_before':float(np.max(before[:,2]*-1+target[:,2])) if len(ids) else 0.,
+                        'forward_excess_after':float(np.max(predicted[-1,:,2]*-1+target[:,2])) if len(ids) else 0.})
+    result['teeth_calibration']='depth_envelope_v1'
+    return result,{'method':'depth_envelope_v1','shapes':reports}
+
+
 def compile_profile(model, label):
     # Exact original names take precedence over additional MMD control bones.
     targets={}
@@ -366,7 +553,15 @@ def compile_profile(model, label):
         raise ValueError('Model identity must match a game character key')
     profile={'version':1,'model':key,'label':label,'source_hash':model['hash'],
              'bones':[{'name':name,'rest':positions[i].tolist()} for i,name in enumerate(names)],'morphs':expressions}
+    profile,mouth_report=refit_mouth(model,profile)
+    profile,tooth_clearance=refit_teeth(model,profile)
+    for q in quality:
+        match=next((s for s in mouth_report['shapes'] if s['name']==q['name']),None)
+        if match:
+            q.update(match);q['reason']=next(m['reason'] for m in profile['morphs'] if m['name']==q['name'])
+        q['residual']=next(m['residual'] for m in profile['morphs'] if m['name']==q['name'])
     return profile,{'model':key,'label':label,'bones':len(selected),'morphs':quality,'skipped':skipped,'teeth':teeth_report,'missing_teeth':missing_teeth,'normalized_weight_vertices':model.get('weight_fixes',0),
+                   'mouth_refit':mouth_report,'tooth_clearance':tooth_clearance,
                    'note':'Source PMX reconstruction error, not game visual acceptance.'}
 
 
@@ -374,6 +569,8 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('source',type=Path);ap.add_argument('--output',type=Path,required=True)
     ap.add_argument('--report',type=Path);ap.add_argument('--only',default='')
+    ap.add_argument('--refit-mouth',action='store_true',help='Refit only mouths in existing output profiles; preserve gaze and other calibration')
+    ap.add_argument('--refit-teeth',action='store_true',help='Correct tooth depth in existing output profiles without changing lips or other calibration')
     args=ap.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     paths=sorted(args.source.rglob('*.pmx')) if args.source.is_dir() else [args.source]
     reports=[];seen=set()
@@ -381,7 +578,18 @@ def main():
         if args.only and args.only not in path.stem:continue
         print('Calibrating:',path.stem,flush=True)
         try:
-            model=read_pmx(path);profile,report=compile_profile(model,path.stem)
+            model=read_pmx(path)
+            if args.refit_mouth or args.refit_teeth:
+                # Locate by hash, not local filename or translated character label.
+                matches=list(args.output.glob('*-'+model['hash'][:12]+'.face.json'))
+                if not matches:continue
+                if len(matches)!=1:raise ValueError('Ambiguous existing profile')
+                original=json.loads(matches[0].read_text(encoding='utf-8'))
+                if args.refit_mouth:
+                    profile,report=refit_mouth(model,original)
+                    profile,report['tooth_clearance']=refit_teeth(model,profile)
+                else:profile,report=refit_teeth(model,original)
+            else:profile,report=compile_profile(model,path.stem)
             report['source_name']=path.name;reports.append(report)
             if profile:
                 identity=profile['model']+'-'+profile['source_hash'][:12]

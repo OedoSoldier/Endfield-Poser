@@ -40,7 +40,7 @@ inline int BoneRegion(const std::string &name) {
      n.find("facelfpupil")==0||n.find("facertpupil")==0||
      n.find("facelfhighlight")==0||n.find("facerthighlight")==0)return Eyes;
   if(n.find("lip")==0||n.find("tongue")==0||n=="jawjoint"||n=="facemdjawdnjoint"||
-      n.find("facemdtooth")==0||n=="line_toothjoint")return Mouth;
+      n.find("facemdtooth")==0||n=="line_toothjoint"||n=="linejoint")return Mouth;
   if(n.find("facelfcheek")==0||n.find("facertcheek")==0)return Cheeks;
   return -1;
 }

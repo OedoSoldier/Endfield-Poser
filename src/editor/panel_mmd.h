@@ -7,6 +7,7 @@
 #include "editor/panel_mod_bridge.h"
 #endif
 #include "imgui.h"
+#include "editor/panel_mmd_face_bindings.h"
 
 static void DrawMmdFile(const std::string &path) {
   if (path.empty())
@@ -75,10 +76,53 @@ static bool DrawMmdAmplitude(mmd::MotionAmplitude &a, int scope) {
   return changed;
 }
 
+#include "game/secondary_body_settings.h"
+
+static void DrawMmdSecondaryControls() {
+  poser_secondary::LoadSettings();
+  ImGui::Checkbox(u8"衣物惯性物理增强",&s_clothTurnEnabled);
+  if(s_clothTurnEnabled) {
+    ImGui::SliderFloat(u8"衣物惯性强度",&s_clothTurnStrength,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"响应横移、转身及起跳和落地。衣物跟随身体，头发和耳部跟随头部，尾巴跟随髋部。已有物理的挂件也会响应。暂停后自然收敛；冻结衣物时不生效。单人和多人共用此设置。");
+    float lightness=s_clothLightness*100.f;
+    if(ImGui::SliderFloat(u8"衣物轻盈度",&lightness,0,100,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))
+      s_clothLightness=lightness*.01f;
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"0%% 不增加空气响应。提高后，转身、横移和跳跃更容易带动衣物、头发和尾巴；上升时滞后，下落时向上飘。耳部和挂件响应较小。停下后自然回落，原有重力不变。可随适配预设保存。");
+    ImGui::SameLine();if(ImGui::SmallButton(u8"复位##clothLightness"))s_clothLightness=0;
+  }
+  ImGui::Checkbox(u8"第二骨骼物理增强",&poser_secondary::enabled);
+  if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"仅用于单人和多人 MMD 动作播放。暂停保持，拖动清除惯性，停止恢复。");
+  if(poser_secondary::enabled) {
+    ImGui::SliderFloat(u8"第二骨骼摆动强度",&poser_secondary::strength,0,3,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+    if(ImGui::TreeNode(u8"第二骨骼方向与回弹")) {
+      auto &c=poser_secondary::settings;
+      ImGui::SliderFloat(u8"上下响应",&c.vertical,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"左右响应",&c.lateral,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"前后响应",&c.depth,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"回弹频率",&c.frequency,1,6,"%.2f Hz",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"回弹阻尼",&c.damping,.25f,1.5f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      float angle=c.angleLimit*57.29578f;
+      if(ImGui::SliderFloat(u8"摆动角度上限",&angle,0,34,"%.1f°",ImGuiSliderFlags_AlwaysClamp))c.angleLimit=angle/57.29578f;
+      ImGui::TextWrapped(u8"功能已内置，仅在 MMD 动作中响应身体运动。单人、多人分别计算；暂停保持，拖动清除惯性。");
+      ImGui::TreePop();
+    }
+  }
+  if(ImGui::SmallButton(u8"保存第二骨骼物理设置"))poser_secondary::SaveSettings();
+  ImGui::SameLine();if(ImGui::SmallButton(u8"复位参数##secondary")){poser_secondary::settings={};poser_secondary::strength=1;}
+  if(!poser_secondary::settingsStatus.empty())ImGui::TextWrapped(u8"%s",poser_secondary::settingsStatus.c_str());
+}
 static void DrawMmdCloth() {
   if (!ImGui::CollapsingHeader(u8"衣物物理"))
     return;
   auto &m = g_mmd;
+  DrawMmdSecondaryControls();
+  if(poser_secondary::enabled)ImGui::TextWrapped(u8"第二骨骼：%s",m.session.secondary.status.c_str());
+  if(s_clothTurnEnabled) {
+    ImGui::TextWrapped(u8"衣物惯性：%s",s_clothTurn.status);
+    ImGui::TextDisabled(u8"衣物 %u / 头发 %u / 尾巴 %u / 耳部 %u / 挂件 %u",s_clothTurn.clothing,s_clothTurn.hair,s_clothTurn.tail,s_clothTurn.ears,s_clothTurn.accessories);
+    ImGui::TextDisabled(u8"其中碰撞增强部件：%u",s_clothTurn.enhancedCount);
+    ImGui::TextWrapped(u8"%s",s_clothTurn.nativeStatus);
+  }
   if (ImGui::Checkbox(u8"冻结头发 / 衣物", &m.freezeCloth) && m.session.active && m.session.bodyOwned) {
     g_freezeAccessories = m.freezeCloth;
     if (m.freezeCloth)
@@ -214,7 +258,31 @@ static bool DrawMmdCameraSettings(double seconds, float targetHeight) {
     MmdUpdateDuration();
   return changed;
 }
+static void DrawFixedCameraControls() {
+  if(!ImGui::CollapsingHeader(u8"固定跟踪镜头"))return;
+  auto &s=mmd_camera::fixedSettings;static mmd::FixedCameraStore store;
+  const auto path=MmdConfigDirectory()/L"fixed-camera.json";store.load(path,s);
+  bool enabled=mmd_camera::fixedEnabled.load(),changed=false;
+  ImGui::BeginDisabled(!mmd_camera::ready||!g_charAnimator);
+  if(ImGui::Checkbox(u8"锁定当前角色",&enabled))mmd_camera::SetFixed(enabled,g_charAnimator);
+  ImGui::EndDisabled();
+  changed|=ImGui::Checkbox(u8"不跟踪跳跃",&s.ignoreJump);
+  if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"锁定勾选时的高度，仅跟随水平位移；上下偏移仍可调整。也不会跟随坡道、台阶的高度变化。");
+  changed|=ImGui::SliderFloat(u8"固定距离（米）",&s.distance,.2f,20,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  changed|=ImGui::SliderFloat(u8"固定焦距（mm）",&s.focalLength,5,200,"%.1f",ImGuiSliderFlags_AlwaysClamp);
+  changed|=ImGui::SliderFloat3(u8"跟踪点偏移（左右／上下／前后）",&s.offset.x,-3,3,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  changed|=ImGui::SliderFloat(u8"水平角度",&s.yaw,-180,180,"%.1f deg",ImGuiSliderFlags_AlwaysClamp);
+  changed|=ImGui::SliderFloat(u8"俯仰角度",&s.pitch,-85,85,"%.1f deg",ImGuiSliderFlags_AlwaysClamp);
+  if(ImGui::Button(u8"复位跟踪参数")){s={};changed=true;}
+  ImGui::SameLine();if(ImGui::Button(u8"保存跟踪参数"))store.save(path,s);
+  if(changed&&mmd_camera::fixedEnabled)mmd_camera::SetFixed(true,mmd_camera::fixedRequest.actor);
+  ImGui::TextWrapped(u8"保持开启时的拍摄方向，跟随角色位移；勾选“不跟踪跳跃”可锁定高度。无需镜头文件；暂停、停止动作或关闭面板后继续跟踪。关闭跟踪或切人后恢复原相机。");
+  ImGui::TextWrapped(u8"开启时优先于 VMD 镜头。焦点跟随取景点；非物理相机按 35mm 画幅换算焦距。");
+  ImGui::TextWrapped("%s",mmd_camera::fixedStatus.load());
+  if(!store.status.empty())ImGui::TextWrapped("%s",store.status.c_str());
+}
 static void DrawMmdCamera() {
+  DrawFixedCameraControls();
   if (!ImGui::CollapsingHeader(u8"MMD 镜头"))
     return;
   auto &m = g_mmd;
@@ -484,57 +552,7 @@ static void DrawMmdPanel() {
           ImGui::TextWrapped(
               u8"整体和部位强度可以在播放或暂停时调整；可在表情面板的“眼睛朝向”覆盖动作眼神。");
         }
-        if (ImGui::CollapsingHeader(u8"手动绑定（高级）")) {
-          static int editSource = 0;
-          ImGui::Combo(u8"编辑映射表", &editSource, u8"角色专属映射\0固定表情映射\0");
-          bool native = editSource == 1;
-          ImGui::TextWrapped(u8"角色专属映射按角色分别保存。可将动作中的自定义名称绑定到该角色已有表情。");
-          ImGui::BeginDisabled(MmdOwnsPose() || (!native && !m.characterFace));
-          bool changed = false;
-          for (auto &kv : m.morphMap) {
-            int &slider = native ? kv.second.nativeSlider : kv.second.slider;
-            float &gain = native ? kv.second.nativeGain : kv.second.gain;
-            ImGui::PushID(kv.first.c_str());
-            ImGui::TextUnformatted(kv.first.c_str());
-            ImGui::SetNextItemWidth(poser_ui::Scale(185));
-            bool valid =
-                slider >= 0 && (native ? slider < SMCSliderCount()
-                                       : m.characterFace && slider < int(m.characterFace->morphs.size()));
-            const char *label = !valid   ? u8"未指定 / 不支持"
-                                : native ? SMCSliderLabel(slider)
-                                         : m.characterFace->morphs[slider].name.c_str();
-            if (ImGui::BeginCombo("##target", label)) {
-              if (ImGui::Selectable(u8"未指定 / 不支持", slider < 0)) {
-                slider = -1;
-                changed = true;
-              }
-              int count = native            ? SMCSliderCount()
-                          : m.characterFace ? int(m.characterFace->morphs.size())
-                                            : 0;
-              for (int i = 0; i < count; ++i) {
-                if (!native && !m.characterFace->morphs[i].supported)
-                  continue;
-                const char *name = native ? SMCSliderLabel(i) : m.characterFace->morphs[i].name.c_str();
-                if (ImGui::Selectable(name, slider == i)) {
-                  slider = i;
-                  changed = true;
-                }
-              }
-              ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(poser_ui::Scale(130));
-            changed |= ImGui::SliderFloat("##gain", &gain, 0, 2, "%.2f");
-            if (!native && valid && m.characterFace->morphs[slider].residual > .1f)
-              ImGui::TextDisabled(u8"此表情部分形状为近似");
-            ImGui::PopID();
-          }
-          if (changed) {
-            MmdSaveMappings(native);
-            MmdReport();
-          }
-          ImGui::EndDisabled();
-        }
+        DrawMmdFaceBindings();
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem(u8"高级")) {

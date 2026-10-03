@@ -27,6 +27,7 @@ struct FrameDiagnostics {
   int source = 0; // 0 independent, 1 camera, 2 SRP, 3 character update, 4 camera manager
   unsigned busy = 0;
 };
+static void (*g_renderPoseFinish)(int frame) = nullptr;
 static void (*g_gameMaintenance)() = nullptr; // main-thread release jobs, including while disabled
 static FrameDiagnostics g_frameDiagnostics; // protected by g_poseMutex
 static bool RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
@@ -108,6 +109,15 @@ static int ReadUnityFrameCount() {
 }
 using CameraPreCullFn = void(__fastcall *)(void *, void *);
 static CameraPreCullFn g_originalPreCull = nullptr;
+static void FinishGameRenderPose(int frame,int source) {
+  if(frame<0||(source!=1&&source!=2&&source!=4)||!g_renderPoseFinish||!g_frameRunning.load()||RuntimeClosing())return;
+  std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
+  if(!lock.owns_lock())return;
+  static thread_local bool nested=false;if(nested)return;
+  RuntimeThreadScope runtime;if(!runtime.ready)return;
+  struct Guard {bool &v;Guard(bool &b):v(b){v=true;}~Guard(){v=false;}} guard(nested);
+  g_renderPoseFinish(frame);
+}
 static void SampleGameRenderFrame(int source) {
   if (!g_frameRunning.load() && !g_gameMaintenance)
     return;
@@ -115,6 +125,7 @@ static void SampleGameRenderFrame(int source) {
     int frame = ReadUnityFrameCount();
     if (frame >= 0 || !g_frameRunning.load())
       RunFrameTick(true, frame, source);
+    FinishGameRenderPose(frame,source);
   } catch (...) {
     Log("[FRAME] game callback failed; keeping independent fallback");
   }

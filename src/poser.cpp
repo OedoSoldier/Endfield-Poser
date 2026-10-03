@@ -28,6 +28,7 @@
 #include "editor/panel_mmd_squad.h"
 #include "editor/panel_mmd_motion_calibration.h"
 #include "editor/panel_agreement.h"
+#include "game/secondary_body_runtime.h"
 #include "config.h"
 #include "game/cloth_init.h"
 
@@ -539,6 +540,7 @@ void DrawPoserGui() {
     return;
   }
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  SMCClearBindingPreview(); // A held preview button renews it during this draw.
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
   UpdateOverlayCursor();
@@ -586,6 +588,7 @@ static void OnGuiShutdownRestore() {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
+  mmd_camera::SetFixed(false);
   MmdStop();
   s_mmdClosing.store(true);
   if(HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
@@ -605,7 +608,8 @@ static void OnGuiShutdownRestore() {
   const ULONGLONG deadline=GetTickCount64()+1000;
   while (GetTickCount64()<deadline) {
     { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
-      if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring()) return; }
+      if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring() &&
+          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load()) return; }
     Sleep(10);
   }
   Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
@@ -785,6 +789,7 @@ static DWORD WINAPI InitThread(LPVOID) {
       poser_agreement::Allowed() ? "already accepted" : "confirmation required");
   MmdSquadInstall();
   g_beforeCharacterChange = PrepareCharacterHandoff;
+  g_renderPoseFinish=SecondaryBodyRender;
   g_onFreezeReleased=SMCReleaseFreeze;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
   SetExtControl(ExtControl);

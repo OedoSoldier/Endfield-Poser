@@ -143,6 +143,7 @@ static void SMCFaceSelectProfile(std::shared_ptr<const character_face::Profile> 
 
 static void SMCFaceInvalidate() {
   poser_gaze::Reset(true,SMCGazeContext());
+  s_activeSMC->bindingPreview={};s_activeSMC->bindingPreviewDeadline=0;
   s_manualFace={};
   s_faceNodes.clear();s_characterBinding={};s_characterProfile.reset();s_characterModel.clear();s_characterBindingGeneration=0;
   s_faceHierarchy={};s_faceBindingRevision=-1;++s_faceGeneration;
@@ -1359,6 +1360,22 @@ static void *__fastcall HookedSMCMorphJob(void *result, void *smc, uint32_t coun
              ? s_origMorphJob(result, smc, count, dependency, method)
              : result;
 }
+// GUI and SMC callbacks already share g_poseMutex. A short renewable preview
+// never overwrites the playback mailbox or the user's manual expression.
+static void SMCClearBindingPreview() {
+  s_activeSMC->bindingPreview.active=false;s_activeSMC->bindingPreviewDeadline=0;
+}
+static void SMCShowBindingPreview(const SMCMotionFrame &frame) {
+  if(!SMCFrozen()||frame.animator!=SMCAnimator()||frame.generation!=s_faceGeneration)return;
+  s_activeSMC->bindingPreview=frame;s_activeSMC->bindingPreviewDeadline=GetTickCount64()+300;
+}
+static bool SMCBindingPreviewCurrent(ULONGLONG now) {
+  const auto &p=s_activeSMC->bindingPreview;
+  bool valid=p.active&&now<s_activeSMC->bindingPreviewDeadline&&SMCFrozen()&&
+    p.animator==SMCAnimator()&&p.generation==s_faceGeneration&&p.profile==s_characterProfile;
+  if(!valid)SMCClearBindingPreview();
+  return valid;
+}
 static void SMCMotionConsume() {
   AcquireSRWLockShared(&s_motionFaceLock); s_motionFaceCurrent=s_motionFaceMailbox; ReleaseSRWLockShared(&s_motionFaceLock);
   if(s_mmdFaceMode)SMCManualPrepare();
@@ -1366,6 +1383,16 @@ static void SMCMotionConsume() {
   // after Stop and while the panel is hidden; it never publishes into the VMD mailbox.
   if(!s_motionFaceCurrent.active||s_motionFaceCurrent.animator!=SMCAnimator()||s_motionFaceCurrent.generation!=s_faceGeneration)
     s_motionFaceCurrent=SMCManualFrame();
+  if(SMCBindingPreviewCurrent(GetTickCount64())) {
+    const auto underlying=s_motionFaceCurrent;
+    s_motionFaceCurrent=s_activeSMC->bindingPreview;
+    // Testing a face label must not replace authored eye direction or gaze.
+    s_motionFaceCurrent.gazeCamera=underlying.gazeCamera;s_motionFaceCurrent.gazeStrength=underlying.gazeStrength;
+    for(int e=0;e<2;++e) {
+      s_motionFaceCurrent.eyeDriven[e]=underlying.eyeDriven[e];
+      s_motionFaceCurrent.eyes[e]=underlying.eyes[e];s_motionFaceCurrent.eyeRotation[e]=underlying.eyeRotation[e];
+    }
+  }
   bool active=s_motionFaceCurrent.active && s_motionFaceCurrent.animator==SMCAnimator() &&
       s_motionFaceCurrent.generation==s_faceGeneration;
   s_motionFaceCurrent.active=active;

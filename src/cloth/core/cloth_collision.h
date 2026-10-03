@@ -451,6 +451,8 @@ static void ClothBoneSolverClear(int slot);
 static std::string ClothBoneSolverJson();
 static bool ClothPrefetchNeedsHooks();
 static void ClothPrefetchBoundary();
+static bool ClothTurnNeeded();
+static void ClothTurnBoundary();
 
 static void ClothCollisionRelease(const char *reason) {
   __try { ClothBoneRelease(reason); }
@@ -465,6 +467,7 @@ static bool ClothCollisionNeedsMaintenance() { return ClothBonePending(); }
 #include "../bonecloth/cloth_bonecloth_runtime.h"
 #include "../bonecloth/cloth_bonecloth_prefetch.h"
 #include "../diagnostics/cloth_bonecloth_trace.h"
+#include "../native/cloth_turn_runtime.h"
 static void CollisionPublishUi() {
   CollisionUi ui{};
   ui.session = s_cloth.active ? s_cloth.owner.session : 0;

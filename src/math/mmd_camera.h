@@ -63,6 +63,7 @@ struct CameraPose {
   Quat rotation;
   float fov = 30, orthoSize = 1;
   bool perspective = true;
+  float focalLength = 0; // Zero: authored FOV. Positive: fixed lens in mm.
 };
 inline float CameraFocusDistance(const CameraPose &pose) {
   // Focus is a plane perpendicular to the optical axis, not radial distance.
@@ -72,6 +73,33 @@ inline float CameraFocusDistance(const CameraPose &pose) {
 inline float CameraFocalLength(float verticalFov,float sensorHeight) {
   if(!std::isfinite(verticalFov) || !std::isfinite(sensorHeight) || sensorHeight<=0) return 0;
   return sensorHeight/(2*std::tan(Clamp(verticalFov,1.f,179.f)*.00872664626f));
+}
+inline float CameraVerticalFov(float focalLength,float sensorHeight=24) {
+  if(!std::isfinite(focalLength)||focalLength<=0||!std::isfinite(sensorHeight)||sensorHeight<=0)return 0;
+  return Clamp(2*std::atan(sensorHeight/(2*focalLength))*57.2957795131f,1.f,179.f);
+}
+struct FixedCameraSettings {
+  float distance=4, focalLength=35, yaw=0, pitch=0;
+  Vec3 offset{0,1,0}; // Horizontal viewing axes; Y remains world up.
+  bool ignoreJump=false;
+};
+inline bool ValidFixedCamera(const FixedCameraSettings &s) {
+  return std::isfinite(s.distance)&&s.distance>=.2f&&s.distance<=100&&
+    std::isfinite(s.focalLength)&&s.focalLength>=5&&s.focalLength<=300&&
+    std::isfinite(s.yaw)&&std::fabs(s.yaw)<=180&&std::isfinite(s.pitch)&&std::fabs(s.pitch)<=85&&
+    std::isfinite(s.offset.x)&&std::isfinite(s.offset.y)&&std::isfinite(s.offset.z)&&
+    std::fabs(s.offset.x)<=10&&std::fabs(s.offset.y)<=10&&std::fabs(s.offset.z)<=10;
+}
+inline CameraPose FixedCameraPose(const FixedCameraSettings &s,Vec3 target,Quat reference) {
+  CameraPose p;
+  Vec3 forward=reference*Vec3{0,0,1};forward.y=0;
+  forward=Len(forward)>1e-5f?Norm(forward):Vec3{0,0,1};
+  p.target=target+Cross(Vec3{0,1,0},forward)*s.offset.x+Vec3{0,s.offset.y,0}+forward*s.offset.z;
+  p.rotation=NormQ(Quat::AxisAngle({0,1,0},s.yaw*.01745329252f)*reference*
+                  Quat::AxisAngle({1,0,0},s.pitch*.01745329252f));
+  p.position=p.target-p.rotation*Vec3{0,0,s.distance};
+  p.focalLength=s.focalLength;p.fov=CameraVerticalFov(s.focalLength);
+  return p;
 }
 inline Quat CameraOrbit(Vec3 e) {
   // MMD camera orbit: negative Y, then negative X, then negative Z.
