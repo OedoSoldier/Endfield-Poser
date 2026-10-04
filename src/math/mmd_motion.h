@@ -155,6 +155,10 @@ struct IkKey {
   uint32_t frame = 0;
   bool enabled = true;
 };
+struct VisibilityKey {
+  uint32_t frame = 0;
+  bool visible = true;
+};
 struct CameraKey {
   uint32_t frame = 0;
   float distance = -45, fov = 30;
@@ -171,12 +175,20 @@ struct MotionClip {
   std::map<std::string, std::vector<BoneKey>> bones;
   std::map<std::string, std::vector<MorphKey>> morphs;
   std::map<std::string, std::vector<IkKey>> ik;
+  std::vector<VisibilityKey> visibility;
   std::vector<CameraKey> cameras;
   uint32_t lastFrame = 0;
   size_t boneKeys = 0, morphKeys = 0;
   std::vector<std::string> warnings;
   double duration() const { return lastFrame / 30.0; }
-  bool empty() const { return bones.empty() && morphs.empty() && cameras.empty(); }
+  bool empty() const { return bones.empty() && morphs.empty() && cameras.empty() && visibility.empty(); }
+  double modelDuration() const {
+    uint32_t last = 0;
+    for (const auto &kv : bones) if (!kv.second.empty()) last = (std::max)(last, kv.second.back().frame);
+    for (const auto &kv : morphs) if (!kv.second.empty()) last = (std::max)(last, kv.second.back().frame);
+    if (!visibility.empty()) last = (std::max)(last, visibility.back().frame);
+    return last / 30.0;
+  }
 };
 template <class T> inline void SortKeys(std::vector<T> &v) {
   auto less = [](const T &a, const T &b) { return a.frame < b.frame; };
@@ -209,6 +221,9 @@ inline void Recount(MotionClip &c) {
   }
   for (auto &kv : c.ik)
     SortKeys(kv.second);
+  SortKeys(c.visibility);
+  if (!c.visibility.empty())
+    c.lastFrame = (std::max)(c.lastFrame, c.visibility.back().frame);
   SortKeys(c.cameras);
   if (!c.cameras.empty())
     c.lastFrame = (std::max)(c.lastFrame, c.cameras.back().frame);
@@ -309,10 +324,13 @@ inline MotionClip ReadVmd(Reader &r, const Decoder &decode) {
     r.skip(n * section.first);
   }
   if (r.remaining()) {
-    n = r.count(9, 1000000);
+    n = records(9, sizeof(VisibilityKey), 1000000);
+    c.visibility.reserve(n);
     for (uint32_t i = 0; i < n; i++) {
       uint32_t f = r.read<uint32_t>();
-      r.read<uint8_t>();
+      auto visible = r.read<uint8_t>();
+      if (visible > 1) throw std::runtime_error("Invalid VMD model visibility");
+      c.visibility.push_back({f, visible != 0});
       auto m = records(21, sizeof(IkKey), 10000);
       for (uint32_t j = 0; j < m; j++) {
         const auto &name = trackName(20);
@@ -369,6 +387,10 @@ inline float SampleMorph(const std::vector<MorphKey> &keys, double frame) {
                         float((frame - a.frame) / double(b.frame - a.frame));
 }
 enum class IkMode { FollowMotion, ForceOn, ForceOff };
+inline bool SampleVisibility(const MotionClip &clip, double frame) {
+  const auto n = Upper(clip.visibility, frame);
+  return n ? clip.visibility[n - 1].visible : true;
+}
 inline bool SampleIk(const MotionClip &clip, const std::string &name,
                      double frame, IkMode mode = IkMode::FollowMotion) {
   if (mode != IkMode::FollowMotion)

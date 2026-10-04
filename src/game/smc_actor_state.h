@@ -16,6 +16,12 @@ struct SMCMotionFrame {
   float fallbackWeights[(SMC_NUM_MOUTH + 32)]={};
 };
 struct SMCActorState {
+  struct EyelidCache {
+    uint64_t generation=0,signature=0;
+    const character_face::Profile *profile=nullptr;
+    bool characterReady=false;
+    face_eyelid::Limits character,native,combined;
+  } eyelids;
   poser_gaze::Context gaze;
   void *actor = nullptr, *root = nullptr;
   bool frozen = true;

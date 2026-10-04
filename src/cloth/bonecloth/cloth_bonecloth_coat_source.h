@@ -42,20 +42,23 @@ inline bool SourceUpperCoatFront(const ClothBoneProfile &p) {
       !strcmp(p.bones[3].name,"clothes_pifeng_L_a_3_jnt")&&!strcmp(p.bones[30].name,"clothes_pifeng_R_a_3_jnt");
 }
 inline bool SourceUpperCoatRelease(const ClothBoneProfile &p,int n) {
-  return n>=0&&n<p.boneCount&&SourceUpperCoatFront(p)&&p.bones[n].attribute==1;
+  return n>=0&&n<p.boneCount&&SourceUpperCoatFront(p)&&
+      (p.bones[n].attribute==1||n==1||n==8||n==28||n==35);
 }
 inline int SourceUpperCoatRoot(const ClothBoneProfile &p,int n) {
   if(!SourceUpperCoatFront(p))return -1;
-  for(int c=0;c<p.rootCount;++c)if(p.bones[p.roots[c]].parent==n)return c;
+  for(int c=0;c<p.rootCount;++c){int root=p.roots[c];while(p.bones[root].parent>=0)root=p.bones[root].parent;
+    if(root==n)return c;}
   return -1;
 }
 inline void SourceUpperCoatSelection(const ClothBoneProfile &p,int n,ClothBoneAsset &bone) {
   if(!SourceUpperCoatFront(p)||n<0||n>=p.boneCount)return;
   const int column=SourceUpperCoatRoot(p,n);
   if(column>=0){bone.attribute=1;bone.column=column;bone.depth=0;}
-  else if(bone.attribute){bone.attribute=2;++bone.depth;}
+  else {int root=n,depth=0;while(p.bones[root].parent>=0){root=p.bones[root].parent;++depth;}
+    const int c=SourceUpperCoatRoot(p,root);if(c>=0){bone.attribute=2;bone.column=c;bone.depth=depth;}}
 }
-inline int SourceUpperCoatPromoted(const ClothBoneProfile &p) {return SourceUpperCoatFront(p)?7:0;}
+inline int SourceUpperCoatPromoted(const ClothBoneProfile &p) {return SourceUpperCoatFront(p)?11:0;}
 inline bool SourceSeparatedCoat(const ClothBoneProfile &p) {
   if(!p.runtimeSeparatedCoat||!p.runtimeGenerated||p.loop||p.runtimeFixedForks||p.runtimeForkCoat||p.candidateAttributes||
       !p.bones||p.boneCount<12||p.boneCount>128||p.rootCount<4||p.rootCount>12||p.depth<3||p.depth>16||
@@ -123,13 +126,24 @@ inline bool SourceForkCoatFront(const ClothBoneProfile &p) {
   return true;
 }
 inline bool SourceForkCoatRelease(const ClothBoneProfile &p,int n) {
-  return (n==1||n==18||n==45||n==61)&&SourceForkCoatFront(p);
+  return (n==1||n==17||n==18||n==45||n==60||n==61)&&SourceForkCoatFront(p);
 }
-inline int SourceCoatInputs(const ClothBoneProfile &p,int (&out)[16]) {
+inline bool SourceForkCoatRoot(const ClothBoneProfile &p,int n) {
+  return (n==16||n==59)&&SourceForkCoatFront(p);
+}
+inline void SourceForkCoatSelection(const ClothBoneProfile &p,int n,ClothBoneAsset &bone) {
+  if(!SourceForkCoatFront(p))return;
+  if(SourceForkCoatRoot(p,n)){bone.attribute=1;bone.depth=0;bone.column=p.bones[n+1].column;}
+  else {if(SourceForkCoatRelease(p,n))bone.attribute=2;
+    if(bone.attribute&&(bone.column==p.bones[17].column||bone.column==p.bones[60].column))++bone.depth;}
+}
+inline int SourceForkCoatPromoted(const ClothBoneProfile &p) {return SourceForkCoatFront(p)?2:0;}
+inline int SourceCoatInputs(const ClothBoneProfile &p,int (&out)[32]) {
   if(SourceUpperCoatFront(p)){int count=0;for(int n=0;n<p.boneCount;++n)
       if(SourceUpperCoatRelease(p,n)||SourceUpperCoatRoot(p,n)>=0)out[count++]=n;return count;}
   if(SourceSeparatedCoat(p)){for(int k=0;k<p.releasedFixedCount;++k)out[k]=p.releasedFixed[k];return p.releasedFixedCount;}
-  if(SourceForkCoatFront(p)){out[0]=1;out[1]=18;out[2]=45;out[3]=61;return 4;}
+  if(SourceForkCoatFront(p)){int count=0;for(int n=0;n<p.boneCount;++n)
+      if(SourceForkCoatRelease(p,n)||SourceForkCoatRoot(p,n))out[count++]=n;return count;}
   if(SourceInactiveCoat(p)){int count=0;for(int n=16;n<24;++n)if(n%4)out[count++]=n;return count;}
   return 0;
 }

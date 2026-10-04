@@ -68,7 +68,7 @@ static bool ClothBoneCoatPoseSize(const ClothBoneRuntime &s) {
 }
 static bool ClothBoneSaveInputLease(int slot) {
   auto &s=ClothBoneState();if(slot!=1)return true;
-  int coatInputs[16]{};const int coatCount=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
+  int coatInputs[32]{};const int coatCount=s.profile?eiem_cloth_asset::SourceCoatInputs(*s.profile,coatInputs):0;
   if(coatCount) {
     if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||!ClothOwns(s.owner)||
         (s.local.requested&&(!s.local.recipe||(!s.local.recipe->CoatWaistSkinOnly()&&!ClothBoneSeparatedCoatRecipe(s)&&

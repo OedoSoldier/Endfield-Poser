@@ -21,6 +21,7 @@ struct DenseMesh {
   void Link(){view.generatedBytes=payload.data();view.bindings=reinterpret_cast<const float(*)[16]>(binds.data());view.bindingCount=int(binds.size());view.bindingNativeIndices=bindingIds.data();view.samples=samples.data();view.sampleCount=samples.size();view.edges=edges.data();view.edgeCount=edges.size();view.seams=seams.data();view.seamCount=seams.size();view.foreignBindings=foreign.data();view.foreignCount=int(foreign.size());view.generatedWeights=weights.empty()?nullptr:weights.data();view.generatedFloatWeights=floatWeights.empty()?nullptr:floatWeights.data();view.generatedIndices=indices.data();view.generatedVertexCount=indices.size();}
 };
 struct DenseRecipe {
+  eiem_cloth_graph::OrderContract graphOrder;
   std::string densityReport;
   ClothBoneLocalRecipe view{};
   std::deque<std::string> strings;
@@ -42,7 +43,7 @@ struct DenseRecipe {
   std::vector<ClothBoneResponseFace> responseFaces;
   std::vector<ClothBoneResponseFace> layerFaces;
   const char *String(const std::string &s){Need(!s.empty()&&s.size()<128,"auto-dense-name-budget");strings.push_back(s);return strings.back().c_str();}
-  void Link(){view.added=added.data();view.addedCount=int(added.size());view.columns=columns.data();view.roots=roots.data();view.rootCount=int(roots.size());view.parents=parents.data();view.radii=radii.data();view.radiusCurve=radiusCurve.data();view.distanceCurve=distanceCurve.data();view.cross=cross.data();view.crossCount=int(cross.size());
+  void Link(){view.nativeGraphOrder=graphOrder.source.empty()?nullptr:&graphOrder;view.added=added.data();view.addedCount=int(added.size());view.columns=columns.data();view.roots=roots.data();view.rootCount=int(roots.size());view.parents=parents.data();view.radii=radii.data();view.radiusCurve=radiusCurve.data();view.distanceCurve=distanceCurve.data();view.cross=cross.data();view.crossCount=int(cross.size());
     if(!bodySpheres.empty()){bodyAsset.bones=bodyBindings.data();bodyAsset.boneCount=int(bodyBindings.size());view.bodyAsset=&bodyAsset;view.bodySpheres=bodySpheres.data();view.bodySphereCount=int(bodySpheres.size());}
     view.responses=responses.data();view.responseCount=int(responses.size());
     view.responsePoints=responsePoints.data();view.responsePointCount=int(responsePoints.size());view.responseFaces=responseFaces.data();view.responseFaceCount=int(responseFaces.size());
@@ -148,6 +149,18 @@ inline bool CompatibleNaturalBind(const Matrix &a,const Matrix &b,Point low,Poin
   for(int mask=0;mask<8;++mask){Point p{};for(int k=0;k<3;++k)p[k]=mask&(1<<k)?high[k]:low[k];if(Distance(Transform(a,p),Transform(b,p))>.0001)return false;}
   return true;
 }
+// Seraph's narrow belt has an excluded helper chain under the ribbon mount.
+// Bind its separate renderer to the same ribbon surface, retaining the source
+// hierarchy and natural offset for restoration.
+inline bool SeraphBeltBinding(const std::string &bone,const std::string &ancestor) {
+  for(int row=1;row<=4;++row){const auto name="yaodai_base_L_a_0"+std::to_string(row)+"_jnt_ctrl";
+    const auto parent=row==1?std::string("dress_pd_L_a_01_jnt_ctrl"):"yaodai_base_L_a_0"+std::to_string(row-1)+"_jnt_ctrl";
+    if(name==bone&&parent==ancestor)return true;}
+  return false;
+}
+inline bool RibbonBeltBone(const ClothBoneAsset &b) {
+  return b.attribute==0&&b.name&&b.parentName&&SeraphBeltBinding(b.name,b.parentName);
+}
 inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh,const eiem_cloth_cache::Profile &base,DenseRecipe &recipe,
     const std::vector<Matrix> &world,const std::vector<Point> &points,const std::vector<ClothBoneAsset> &bones,const Graph &graph,
     const std::vector<unsigned char> *selected=nullptr,const PanelChart *panel=nullptr,int sourceSpan=1,const CoatWaistField *waistField=nullptr) {
@@ -186,9 +199,11 @@ inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh
         Need(span>.001,"coat-waist-root-span");waist.fixed[int(k)]={root,span};}}
   }
   auto vertexData=source.At("m_VertexData");auto packed=Blob(vertexData.At("m_DataSize"));const auto wo=ChannelLayout(source,12),io=ChannelLayout(source,13);
-  std::set<std::array<int,2>> edges;for(const auto &f:graph.faces)for(int k=0;k<3;++k){std::array<int,2> e{f[k],f[(k+1)%3]};std::sort(e.begin(),e.end());if(bones[e[0]].attribute==2&&bones[e[1]].attribute==2)edges.insert(e);}for(auto e:graph.lines)if(bones[e[0]].attribute==2&&bones[e[1]].attribute==2)edges.insert(e);
+  auto skinSupport=[&](int n){return bones[n].attribute==2||(recipe.view.ribbonSurface&&bones[n].attribute==1);};
+  std::set<std::array<int,2>> edges;for(const auto &f:graph.faces)for(int k=0;k<3;++k){std::array<int,2> e{f[k],f[(k+1)%3]};std::sort(e.begin(),e.end());if(skinSupport(e[0])&&skinSupport(e[1]))edges.insert(e);}for(auto e:graph.lines)if(skinSupport(e[0])&&skinSupport(e[1]))edges.insert(e);
   std::vector<PreciseSkin> oldSkin,newSkin;std::set<int> changed;size_t moving=0,capacitySkipped=0;
-  auto skinAttribute=[&](int n){return recipe.view.resampledPanel&&n<base.view.boneCount?
+  auto skinAttribute=[&](int n){if(recipe.view.ribbonSurface&&base.view.ribbonSource&&n<base.view.boneCount&&RibbonBeltBone(base.bones[n]))return 2;
+    return recipe.view.resampledPanel&&n<base.view.boneCount?
       (base.bones[n].attribute?base.bones[n].attribute:1):bones[n].attribute;};
   for(size_t n=0;n<mesh.world.size();++n){if((n&255)==0)CheckCancel(package.vfs.cancel);auto original=ReadSkin(mesh,n,unorm);oldSkin.push_back(original);
     Point reference=mesh.world[n],coordinate{};bool panelVertex=false;
@@ -203,10 +218,11 @@ inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh
     PreciseSkin protectedTerms;double total=0;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1)))total+=term.second;else protectedTerms.insert(term);}
     if(!total||(selected&&!(*selected)[n])||(panel&&!panelVertex)){newSkin.push_back(original);continue;}++moving;const size_t capacity=4-protectedTerms.size();SurfaceWeight best;
     std::set<int> sourceColumns;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1)))sourceColumns.insert(recipe.view.resampledPanel?recipe.columns[id]:bones[id].column);}
-    auto permitted=[&](int id){if(recipe.view.ribbonSurface)return bones[id].column>=0&&bones[id].column<5;for(int c:sourceColumns){int d=std::abs(bones[id].column-c);if(recipe.view.loop)d=(std::min)(d,int(recipe.roots.size())-d);if(d<=(panel?2:sourceSpan))return true;}return false;};
+    auto permitted=[&](int id){if(recipe.view.ribbonSurface)return bones[id].column>=0&&bones[id].column<5&&
+        (!bindings.count(id)||!protectedTerms.count(bindings.at(id)));for(int c:sourceColumns){int d=std::abs(bones[id].column-c);if(recipe.view.loop)d=(std::min)(d,int(recipe.roots.size())-d);if(d<=(panel?2:sourceSpan))return true;}return false;};
     if(panel)best=PanelSupport(*panel,coordinate,capacity,permitted);
     else {
-      if(capacity>=3)for(const auto &f:graph.faces)if(bones[f[0]].attribute==2&&bones[f[1]].attribute==2&&bones[f[2]].attribute==2&&permitted(f[0])&&permitted(f[1])&&permitted(f[2]))ClosestFace(mesh.world[n],points,f,best);
+      if(capacity>=3)for(const auto &f:graph.faces)if(skinSupport(f[0])&&skinSupport(f[1])&&skinSupport(f[2])&&permitted(f[0])&&permitted(f[1])&&permitted(f[2]))ClosestFace(mesh.world[n],points,f,best);
       if(capacity>=2)for(auto e:edges)if(permitted(e[0])&&permitted(e[1]))ClosestSegment(mesh.world[n],points[e[0]],points[e[1]],e[0],e[1],best);
       if(capacity==1){++capacitySkipped;newSkin.push_back(original);continue;}
     }

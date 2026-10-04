@@ -88,7 +88,7 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
     if(s.profile->runtimeSeparatedCoat&&s.profile->ReleasedFixed(n))l.assets[n].attribute=2;
     eiem_cloth_asset::SourceUpperCoatSelection(*s.profile,n,l.assets[n]);
     l.assets[n].column=r.columns[n];
-    if(r.ForkCoatBodyOnly()&&eiem_cloth_asset::SourceForkCoatRelease(*s.profile,n))l.assets[n].attribute=2;
+    if(r.ForkCoatBodyOnly())eiem_cloth_asset::SourceForkCoatSelection(*s.profile,n,l.assets[n]);
     if((r.sourcePanelFit&&eiem_cloth_asset::SourcePanelRelease(*s.profile,n)) || (r.sourceApronFit&&eiem_cloth_asset::SourceApronRelease(*s.profile,n)))l.assets[n].attribute=2;
     if(r.sourcePanelFit){l.assets[n].depth=eiem_cloth_asset::SourcePanelDepth(*s.profile,n);if(eiem_cloth_asset::SourceChenWaist(*s.profile,n))l.assets[n].attribute=1;}
     if(r.sourceCoatWaist)l.assets[n].attribute=s.profile->CandidateAttribute(n);
@@ -100,11 +100,12 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   l.profile=*s.profile;l.profile.signature=r.signature;l.profile.bones=l.assets.data();l.profile.loop=r.loop;
   l.profile.candidateAttributes=nullptr;
   l.profile.nativeGraphs=r.graphs;l.profile.nativeGraphCount=r.graphCount;
+  if(r.nativeGraphOrder)l.profile.nativeGraphOrder=r.nativeGraphOrder;
   l.profile.boneCount=int(l.assets.size());l.profile.roots=l.roots.data();l.profile.rootCount=int(l.roots.size());
-  if(eiem_cloth_asset::SourceUpperCoatFront(*s.profile))l.profile.depth=s.profile->depth+1;
+  if(eiem_cloth_asset::SourceUpperCoatFront(*s.profile)||r.ForkCoatBodyOnly())l.profile.depth=s.profile->depth+1;
   if(r.resampledPanel){l.profile.depth=ClothLongPanelRows;l.profile.candidateIgnored=l.ignored.data();l.profile.candidateIgnoredCount=int(l.ignored.size());}
   if(r.sourceShortSkin)l.profile.depth=3;
-  return ClothBoneIdentityBudget(l.profile.boneCount,l.profile.EffectiveCount()) && l.profile.boneCount==r.Total() && l.profile.EffectiveCount()==(r.resampledPanel?0:r.sourceShortSkin?s.profile->boneCount:s.profile->EffectiveCount()+eiem_cloth_asset::SourcePanelPromotedCount(*s.profile)+eiem_cloth_asset::SourceUpperCoatPromoted(*s.profile))+r.addedCount;
+  return ClothBoneIdentityBudget(l.profile.boneCount,l.profile.EffectiveCount()) && l.profile.boneCount==r.Total() && l.profile.EffectiveCount()==(r.resampledPanel?0:r.sourceShortSkin?s.profile->boneCount:s.profile->EffectiveCount()+eiem_cloth_asset::SourcePanelPromotedCount(*s.profile)+eiem_cloth_asset::SourceUpperCoatPromoted(*s.profile)+eiem_cloth_asset::SourceForkCoatPromoted(*s.profile))+r.addedCount;
 }
 static bool ClothBoneLocalCreate() {
   auto &s=ClothBoneState();auto &l=s.local;const auto &recipe=*l.recipe;

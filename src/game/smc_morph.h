@@ -1,4 +1,5 @@
 #pragma once
+#include "core/tool_close_state.h"
 
 // SkeletalMorph（SMC）游戏原生表情驱动。
 //
@@ -23,6 +24,7 @@
 #include "core/game_hooks.h"
 #include "core/user_agreement.h"
 #include "math/character_face.h"
+#include "math/face_eyelid.h"
 #include "math/mmd_face_controls.h"
 #include "game/smc_automation.h"
 #include "game/eye_gaze.h"
@@ -145,6 +147,7 @@ static void SMCFaceInvalidate() {
   poser_gaze::Reset(true,SMCGazeContext());
   s_activeSMC->bindingPreview={};s_activeSMC->bindingPreviewDeadline=0;
   s_manualFace={};
+  s_activeSMC->eyelids={};
   s_faceNodes.clear();s_characterBinding={};s_characterProfile.reset();s_characterModel.clear();s_characterBindingGeneration=0;
   s_faceHierarchy={};s_faceBindingRevision=-1;++s_faceGeneration;
   s_faceRegions.fill(-1);
@@ -1350,9 +1353,9 @@ static SMCMotionFrame SMCManualFrame() {
 
 static void *__fastcall HookedSMCMorphJob(void *result, void *smc, uint32_t count,
                                         void *dependency, void *method) {
-  if (RuntimeClosing()) return s_origMorphJob?s_origMorphJob(result,smc,count,dependency,method):result;
+  if (RuntimeClosing() || poser_close::Closing()) return s_origMorphJob?s_origMorphJob(result,smc,count,dependency,method):result;
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (!RuntimeClosing() && poser_agreement::Allowed() && lock.owns_lock() && !CharacterSwitchInProgress())
+    if (!RuntimeClosing() && !poser_close::Closing() && poser_agreement::Allowed() && lock.owns_lock() && !CharacterSwitchInProgress())
     { SMCActorScope actor(SMCFindActor(smc)); SMCMorphJobBefore(smc); }
   // Returning explicitly preserves RAX across the lock destructor as well as
   // busy/switching paths; a tail-call accidentally preserving RAX is insufficient.
@@ -1670,6 +1673,52 @@ static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray
     return true;
   } __except(1) {return false;}
 }
+static const face_eyelid::Limits &SMCEyelidLimits(bool characterReady,bool native,bool mixed) {
+  auto &cache=s_activeSMC->eyelids;
+  // Native target ranges can become available after the neutral hierarchy.
+  // Check metadata only, never rescan expression entries each frame.
+  uint64_t signature=uint64_t(s_capturedLen)*1099511628211ull+uint64_t(s_boneIDMapCount);
+  signature=signature*131+s_boneMapReady;signature=signature*131+s_extraMorphsResolved;
+  signature=signature*131+s_mouthResolved;
+  for(int c=0;c<s_extraMorphCount;++c)for(int t=0;t<s_extraMorphs[c].targetCount;++t) {
+    const auto &v=s_extraMorphs[c].targets[t];
+    signature=signature*131+v.resolved;signature=signature*131+v.startIdx;signature=signature*131+v.count;
+  }
+  if(cache.generation!=s_faceGeneration||cache.signature!=signature||cache.profile!=s_characterProfile.get()||
+      cache.characterReady!=characterReady) {
+    cache.generation=s_faceGeneration;cache.signature=signature;cache.profile=s_characterProfile.get();
+    cache.characterReady=characterReady;
+    cache.character=cache.native=face_eyelid::Bind(s_faceHierarchy,s_faceNodes);
+    if(characterReady) {
+      std::array<float,character_face::MaxMorphs> weights{};
+      for(int i=0;i<int(s_characterProfile->morphs.size());++i)if(s_characterBinding.usable[i]) {
+        const auto &m=s_characterProfile->morphs[i];
+        bool eye=false;for(const auto &d:m.deltas)if(face_eyelid::Side(s_characterProfile->bones[d.bone].name)>=0){eye=true;break;}
+        if(!eye)continue;
+        weights[i]=1;face_mixing::Pose pose;
+        if(character_face::Evaluate(*s_characterProfile,s_characterBinding,s_faceHierarchy,weights,1,pose))
+          face_eyelid::Include(cache.character,s_faceHierarchy,pose);
+        weights[i]=0;
+      }
+    }
+    for(int c=0;c<s_extraMorphCount;++c) {
+      bool eye=false;for(int t=0;t<s_extraMorphs[c].targetCount;++t)
+        eye|=!strncmp(s_extraMorphs[c].targets[t].endfieldName,"eye_",4);
+      if(!eye)continue;
+      float weights[SMC_MAX_SLIDERS]={};weights[SMC_NUM_MOUTH+c]=1;
+      SMCMotionNativeDeltaArray deltas{};
+      if(!SMCMotionNativeDeltas(weights,deltas))continue;
+      auto pose=s_faceHierarchy.rest;
+      for(int i=0;i<s_faceHierarchy.count;++i) {
+        pose[i].position=pose[i].position+deltas[i].position;
+        pose[i].rotation=NormQ(Quat::FromEulerDeg(deltas[i].rotation)*pose[i].rotation);
+      }
+      face_eyelid::Include(cache.native,s_faceHierarchy,pose);
+    }
+    cache.combined=face_eyelid::Merge(cache.character,cache.native);
+  }
+  return mixed?cache.combined:native?cache.native:cache.character;
+}
 static void SMCMotionEvaluate() {
   s_faceBoneEvalOk=false;
   if(!SMCMotionActive()||!s_faceBonesCaptured||s_captureNeutral)return;
@@ -1709,6 +1758,13 @@ static void SMCMotionEvaluate() {
       fallback[i].rotation=NormQ(Quat::FromEulerDeg(nativeDeltas[i].rotation*amount)*rest[i].rotation);
     }
     if(!face_mixing::Compose(s_faceHierarchy,complete,fallback,output))return;
+  }
+  const auto eyeDriver=settings.driver[face_mixing::Eyes];
+  if(eyeDriver!=face_mixing::Driver::Disabled&&s_faceHierarchy.ready) {
+    bool native=eyeDriver==face_mixing::Driver::Game||!characterReady,mixed=false;
+    if(!native&&settings.fallback)for(int i=0;i<s_faceHierarchy.count;++i)
+      if(s_faceHierarchy.region[i]==face_mixing::Eyes&&Len(fallbackDeltas[i].position)>1e-8f){mixed=true;break;}
+    face_eyelid::Apply(SMCEyelidLimits(characterReady,native,mixed),s_faceHierarchy,output);
   }
   memcpy(s_faceBones,s_faceRestPose,sizeof(s_faceBones));
   for(int i=0;i<s_faceBoneCount;++i) {
@@ -2097,9 +2153,9 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
 // for a worker's IL2CPP invocation; busy callbacks run the original game code.
 static void (*g_characterFramePulse)() = nullptr;
 static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
-  if (RuntimeClosing()) {if(s_origSMCUpdate)s_origSMCUpdate(self,dt,method);return;}
+  if (RuntimeClosing() || poser_close::Closing()) {if(s_origSMCUpdate)s_origSMCUpdate(self,dt,method);return;}
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (RuntimeClosing() || !poser_agreement::Allowed() || !lock.owns_lock() || CharacterSwitchInProgress()) {
+  if (RuntimeClosing() || poser_close::Closing() || !poser_agreement::Allowed() || !lock.owns_lock() || CharacterSwitchInProgress()) {
     if (s_origSMCUpdate) s_origSMCUpdate(self, dt, method);
     return;
   }

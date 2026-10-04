@@ -1,399 +1,1047 @@
-# -*- coding: utf-8 -*-
-"""Endfield Poser Bridge — 把游戏角色骨骼桥接进 Blender 摆姿。
-
-配合游戏内插件 Endfield Poser（poser.dll）的 localhost HTTP 服务器使用：
-    http://127.0.0.1:18923
-
-用法：
-  1. 游戏内插件已加载（web 服务器随插件启动）。
-  2. Blender 安装本插件：编辑(Edit) → 偏好设置(Preferences) → 插件(Add-ons)
-     → 安装(Install) 选择本文件 → 勾选启用 "Endfield Poser Bridge"。
-  3. 3D 视图 N 面板 → "Endfield" 分类 → Connect 连接游戏并创建骨架。
-  4. 在 Blender Pose 模式摆姿势，点 "同步到游戏" 把姿势写回游戏（自动冻结）。
-
-坐标系：Unity/终末地 Y 向上、左手系；Blender Z 向上、右手系。
-换算：B_pos = (U_x, U_z, -U_y)；局部旋转增量 B_delta = R_x(-90°) * U_delta * R_x(90°)。
-连接时把游戏当前姿势捕获为 Blender rest pose（v1 策略），Blender 中编辑的是
-相对 rest 的 delta，写回游戏时再叠加回游戏 rest。
-"""
-
+"""Endfield skeleton, expression, camera and correction-layer editor."""
 bl_info = {
-    "name": "Endfield Poser Bridge",
-    "author": "Endfield Poser",
-    "version": (0, 1, 0),
-    "blender": (5, 2, 0),
-    "location": "3D View > N panel > Endfield",
-    "description": "Bridge Arknights: Endfield character bones to Blender for posing",
-    "category": "Rigging",
+    'name': 'Endfield Poser Bridge', 'author': 'Endfield Poser',
+    'version': (0, 2, 6), 'blender': (5, 2, 0),
+    'location': '3D View > N > Endfield', 'category': 'Animation',
+    'description': '编辑游戏骨架、中文表情、镜头与动作修正层',
 }
-
-import json
 import math
-import urllib.request
-
+import json
+import os
+import tempfile
+import time
+from contextlib import contextmanager
 import bpy
-import mathutils
+from bpy.app.handlers import persistent
+from bpy.props import BoolProperty, IntProperty, StringProperty, PointerProperty
+from bpy_extras.io_utils import ImportHelper, ExportHelper
+from . import rig, animation, transport, console
 
-HOST = "127.0.0.1"
-PORT = 18923
-ARM_NAME = "EndfieldRig"
-
-# 全局会话状态
-_state = {
-    "connected": False,
-    "status": "未连接",
-    "rest_quat": {},     # 骨骼名 -> 游戏 local 静息四元数
-    "rest_pos": {},      # 骨骼名 -> 游戏 local 静息位置
-    "root_offset": mathutils.Vector((0.0, 0.0, 0.0)),
-    "bones_rev": 0,      # 游戏骨骼列表版本号（角色切换后变化）
-    "auto": False,
-}
-
-# R_x(-90°)：Unity Y-up → Blender Z-up 的轴向旋转（四元数 w,x,y,z）
-AXIS_Q = mathutils.Quaternion(
-    (math.cos(math.radians(-45.0)), math.sin(math.radians(-45.0)), 0.0, 0.0)
-)
-
-
-def _base():
-    return "http://%s:%d" % (HOST, PORT)
-
-
-def api_get(path, timeout=3):
-    with urllib.request.urlopen(_base() + path, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+_client = None
+_session = 0
+_sequence = 0
+_status = '未连接'
+_connection_status = '未连接游戏'
+_schema = None
+_last = 0.
+_busy = False
+_baker = None
+_connected_arm = None
+_display_pending = False
+_connected_scene = None
+_sampling = False
+_ack_frame = None
+_ack_time = 0.
+_connection_packet = None
+_face_untouched = False
+_last_ping = 0.
+_preview_started = False
+_undoing = False
+_undo_live = False
+_connected_scene_uid = None
+_connected_arm_uid = None
 
 
-def api_post(path, data, timeout=3):
-    req = urllib.request.Request(
-        _base() + path,
-        data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+def keep_alive():
+    global _last_ping
+    now = time.monotonic()
+    if _session and now-_last_ping >= 1:
+        client().request('ping', {'session': _session}, reply_for(_session))
+        _last_ping = now
 
 
-# ---- 坐标/旋转换算 ----
-def u_to_b_vec(u):
-    """Unity (x, y 上, z) -> Blender (x, z 上, -y)"""
-    return mathutils.Vector((u[0], u[2], -u[1]))
+def connection_error(exc):
+    global _status
+    reason = str(exc) or type(exc).__name__
+    console.exception()
+    disconnect()
+    _status = '同步中断：' + reason
+    globals()['_connection_status'] = _status
 
 
-def b_to_u_vec(b):
-    """Blender -> Unity（u_to_b 的逆）"""
-    return mathutils.Vector((b[0], -b[2], b[1]))
+def client():
+    global _client
+    if _client is None:
+        _client = transport.Client()
+    return _client
 
 
-def uq_to_bq(q_u):
-    return AXIS_Q * q_u * AXIS_Q.inverted()
+def report(operator, levels, message):
+    global _status
+    # Blender's native report also prints to its console. Keep normal feedback
+    # in our panel, including errors; verbose reports are explicitly opt-in.
+    _status = message
+    if console.enabled():
+        console.configure()
+        operator.report(levels, message)
 
 
-def bq_to_uq(q_b):
-    return AXIS_Q.inverted() * q_b * AXIS_Q
+def check(result):
+    global _status
+    if not result.get('ok'):
+        _status = result.get('error', '联动失败')
+        raise RuntimeError(_status)
+    return result
 
 
-def _armature():
-    obj = bpy.data.objects.get(ARM_NAME)
-    return obj if obj and obj.type == "ARMATURE" else None
+def preview_result(result):
+    global _session, _status, _connection_status
+    if not result.get('ok'):
+        _connection_status = result.get('error', '联动中断')
+        if result.get('retryable'):
+            return
+        _status = result.get('error', '联动中断')
+        _session = 0
+        bpy.context.scene.epb_live = False
 
 
-def _sanitize(name):
-    return name.replace("\\", "_").replace("/", "_")
+def reply_for(session, frame=None):
+    def reply(result):
+        global _ack_frame, _ack_time
+        if _session == session:
+            preview_result(result)
+            if result.get('ok') and frame is not None:
+                _ack_frame, _ack_time = frame, time.monotonic()
+                globals()['_connection_status'] = '已连接游戏'
+    return reply
 
 
-# ---- 操作符：连接并建臂 ----
+def connect_result(result):
+    with edit_transaction():
+        connect_current(result)
+
+
+def connect_current(result):
+    global _session, _sequence, _schema, _status, _connected_arm, _connected_scene, _ack_frame
+    global _connection_packet, _face_untouched, _preview_started
+    global _connected_scene_uid, _connected_arm_uid
+    check(result)
+    scene = bpy.context.scene
+    _session, _sequence = result['session'], 0
+    arm = scene.epb_armature
+    previous = rig.schema(arm) if arm and 'epb_scene' in arm else None
+    compatible = previous and previous['model'] == result['model'] and [
+        (b['name'], b['parent']) for b in previous['bones']] == [(b['name'], b['parent']) for b in result['bones']]
+    if compatible:
+        _schema = previous
+        for old, new in zip(_schema['bones'], result['bones']):
+            old['editable'] = new['editable']
+        # Keep existing property indices so saved face curves remain attached
+        # to the same expression. New VMD aliases append instead of reordering.
+        available = {f['name']: f for f in result['faces']}
+        for face in _schema['faces']:
+            face['available'] = face['name'] in available
+        known = {f['name'] for f in _schema['faces']}
+        for face in result['faces']:
+            if face['name'] not in known:
+                i = len(_schema['faces'])
+                _schema['faces'].append(face)
+                key = rig.bone_key(i)
+                arm[key] = 0.0
+                arm.id_properties_ui(key).update(min=0, max=1, description=face['label'])
+        _schema['session'] = _session
+        arm['epb_scene'] = json.dumps(_schema, ensure_ascii=False)
+    else:
+        # Keep the user's scene untouched; a dedicated scene contains no mesh.
+        scene = bpy.data.scenes.new('Endfield 动作编辑')
+        bpy.context.window.scene = scene
+        scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
+        arm = rig.create_rig(result, scene)
+        scene.epb_armature = arm
+        _schema = rig.schema(arm)
+        scene.epb_camera = rig.create_camera(result, scene)
+    # Keep the saved rig/action basis, but record the new game heading for
+    # incoming world-space camera/root samples. Updating only the output anchor
+    # would instead rotate already saved animation and camera curves.
+    _schema['sample_anchor_rotation'] = result.get('anchor_rotation', [0, 0, 0, 1])
+    arm['epb_scene'] = json.dumps(_schema, ensure_ascii=False)
+    rig.apply_display(arm, scene.epb_show_fingers)
+    scene.render.fps, scene.render.fps_base = 30, 1
+    scene.frame_start = 1
+    scene.frame_end = max(2, math.ceil(result['duration'] * 30) + 1)
+    scene.epb_import_end = scene.frame_end
+    initial = result.get('initial')
+    if initial:
+        frame = 1 + initial['time']*30
+        scene.frame_set(int(frame), subframe=frame-int(frame))
+        rig.apply_sample(arm, initial, scene.epb_camera)
+        animation.capture_base(arm, scene)
+        bpy.context.view_layer.update()
+        if not initial.get('camera'):
+            scene.epb_camera_sync = False
+    scene.epb_live = True
+    _connected_arm = arm
+    _connected_scene = scene
+    _connected_scene_uid, _connected_arm_uid = scene.session_uid, arm.session_uid
+    _ack_frame = None
+    _preview_started = False
+    _connection_packet = rig.packet(arm, scene.epb_camera if scene.epb_camera_sync else None,
+                                   scene, _session, 0, _schema) if initial else None
+    _face_untouched = initial is not None
+    _status = '已连接 · 可编辑骨骼、中文表情和镜头'
+    globals()['_connection_status'] = '已连接游戏'
+
+
+def begin_result(result):
+    check(result)
+    # One callback later the camera observer has an actual scene camera pose.
+    client().request('scene', {'session': result['session']}, connect_result)
+
+
+def send_preview(scene=None, depsgraph=None):
+    global _sequence, _sampling, _last, _face_untouched, _preview_started
+    scene = scene if scene is not None else bpy.context.scene
+    if _sampling or _undoing or not _session or not scene.epb_armature:
+        return
+    _sampling = True
+    try:
+        _sequence += 1
+        data = rig.packet(scene.epb_armature, scene.epb_camera if scene.epb_camera_sync else None,
+                          scene, _session, _sequence, _schema, depsgraph)
+        unchanged_face = _connection_packet and data['faces'] == _connection_packet['faces']
+        _face_untouched = _face_untouched and bool(unchanged_face)
+        if (_face_untouched and not _preview_started and _connection_packet and all(data[k] == _connection_packet[k]
+                for k in ('time', 'root', 'bones', 'faces', 'camera', 'visible'))):
+            # A timer/UI redraw is not an edit. Keep the exact captured native
+            # expression and camera, including channels absent from this rig.
+            keep_alive()
+        else:
+            data['preserve_face'] = _face_untouched
+            client().preview(data, reply_for(_session, scene.frame_current_final))
+            _preview_started = True
+        _last = time.monotonic()
+    finally:
+        _sampling = False
+
+
+@persistent
+def evaluated_preview(scene, depsgraph):
+    # Pose drags, Graph Editor edits and NLA mixing can change the evaluated
+    # pose without changing frames. Capture the same graph shown in Blender.
+    if (_sampling or _busy or _undoing or not _session or scene != _connected_scene or
+            not scene.epb_live or scene.epb_armature != _connected_arm or
+            time.monotonic()-_last < 1/30):
+        return
+    try:
+        send_preview(scene, depsgraph)
+    except Exception as exc:
+        connection_error(exc)
+
+
+@persistent
+def frame_preview(scene, depsgraph=None):
+    if (_busy or _sampling or _undoing or not _session or scene != _connected_scene or
+            not scene.epb_live or scene.epb_armature != _connected_arm):
+        return
+    try:
+        send_preview(scene, depsgraph)
+    except Exception as exc:
+        connection_error(exc)
+
+
+def refresh_preview(context):
+    if _session and context.scene == _connected_scene and context.scene.epb_live and not _busy:
+        # Do not frame_set here: it discards unkeyed R/G edits. The dependency
+        # graph evaluates curves/constraints while retaining the visible pose.
+        send_preview(context.scene)
+
+
+@contextmanager
+def edit_transaction():
+    global _busy
+    previous = _busy
+    _busy = True
+    try:
+        yield
+    finally:
+        _busy = previous
+
+
+def tick():
+    global _last, _status, _busy, _display_pending
+    try:
+        if _undoing:
+            return 1/60
+        if _display_pending:
+            load_post(None)
+            _display_pending = False
+        if _client:
+            _client.poll()
+        scene = bpy.context.scene
+        if _session and scene.epb_armature != _connected_arm:
+            disconnect()
+        now = time.monotonic()
+        if _session and now-_last > (1/30 if scene.epb_live and not _busy else 1):
+            _last = now
+            if scene.epb_live and not _busy:
+                send_preview()
+            else:
+                keep_alive()
+        for screen in bpy.data.screens:
+            for area in screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+    except Exception as exc:
+        connection_error(exc)
+    return 1/60
+
+
+def disconnect():
+    global _session, _busy, _baker, _status
+    session = _session
+    _session, _busy, _baker = 0, False, None
+    _status = '已断开；游戏恢复原状态'
+    globals()['_connection_status'] = '未连接游戏'
+    if session and _client:
+        try:
+            with _client.lock:
+                _client.latest = None
+            _client.request('end', {'session': session})
+        except Exception:
+            # Cleanup must not throw out of the Blender timer and permanently
+            # stop all synchronization. The game also has its lease timeout.
+            console.exception()
+
+
+@persistent
+def load_pre(_):
+    disconnect()
+
+
+@persistent
+def undo_pre(_):
+    global _undoing, _undo_live
+    _undoing = True
+    _undo_live = bool(_session and bpy.context.scene.epb_live)
+
+
+@persistent
+def undo_post(_):
+    global _undoing, _connected_scene, _connected_arm, _schema, _last, _status
+    try:
+        if not _session:
+            return
+        # Undo replaces RNA wrappers even when the same scene/rig survives.
+        # session_uid survives undo and renames; names and cached pointers don't.
+        scene = next((s for s in bpy.data.scenes if s.session_uid == _connected_scene_uid), None)
+        arm = scene.epb_armature if scene else None
+        if not arm or arm.session_uid != _connected_arm_uid:
+            disconnect()
+            _status = '撤销已移除联动骨架；恢复骨架后可重新连接'
+            return
+        if _busy:
+            disconnect()
+            _status = '导入／导出已因撤销取消；可重新连接，已有动作仍保留'
+            return
+        _connected_scene, _connected_arm = scene, arm
+        _schema = rig.schema(arm)
+        scene.epb_live = _undo_live
+        _last = 0.
+    except Exception as exc:
+        connection_error(exc)
+    finally:
+        _undoing = False
+
+
+def update_display(scene, context):
+    rig.apply_display(scene.epb_armature, scene.epb_show_fingers)
+
+
+@persistent
+def load_post(_):
+    # Repair visibility in existing projects without changing their actions.
+    for scene in bpy.data.scenes:
+        for arm in scene.objects:
+            if arm.type == 'ARMATURE' and arm.get('epb_managed'):
+                rig.apply_display(arm, scene.epb_show_fingers)
+
+
 class EPB_OT_connect(bpy.types.Operator):
-    bl_idname = "endfield.connect"
-    bl_label = "连接游戏并创建骨架"
-    bl_description = "拉取游戏骨骼，创建 Armature（当前姿势作为 rest pose）"
-
+    bl_idname = 'endfield.connect'
+    bl_label = '连接当前游戏角色'
+    bl_description = '保留当前姿态和表情进入编辑；播放中的 MMD 暂停在当前帧'
     def execute(self, context):
-        try:
-            data = api_get("/api/allbones")
-            allbones = data["bones"]
-        except Exception as exc:  # noqa: BLE001
-            _state["status"] = "连接失败: %s" % exc
-            self.report({"ERROR"}, _state["status"])
-            return {"CANCELLED"}
+        client().request('begin', {}, begin_result)
+        return {'FINISHED'}
 
-        _state["bones_rev"] = data.get("rev", 0)
-        _state["rest_quat"] = {}
-        _state["rest_pos"] = {}
-        for b in allbones:
-            key = _sanitize(b["name"])
-            _state["rest_quat"][key] = mathutils.Quaternion(
-                (b.get("lrw", 1.0), b.get("lrx", 0.0),
-                 b.get("lry", 0.0), b.get("lrz", 0.0))
-            )
-            _state["rest_pos"][key] = mathutils.Vector(
-                (b.get("lpx", 0.0), b.get("lpy", 0.0), b.get("lpz", 0.0))
-            )
 
-        # 根骨世界坐标作为原点偏移（角色远离 Blender 原点时自动居中）
-        root = None
-        for b in allbones:
-            if b.get("parent", -2) < 0:
-                root = b
-                break
-        if root is None and allbones:
-            root = allbones[0]
-        _state["root_offset"] = (
-            u_to_b_vec((root["x"], root["y"], root["z"]))
-            if root else mathutils.Vector((0.0, 0.0, 0.0))
-        )
+class EPB_OT_disconnect(bpy.types.Operator):
+    bl_idname = 'endfield.disconnect'
+    bl_label = '断开并恢复游戏'
+    def execute(self, context):
+        disconnect()
+        return {'FINISHED'}
 
-        # 清理旧骨架
-        old = _armature()
-        if old is not None:
-            bpy.data.objects.remove(old, do_unlink=True)
 
-        arm_data = bpy.data.armatures.new(ARM_NAME)
-        obj = bpy.data.objects.new(ARM_NAME, arm_data)
-        context.scene.collection.objects.link(obj)
-        bpy.context.view_layer.objects.active = obj
-        obj.select_set(True)
+class EPB_OT_open_vmd(bpy.types.Operator, ImportHelper):
+    bl_idname = 'endfield.open_vmd'
+    bl_label = '选择 VMD 动作'
+    filename_ext = '.vmd'
+    filter_glob: StringProperty(default='*.vmd', options={'HIDDEN'})
+    camera_only: BoolProperty(name='作为镜头文件', default=False)
+    def execute(self, context):
+        if _session:
+            report(self, {'ERROR'}, '请先断开，再选择新的动作或镜头')
+            return {'CANCELLED'}
+        def loaded(result):
+            global _status
+            check(result)
+            _status = '游戏正在读取 VMD，稍后连接并导入'
+        client().request('load_vmd', {'path': self.filepath, 'camera': self.camera_only}, loaded)
+        return {'FINISHED'}
 
-        pos_b = []
-        for b in allbones:
-            pos_b.append(u_to_b_vec((b["x"], b["y"], b["z"])) - _state["root_offset"])
 
-        # 世界旋转（Unity 空间，沿父链连乘），供叶子骨方向用
-        world_q = []
-        for i, b in enumerate(allbones):
-            q = mathutils.Quaternion(
-                (b.get("lrw", 1.0), b.get("lrx", 0.0),
-                 b.get("lry", 0.0), b.get("lrz", 0.0)))
-            pi = b.get("parent", -1)
-            if pi >= 0 and pi < len(world_q) and world_q[pi] is not None:
-                world_q.append(world_q[pi] * q)
+def export_header(data, camera=False):
+    if camera:
+        return {'format': 'endfield-blender-camera', 'version': 2}
+    return {'format': 'endfield-blender-motion', 'version': 2, 'model': data['model'],
+            'bone_names': [b['name'] for b in data['bones']],
+            'bone_parents': [b['parent'] for b in data['bones']]}
+
+
+def export_sample(packet, camera=False):
+    keys = ('time', 'anchor_rotation', 'camera') if camera else ('time', 'anchor_rotation', 'root', 'bones', 'faces')
+    if camera and not packet.get('camera'):
+        raise ValueError('需要可用的镜头')
+    return {key: packet[key] for key in keys if key in packet}
+
+
+class ExportClip:
+    camera_only = False
+    _timer = None
+    _file = None
+    def execute(self, context):
+        global _busy
+        s = context.scene
+        if not s.epb_armature or _busy or (self.camera_only and not s.epb_camera):
+            report(self, {'ERROR'}, '需要编辑骨架，且不能与导入同时进行')
+            return {'CANCELLED'}
+        self._original, self._frame = s.frame_current, s.frame_start
+        self._start, self._end = s.frame_start, s.frame_end
+        self._data = rig.schema(s.epb_armature)
+        self._file = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False,
+            dir=os.path.dirname(os.path.abspath(self.filepath)), prefix='.epmotion-', suffix='.tmp')
+        header = export_header(self._data, self.camera_only)
+        self._file.write(json.dumps(header, ensure_ascii=False)[:-1] + ',"frames":[')
+        self._first = True
+        _busy = True
+        self._timer = context.window_manager.event_timer_add(.01, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def cleanup(self, context, success):
+        global _busy, _status
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+        if self._file:
+            name = self._file.name
+            if success:
+                self._file.write(']}')
+            self._file.close()
+            if success:
+                os.replace(name, self.filepath)
             else:
-                world_q.append(q)
+                os.unlink(name)
+        context.scene.frame_set(self._original)
+        _busy = False
+        _status = '已导出，可在游戏「MMD 播放器 → Blender 联动」中分别加载' if success else '已取消导出'
 
-        # 每根骨的 tail 指向它的第一个子关节（真实长度与朝向）
-        first_child = {}
-        for i, b in enumerate(allbones):
-            pi = b.get("parent", -1)
-            if pi >= 0 and pi not in first_child:
-                first_child[pi] = i
+    def modal(self, context, event):
+        global _status
+        if event.type == 'ESC':
+            self.cleanup(context, False)
+            return {'CANCELLED'}
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        try:
+            s = context.scene
+            fps = s.render.fps / s.render.fps_base
+            for _ in range(3):
+                s.frame_set(self._frame)
+                sample = rig.packet(s.epb_armature, s.epb_camera if self.camera_only else None, s, 0, self._frame, self._data)
+                sample = export_sample(sample, self.camera_only)
+                sample['time'] = (self._frame-self._start)/fps
+                if not self._first:
+                    self._file.write(',')
+                json.dump(sample, self._file, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+                self._first = False
+                self._frame += 1
+                if self._file.tell() > 256*1024*1024:
+                    raise ValueError('编辑动作超过 256 MB，请缩短导出帧段')
+                if self._frame > self._end:
+                    self.cleanup(context, True)
+                    return {'FINISHED'}
+            _status = f'导出编辑动作 {self._frame}/{self._end} · Esc 取消'
+        except Exception as exc:
+            self.cleanup(context, False)
+            report(self, {'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
 
-        bpy.ops.object.mode_set(mode="EDIT")
-        edit_bones = arm_data.edit_bones
-        created = []
-        for i, b in enumerate(allbones):
-            created.append(edit_bones.new(_sanitize(b["name"])))
-        # 父级链：先设 parent。对“父尾 = 第一个子骨 head”的骨
-        # 用 use_connect=True 连接（标准的 Blender 链表示；也避免 Blender 5.2
-        # 对未连接子骨 head/tail 存储的异常值）。其余子骨不连接。
-        for i, b in enumerate(allbones):
-            pi = b.get("parent", -1)
-            if pi >= 0 and pi < len(created):
-                created[i].parent = created[pi]
-                created[i].use_connect = (first_child.get(pi) == i)
-        # 最后统一设置 head/tail（父级赋值会移动骨头，位置在最后覆盖）
-        for i, b in enumerate(allbones):
-            head = pos_b[i]
-            if i in first_child:
-                tail = pos_b[first_child[i]]
+
+class EPB_OT_export(ExportClip, bpy.types.Operator, ExportHelper):
+    bl_idname = 'endfield.export_motion'
+    bl_label = '导出动作与表情'
+    filename_ext = '.epmotion'
+    filter_glob: StringProperty(default='*.epmotion', options={'HIDDEN'})
+
+
+class EPB_OT_export_camera(ExportClip, bpy.types.Operator, ExportHelper):
+    bl_idname = 'endfield.export_camera'
+    bl_label = '导出镜头'
+    camera_only = True
+    filename_ext = '.epcamera'
+    filter_glob: StringProperty(default='*.epcamera', options={'HIDDEN'})
+
+
+class EPB_OT_pull(bpy.types.Operator):
+    bl_idname = 'endfield.pull_motion'
+    bl_label = '导入动作／表情／镜头'
+    bl_description = '按当前角色实际适配结果烘焙；不改动原始 VMD'
+    def execute(self, context):
+        global _busy, _baker, _status
+        scene = context.scene
+        if not _session or _busy:
+            report(self, {'ERROR'}, '请先连接，并等待当前导入结束')
+            return {'CANCELLED'}
+        start, end = scene.epb_import_start, scene.epb_import_end
+        if end < start or end-start > 108000:
+            report(self, {'ERROR'}, '帧范围无效（单次最多一小时）')
+            return {'CANCELLED'}
+        _busy = True
+        _baker = animation.Baker(scene.epb_armature, scene.epb_camera, _schema, 30)
+        active_session = _session
+        def pull(frame):
+            if not _busy or _session != active_session:
+                return
+            count = min(8, end-frame+1)
+            def receive(result):
+                global _busy, _status, _baker, _face_untouched
+                if not _busy or _session != active_session:
+                    return
+                check(result)
+                for sample in result['frames']:
+                    _baker.sample(sample)
+                _status = f'导入动作 {min(frame+count-1, end)}/{end}'
+                if frame+count <= end:
+                    pull(frame+count)
+                else:
+                    _baker.finish()
+                    _face_untouched = False
+                    _baker, _busy = None, False
+                    scene.frame_start, scene.frame_end = start, end
+                    scene.frame_set(start)
+                    _status = '动作已导入；可新建修正层'
+            client().request('sample', {'session': _session, 'start': (frame-1)/30, 'count': count, 'fps': 30}, receive)
+        pull(start)
+        return {'FINISHED'}
+
+
+class EPB_OT_layer(bpy.types.Operator):
+    bl_idname = 'endfield.new_layer'
+    bl_label = '新建动作修正层'
+    bl_options = {'REGISTER', 'UNDO'}
+    @classmethod
+    def poll(cls, context):
+        return not _busy and context.scene.epb_armature is not None
+
+    def execute(self, context):
+        if not context.scene.epb_armature:
+            return {'CANCELLED'}
+        with edit_transaction():
+            animation.correction_layer(context.scene.epb_armature, context.scene)
+            context.scene.frame_set(context.scene.frame_current, subframe=context.scene.frame_subframe)
+        bpy.ops.endfield.show_keys()
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_key(bpy.types.Operator):
+    bl_idname = 'endfield.key_pose'
+    bl_label = '给选中关节打关键帧'
+    bl_options = {'REGISTER', 'UNDO'}
+    @classmethod
+    def poll(cls, context):
+        arm = context.scene.epb_armature
+        return not _busy and arm is not None and context.object == arm and arm.mode == 'POSE'
+
+    def execute(self, context):
+        with edit_transaction():
+            count = animation.key_pose(context.scene.epb_armature, context.scene.frame_current, scene=context.scene)
+        if not count:
+            report(self, {'WARNING'}, '请先选中可见的身体关节')
+            return {'CANCELLED'}
+        report(self, {'INFO'}, f'已为 {count} 个关节打关键帧')
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_restore_pose(bpy.types.Operator):
+    bl_idname = 'endfield.restore_pose'
+    bl_label = '恢复选中关节状态'
+    bl_description = '恢复本帧下层动作的姿态；再打关键帧即可平滑回到原动作'
+    bl_options = {'REGISTER', 'UNDO'}
+    @classmethod
+    def poll(cls, context):
+        return EPB_OT_key.poll(context)
+
+    def execute(self, context):
+        with edit_transaction():
+            count = animation.restore_selected(context.scene.epb_armature, context.scene)
+        if not count:
+            report(self, {'WARNING'}, '请先选中可见的身体关节')
+            return {'CANCELLED'}
+        report(self, {'INFO'}, '已恢复本帧原动作；点击打关键帧保存恢复点')
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_face_key(bpy.types.Operator):
+    bl_idname = 'endfield.face_key'
+    bl_label = '表情打关键帧'
+    index: IntProperty(default=-1)
+    @classmethod
+    def poll(cls, context):
+        return not _busy and context.scene.epb_armature is not None
+
+    def execute(self, context):
+        arm = context.scene.epb_armature
+        if arm:
+            arm.keyframe_insert(f'["{rig.bone_key(self.index)}"]', frame=context.scene.frame_current, group='表情')
+            refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_face_zero(bpy.types.Operator):
+    bl_idname = 'endfield.face_zero'
+    bl_label = '表情归零'
+    bl_options = {'REGISTER', 'UNDO'}
+    def execute(self, context):
+        global _face_untouched
+        _face_untouched = False
+        arm = context.scene.epb_armature
+        if arm:
+            for i, _ in enumerate(rig.schema(arm)['faces']):
+                arm[rig.bone_key(i)] = 0.
+            refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_camera_key(bpy.types.Operator):
+    bl_idname = 'endfield.camera_key'
+    bl_label = '镜头打关键帧'
+    bl_description = '把当前构图保存到镜头修正层；保留下层原镜头'
+    bl_options = {'REGISTER', 'UNDO'}
+    @classmethod
+    def poll(cls, context):
+        return not _busy and context.scene.epb_camera is not None
+
+    def execute(self, context):
+        obj = context.scene.epb_camera
+        if obj:
+            with edit_transaction():
+                animation.key_camera(obj, context.scene)
+            refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_camera_layer(bpy.types.Operator):
+    bl_idname = 'endfield.new_camera_layer'
+    bl_label = '新建镜头修正层'
+    bl_options = {'REGISTER', 'UNDO'}
+    @classmethod
+    def poll(cls, context):
+        return EPB_OT_camera_key.poll(context)
+
+    def execute(self, context):
+        with edit_transaction():
+            animation.camera_layer(context.scene.epb_camera, context.scene)
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_camera_restore(bpy.types.Operator):
+    bl_idname = 'endfield.restore_camera'
+    bl_label = '恢复本帧下层镜头'
+    bl_description = '恢复位置、朝向、焦距与对焦距离；再打关键帧即可平滑返回原镜头'
+    bl_options = {'REGISTER', 'UNDO'}
+    @classmethod
+    def poll(cls, context):
+        return EPB_OT_camera_key.poll(context)
+
+    def execute(self, context):
+        with edit_transaction():
+            animation.restore_camera(context.scene.epb_camera, context.scene)
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_layer_visibility(bpy.types.Operator):
+    bl_idname = 'endfield.layer_visibility'
+    bl_label = '开关此层'
+    bl_options = {'REGISTER', 'UNDO'}
+    camera: BoolProperty(default=False)
+    index: IntProperty(default=-1)
+    def execute(self, context):
+        owner = context.scene.epb_camera if self.camera else context.scene.epb_armature
+        if not owner or not owner.animation_data:
+            return {'CANCELLED'}
+        ad = owner.animation_data
+        other = owner.data.animation_data if self.camera else None
+        with edit_transaction():
+            if self.index < 0:
+                value = 0. if ad.action_influence else 1.
+                ad.action_influence = value
+                if other and other.action == ad.action:
+                    other.action_influence = value
+            elif self.index < len(ad.nla_tracks):
+                track = ad.nla_tracks[self.index]
+                track.mute = not track.mute
+                if other:
+                    actions = {strip.action for strip in track.strips}
+                    for second in other.nla_tracks:
+                        if any(strip.action in actions for strip in second.strips):
+                            second.mute = track.mute
+            context.view_layer.update()
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_show_keys(bpy.types.Operator):
+    bl_idname = 'endfield.show_keys'
+    bl_label = '查看此层关键帧'
+    bl_description = '在动作编辑器显示此层关键帧，保持原动作与修正层一起播放'
+    camera: BoolProperty(default=False)
+    index: IntProperty(default=-1)
+    def execute(self, context):
+        area = next((a for a in context.screen.areas if a.type in {'DOPESHEET_EDITOR', 'NLA_EDITOR'}), None)
+        obj = context.scene.epb_camera if self.camera else context.scene.epb_armature
+        if not area or not obj or not obj.animation_data:
+            return {'CANCELLED'}
+        bpy.ops.endfield.edit_target(camera=self.camera)
+        with edit_transaction():
+            animation.leave_tweak(context.scene)
+            ad = obj.animation_data
+            if self.camera and obj.data.animation_data:
+                obj.data.animation_data.use_tweak_mode = False
+            if self.index >= 0:
+                if self.index >= len(ad.nla_tracks):
+                    return {'CANCELLED'}
+                for track in ad.nla_tracks:
+                    track.select = False
+                    for strip in track.strips:
+                        strip.select = False
+                track = ad.nla_tracks[self.index]
+                if not track.strips:
+                    return {'CANCELLED'}
+                ad.nla_tracks.active = track
+                track.select = True
+                track.strips[0].select = True
+                area.type = 'NLA_EDITOR'
+                region = next(r for r in area.regions if r.type == 'WINDOW')
+                with context.temp_override(area=area, region=region):
+                    bpy.ops.nla.tweakmode_enter(isolate_action=False, use_upper_stack_evaluation=True)
+            area.type = 'DOPESHEET_EDITOR'
+            space = area.spaces.active
+            space.ui_mode = 'ACTION'
+            space.dopesheet.show_only_selected = False
+            space.dopesheet.show_hidden = True
+            region = next(r for r in area.regions if r.type == 'WINDOW')
+            with context.temp_override(area=area, region=region):
+                bpy.ops.action.view_all()
+            context.scene.frame_set(context.scene.frame_current, subframe=context.scene.frame_subframe)
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+class EPB_OT_show_layers(bpy.types.Operator):
+    bl_idname = 'endfield.show_layers'
+    bl_label = '查看全部层（NLA）'
+    bl_description = '在下方非线性动画编辑器查看原动作和修正层，不替换当前动作'
+    camera: BoolProperty(default=False)
+    def execute(self, context):
+        area = next((a for a in context.screen.areas if a.type in {'DOPESHEET_EDITOR', 'NLA_EDITOR'}), None)
+        if not area:
+            report(self, {'INFO'}, '请将一个区域切换为「非线性动画」编辑器查看全部层')
+            return {'CANCELLED'}
+        bpy.ops.endfield.edit_target(camera=self.camera)
+        area.type = 'NLA_EDITOR'
+        region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+        if region:
+            with context.temp_override(area=area, region=region):
+                bpy.ops.nla.view_all()
+        return {'FINISHED'}
+
+
+class EPB_OT_clear_solo(bpy.types.Operator):
+    bl_idname = 'endfield.clear_solo'
+    bl_label = '恢复全部层叠加'
+    bl_options = {'REGISTER', 'UNDO'}
+    camera: BoolProperty(default=False)
+    def execute(self, context):
+        obj = context.scene.epb_camera if self.camera else context.scene.epb_armature
+        with edit_transaction():
+            for owner in ([obj, obj.data] if self.camera and obj else [obj]):
+                if owner and owner.animation_data:
+                    owner.animation_data.use_nla = True
+                    for track in owner.animation_data.nla_tracks:
+                        track.is_solo = False
+            context.view_layer.update()
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
+def draw_layers(layout, obj, camera=False):
+    if not obj or not obj.animation_data:
+        return
+    ad = obj.animation_data
+    if not ad.use_nla or any(t.is_solo for t in ad.nla_tracks):
+        layout.label(text='下层独显／停用会屏蔽修正效果', icon='ERROR')
+        layout.operator('endfield.clear_solo').camera = camera
+    if ad.action:
+        layout.label(text='当前编辑层（关键帧显示在动作编辑器）')
+        row = layout.row(align=True)
+        op = row.operator('endfield.layer_visibility', text='', icon='HIDE_OFF' if ad.action_influence else 'HIDE_ON')
+        op.camera, op.index = camera, -1
+        row.prop(ad.action, 'name', text='')
+        if not ad.use_tweak_mode:
+            row.operator('endfield.show_keys', text='', icon='KEY_HLT').camera = camera
+    if ad.use_tweak_mode:
+        layout.label(text='正在查看下层关键帧；原动作仍参与叠加')
+        layout.operator('endfield.show_keys', text='返回顶层关键帧').camera = camera
+    if ad.nla_tracks:
+        layout.label(text='下层动作（保留并参与播放）')
+        for index in reversed(range(len(ad.nla_tracks))):
+            track = ad.nla_tracks[index]
+            row = layout.row(align=True)
+            # A camera correction owns both transform and lens slots. Toggle
+            # both together; base transform/lens tracks remain separate in NLA.
+            if not camera or any(s.action and s.action.get('epb_camera_correction') for s in track.strips):
+                op = row.operator('endfield.layer_visibility', text='', icon='HIDE_ON' if track.mute else 'HIDE_OFF')
+                op.camera, op.index = camera, index
             else:
-                # 叶子骨：沿自身世界方向伸一小段（Unity +Y → Blender 方向）
-                d_u = world_q[i] @ mathutils.Vector((0.0, 1.0, 0.0))
-                d_b = u_to_b_vec(d_u)
-                if d_b.length < 1e-4:
-                    d_b = mathutils.Vector((0.0, 0.0, 1.0))
-                tail = head + d_b.normalized() * 0.05
-            created[i].head = head
-            created[i].tail = tail
-
-        bpy.ops.object.mode_set(mode="POSE")
-        _state["connected"] = True
-        _state["status"] = "已连接：%d 根骨骼" % len(allbones)
-        self.report({"INFO"}, _state["status"])
-        return {"FINISHED"}
+                row.label(text='', icon='ACTION')
+            row.prop(track, 'name', text='')
+            op = row.operator('endfield.show_keys', text='', icon='KEY_HLT')
+            op.camera, op.index = camera, index
+    layout.operator('endfield.show_layers', icon='NLA').camera = camera
 
 
-# ---- 操作符：刷新骨架（角色切换后重建 Armature 并导入当前姿势）----
-class EPB_OT_refresh(bpy.types.Operator):
-    bl_idname = "endfield.refresh"
-    bl_label = "刷新骨架（角色切换后）"
-    bl_description = "重新拉取游戏骨骼重建 Armature，并导入当前姿势"
+class EPB_OT_edit_target(bpy.types.Operator):
+    bl_idname = 'endfield.edit_target'
+    bl_label = '切换编辑对象'
+    camera: BoolProperty(default=False)
+    @classmethod
+    def poll(cls, context):
+        return not _busy
 
     def execute(self, context):
-        bpy.ops.endfield.connect("EXEC_DEFAULT")
-        bpy.ops.endfield.sync_to_blender("EXEC_DEFAULT")
-        return {"FINISHED"}
-
-
-# ---- 操作符：游戏 → Blender ----
-class EPB_OT_sync_to_blender(bpy.types.Operator):
-    bl_idname = "endfield.sync_to_blender"
-    bl_label = "导入姿势（游戏→Blender）"
-    bl_description = "把游戏当前姿势同步到 Blender（相对 rest 的 delta）"
-
-    def execute(self, context):
-        arm = _armature()
-        if arm is None:
-            self.report({"ERROR"}, "请先 Connect 创建骨架")
-            return {"CANCELLED"}
-        try:
-            pose = api_get("/api/pose")["pose"]
-        except Exception as exc:  # noqa: BLE001
-            _state["status"] = "读取姿势失败: %s" % exc
-            self.report({"ERROR"}, _state["status"])
-            return {"CANCELLED"}
-
-        bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.mode_set(mode="POSE")
-        pbones = arm.pose.bones
-        updated = 0
-        for e in pose:
-            name = e.get("n") or ""
-            if name not in pbones:
-                continue
-            key = _sanitize(name)
-            rest_q = _state["rest_quat"].get(key)
-            if rest_q is None:
-                continue
-            q_u = mathutils.Quaternion(
-                (e["q"][3], e["q"][0], e["q"][1], e["q"][2]))
-            delta_u = q_u * rest_q.inverted()
-            pb = pbones[name]
-            pb.rotation_mode = "QUATERNION"
-            pb.rotation_quaternion = uq_to_bq(delta_u).normalized()
-            rest_p = _state["rest_pos"].get(key,
-                                            mathutils.Vector((0.0, 0.0, 0.0)))
-            delta_p_u = mathutils.Vector(
-                (e["p"][0] - rest_p.x, e["p"][1] - rest_p.y,
-                 e["p"][2] - rest_p.z))
-            pb.location = u_to_b_vec(delta_p_u)
-            updated += 1
-        _state["status"] = "已导入 %d 根骨骼" % updated
-        self.report({"INFO"}, _state["status"])
-        return {"FINISHED"}
-
-
-# ---- 操作符：Blender → 游戏 ----
-class EPB_OT_sync_to_game(bpy.types.Operator):
-    bl_idname = "endfield.sync_to_game"
-    bl_label = "导出姿势（Blender→游戏）"
-    bl_description = "把 Blender 当前姿势写回游戏（自动冻结角色）"
-
-    def execute(self, context):
-        arm = _armature()
-        if arm is None:
-            self.report({"ERROR"}, "请先 Connect 创建骨架")
-            return {"CANCELLED"}
-        try:
-            status = api_get("/api/status")
-            if not status.get("frozen"):
-                api_post("/api/freeze", {"on": True})
-        except Exception as exc:  # noqa: BLE001
-            _state["status"] = "游戏通信失败: %s" % exc
-            self.report({"ERROR"}, _state["status"])
-            return {"CANCELLED"}
-
-        payload = []
-        for pb in arm.pose.bones:
-            key = pb.name
-            rest_q = _state["rest_quat"].get(key)
-            if rest_q is None:
-                continue  # 非游戏骨骼（如自定义控制骨）不写回
-            q_b = pb.rotation_quaternion
-            delta_u = bq_to_uq(q_b)
-            target_q = (delta_u * rest_q).normalized()
-            entry = {
-                "n": key,
-                "q": [target_q.x, target_q.y, target_q.z, target_q.w],
-            }
-            rest_p = _state["rest_pos"].get(
-                key, mathutils.Vector((0.0, 0.0, 0.0)))
-            delta_p_u = b_to_u_vec(pb.location)
-            target_p = rest_p + delta_p_u
-            entry["p"] = [target_p.x, target_p.y, target_p.z]
-            payload.append(entry)
-
-        try:
-            api_post("/api/pose", {"pose": payload})
-        except Exception as exc:  # noqa: BLE001
-            _state["status"] = "写回失败: %s" % exc
-            self.report({"ERROR"}, _state["status"])
-            return {"CANCELLED"}
-        _state["status"] = "已写回 %d 根骨骼" % len(payload)
-        self.report({"INFO"}, _state["status"])
-        return {"FINISHED"}
-
-
-# ---- 自动同步（Blender → 游戏，定时器）----
-def _auto_timer():
-    if _state["auto"]:
-        try:
-            st = api_get("/api/status")
-            rev = st.get("bones_rev", 0)
-            if rev != _state.get("bones_rev", 0):
-                # 游戏角色切换：先重建骨架并导入姿势，本次跳过写回
-                _state["bones_rev"] = rev
-                bpy.ops.endfield.refresh("EXEC_DEFAULT")
+        obj = context.scene.epb_camera if self.camera else context.scene.epb_armature
+        if not obj:
+            return {'CANCELLED'}
+        with edit_transaction():
+            if context.object and context.object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            for item in context.selected_objects:
+                item.select_set(False)
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            if not self.camera:
+                bpy.ops.object.mode_set(mode='POSE')
             else:
-                arm = _armature()
-                if arm is not None and arm.pose is not None:
-                    bpy.ops.endfield.sync_to_game("EXEC_DEFAULT")
-        except Exception:  # noqa: BLE001
-            pass
-    return 0.15
+                # Connecting without a sampled game camera disables this flag.
+                # Explicitly choosing camera editing must enable it again.
+                context.scene.epb_camera_sync = True
+            context.view_layer.update()
+        refresh_preview(context)
+        return {'FINISHED'}
 
 
-def _on_auto_changed(self, context):
-    _state["auto"] = bool(self.epb_auto)
+class EPB_OT_camera_view(bpy.types.Operator):
+    bl_idname = 'endfield.camera_view'
+    bl_label = '用当前视角设置镜头'
+    bl_options = {'REGISTER', 'UNDO'}
+    def execute(self, context):
+        if not context.scene.epb_camera:
+            return {'CANCELLED'}
+        context.scene.camera = context.scene.epb_camera
+        region = next((r for r in context.area.regions if r.type == 'WINDOW'), None)
+        if not region:
+            return {'CANCELLED'}
+        with context.temp_override(region=region):
+            bpy.ops.view3d.camera_to_view()
+        return {'FINISHED'}
 
 
-bpy.types.Scene.epb_auto = bpy.props.BoolProperty(
-    name="自动同步（Blender→游戏）",
-    description="开启后持续把 Blender 姿势写回游戏（约 6 次/秒）",
-    default=False,
-    update=_on_auto_changed,
-)
-
-
-# ---- 面板 ----
 class EPB_PT_main(bpy.types.Panel):
-    bl_label = "Endfield Poser Bridge"
-    bl_idname = "EPB_PT_main"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Endfield"
-
+    bl_label = 'Endfield · 动作编辑'
+    bl_idname = 'EPB_PT_main'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Endfield'
     def draw(self, context):
-        layout = self.layout
-        layout.label(text=_state["status"])
-        layout.separator()
-        layout.operator("endfield.connect", icon="WORLD")
-        layout.operator("endfield.refresh", icon="FILE_REFRESH")
-        layout.operator("endfield.sync_to_blender", icon="IMPORT")
-        layout.operator("endfield.sync_to_game", icon="EXPORT")
-        layout.prop(context.scene, "epb_auto")
+        s, l = context.scene, self.layout
+        l.label(text=_connection_status[:72], icon='LINKED' if _session else 'UNLINKED')
+        l.label(text=_status[:72])
+        l.operator('endfield.connect' if not _session else 'endfield.disconnect')
+        l.operator('endfield.open_vmd', icon='FILE_FOLDER')
+        l.prop(s, 'epb_armature')
+        l.prop(s, 'epb_live')
+        if _session:
+            if _busy:
+                l.label(text='导入／导出期间暂停实时预览', icon='TIME')
+            elif not s.epb_live:
+                l.label(text='实时同步已关闭', icon='PAUSE')
+            elif not _preview_started and _connection_packet:
+                l.label(text='已保留游戏当前姿态 · 调整后开始同步', icon='CHECKMARK')
+            elif _ack_frame is None or time.monotonic()-_ack_time > 3:
+                l.label(text='等待游戏接收当前姿态…', icon='TIME')
+            else:
+                l.label(text=f'实时同步中 · 第 {_ack_frame:g} 帧', icon='CHECKMARK')
+        l.operator('endfield.edit_target', text='编辑骨骼', icon='ARMATURE_DATA').camera = False
+        l.prop(s, 'epb_show_fingers')
+        row = l.row(align=True)
+        row.prop(s, 'frame_current', text='当前帧')
+        row.operator('screen.animation_play', text='', icon='PLAY')
+        box = l.box();box.label(text='从游戏导入（先在游戏选择 VMD）')
+        row = box.row(align=True);row.prop(s, 'epb_import_start');row.prop(s, 'epb_import_end')
+        row = box.row();row.enabled = bool(_session) and not _busy
+        row.operator('endfield.pull_motion')
+        row = l.row(align=True)
+        row.operator('endfield.export_motion', icon='EXPORT')
+        row.operator('endfield.export_camera', icon='CAMERA_DATA')
+        l.label(text='Ctrl+S 保存工程；时间轴 / 曲线编辑器调整节奏')
 
 
-classes = (
-    EPB_OT_connect,
-    EPB_OT_refresh,
-    EPB_OT_sync_to_blender,
-    EPB_OT_sync_to_game,
-    EPB_PT_main,
-)
+class EPB_PT_layers(bpy.types.Panel):
+    bl_label = '动作修正层'
+    bl_idname = 'EPB_PT_layers'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Endfield'
+    def draw(self, context):
+        s, l = context.scene, self.layout
+        l.enabled = not _busy
+        l.operator('endfield.new_layer', icon='ADD')
+        l.label(text='选关节 → R 旋转 / G 移动 → 打关键帧')
+        l.operator('endfield.key_pose', icon='KEY_HLT')
+        l.operator('endfield.restore_pose', icon='LOOP_BACK')
+        l.label(text='另一帧恢复关节 → 再打关键帧，自动平滑过渡')
+        arm = s.epb_armature
+        draw_layers(l, arm)
+
+
+class EPB_PT_faces(bpy.types.Panel):
+    bl_label = 'MMD 表情'
+    bl_idname = 'EPB_PT_faces'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Endfield'
+    bl_options = {'DEFAULT_CLOSED'}
+    def draw(self, context):
+        s, l = context.scene, self.layout
+        arm = s.epb_armature
+        if not arm or 'epb_scene' not in arm:
+            l.label(text='连接后显示当前角色的中文表情')
+            return
+        l.prop(s, 'epb_face_search', text='', icon='VIEWZOOM')
+        l.operator('endfield.face_zero')
+        faces = rig.schema(arm)['faces']
+        for panel, label in {1: '眉部', 2: '眼部', 3: '嘴部', 4: '其他'}.items():
+            matching = [(i, f) for i, f in enumerate(faces) if f.get('available', True) and f['panel'] == panel and s.epb_face_search in f['label']]
+            if not matching:
+                continue
+            l.label(text=label)
+            for i, f in matching:
+                row = l.row(align=True)
+                row.prop(arm, f'["{rig.bone_key(i)}"]', text=f['label'], slider=True)
+                row.operator('endfield.face_key', text='', icon='KEY_HLT').index = i
+
+
+class EPB_PT_camera(bpy.types.Panel):
+    bl_label = '镜头'
+    bl_idname = 'EPB_PT_camera'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Endfield'
+    def draw(self, context):
+        s, l = context.scene, self.layout
+        l.enabled = not _busy
+        l.prop(s, 'epb_camera');l.prop(s, 'epb_camera_sync')
+        obj = s.epb_camera
+        if obj:
+            l.operator('endfield.edit_target', text='编辑镜头', icon='CAMERA_DATA').camera = True
+            l.operator('endfield.camera_view')
+            l.prop(obj, 'location', text='位置')
+            l.prop(obj.data, 'lens', text='焦距（mm）')
+            l.prop(obj.data.dof, 'focus_distance', text='对焦距离')
+            l.operator('endfield.new_camera_layer', icon='ADD')
+            l.operator('endfield.camera_key')
+            l.operator('endfield.restore_camera')
+            l.label(text='另一帧恢复 → 再打关键帧，平滑返回下层镜头')
+            draw_layers(l, obj, camera=True)
+            l.label(text='选中镜头：G / R 移动旋转；小键盘 0 取景')
+
+
+classes = (EPB_OT_connect, EPB_OT_disconnect, EPB_OT_open_vmd, EPB_OT_export, EPB_OT_export_camera, EPB_OT_pull, EPB_OT_layer, EPB_OT_key,
+           EPB_OT_restore_pose, EPB_OT_face_key, EPB_OT_face_zero, EPB_OT_camera_key, EPB_OT_edit_target, EPB_OT_camera_view,
+           EPB_OT_camera_layer, EPB_OT_camera_restore, EPB_OT_layer_visibility, EPB_OT_show_layers, EPB_OT_show_keys, EPB_OT_clear_solo,
+           EPB_PT_main, EPB_PT_layers, EPB_PT_faces, EPB_PT_camera)
 
 
 def register():
+    global _display_pending
+    console.configure()
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.app.timers.register(_auto_timer, persistent=True)
+    props = {
+        'epb_armature': PointerProperty(type=bpy.types.Object, name='编辑骨架', poll=lambda _, obj: obj.type == 'ARMATURE'),
+        'epb_camera': PointerProperty(type=bpy.types.Object, name='预览镜头', poll=lambda _, obj: obj.type == 'CAMERA'),
+        'epb_live': BoolProperty(name='实时同步到游戏', default=False),
+        'epb_show_fingers': BoolProperty(name='显示手指', default=True, update=update_display),
+        'epb_camera_sync': BoolProperty(name='同步镜头', default=True),
+        'epb_import_start': IntProperty(name='开始帧', default=1, min=1),
+        'epb_import_end': IntProperty(name='结束帧', default=300, min=1),
+        'epb_face_search': StringProperty(name='搜索表情'),
+    }
+    for name, prop in props.items():
+        setattr(bpy.types.Scene, name, prop)
+    bpy.app.timers.register(tick, persistent=True)
+    bpy.app.handlers.load_pre.append(load_pre)
+    bpy.app.handlers.load_post.append(load_post)
+    bpy.app.handlers.depsgraph_update_post.append(evaluated_preview)
+    bpy.app.handlers.frame_change_post.append(frame_preview)
+    bpy.app.handlers.undo_pre.append(undo_pre)
+    bpy.app.handlers.undo_post.append(undo_post)
+    bpy.app.handlers.redo_pre.append(undo_pre)
+    bpy.app.handlers.redo_post.append(undo_post)
+    # Blender restricts bpy.data during add-on registration. Migrate on the
+    # first UI tick (or load_post), after access to existing scenes is allowed.
+    _display_pending = True
 
 
 def unregister():
-    bpy.app.timers.unregister(_auto_timer)
+    global _client
+    disconnect()
+    if bpy.app.timers.is_registered(tick):
+        bpy.app.timers.unregister(tick)
+    if load_pre in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(load_pre)
+    if load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(load_post)
+    if frame_preview in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(frame_preview)
+    if evaluated_preview in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(evaluated_preview)
+    for handlers, handler in ((bpy.app.handlers.undo_pre, undo_pre), (bpy.app.handlers.undo_post, undo_post),
+                              (bpy.app.handlers.redo_pre, undo_pre), (bpy.app.handlers.redo_post, undo_post)):
+        if handler in handlers:
+            handlers.remove(handler)
+    if _client:
+        _client.close();_client = None
+    for name in list(bpy.types.Scene.__dict__):
+        if name.startswith('epb_'):
+            delattr(bpy.types.Scene, name)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    del bpy.types.Scene.epb_auto
-
-
-if __name__ == "__main__":
-    register()
+    console.restore()

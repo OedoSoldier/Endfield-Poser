@@ -24,25 +24,62 @@ static void ClothBoneResponseFree() {
   for(auto &r:l.outputBones)ClothFree(r);
   for(auto &p:l.peers){ClothFree(p.bbc);for(auto &r:p.rootRefs)ClothFree(r);}l={};
 }
+// The three skirt-driven capsules coexist with separately owned calf capsules.
+// Match by identity, never by list position or a fixed total count. Unknown,
+// duplicate or retired entries must not silently enable a different collider set.
+static bool ClothBoneResponseColliders(void *list,const std::array<void*,3> &targets,
+                                       const ClothCalfShapes &calves,std::array<void*,3> &source) {
+  source={};if(!list||calves.size()>2||CollisionCount(list)!=int(3+calves.size()))return false;
+  for(size_t k=0;k<targets.size();++k)
+    if(!targets[k]||std::find(targets.begin(),targets.begin()+k,targets[k])!=targets.begin()+k)return false;
+  std::array<void*,2> extra{};std::array<bool,2> seen{};
+  for(size_t k=0;k<calves.size();++k){extra[k]=ClothTarget(calves[k].collider);
+    if(!extra[k]||!ClothTarget(calves[k].transform)||CollisionTransform(extra[k])!=ClothTarget(calves[k].transform)||
+        std::find(extra.begin(),extra.begin()+k,extra[k])!=extra.begin()+k||
+        std::find(targets.begin(),targets.end(),CollisionTransform(extra[k]))!=targets.end())return false;}
+  for(int j=0;j<int(3+calves.size());++j){auto c=CollisionItem(list,j,"BeyondDynamicBone.ColliderComponent");
+    if(!c)return false;bool matched=false;
+    for(size_t k=0;k<calves.size();++k)if(c==extra[k]){if(seen[k])return false;seen[k]=matched=true;break;}
+    if(matched)continue;auto t=CollisionTransform(c);
+    for(size_t k=0;k<targets.size();++k)if(t==targets[k]){if(source[k])return false;source[k]=c;matched=true;break;}
+    if(!matched)return false;
+  }
+  return std::all_of(source.begin(),source.end(),[](void *c){return c!=nullptr;})&&
+      std::all_of(seen.begin(),seen.begin()+calves.size(),[](bool v){return v;});
+}
 static bool ClothBoneResponseRelation(bool capture) {
   auto &s=ClothBoneState();auto &l=s.local.response;const auto &r=*s.local.recipe;
+  l.failure="consumer-identity-or-registration";
   auto bbc=ClothTarget(l.consumer);void *process=nullptr,*data=nullptr,*data2=nullptr,*constraint=nullptr,*list=nullptr;
   bool enabled=false,valid=false,running=false;int team=0;
   if(!bbc||!ClothAnchorUnderOwner(CollisionTransform(bbc))||
       !CollisionField(bbc,"process","BeyondDynamicBone.ClothProcess",process)||!process||
       !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(bbc),"get_SerializeData","BeyondDynamicBone.ClothSerializeData"),bbc,nullptr,data)||!data||
       !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(bbc),"GetSerializeData2","BeyondDynamicBone.ClothSerializeData2"),bbc,nullptr,data2)||!data2||
-      !CollisionList(data,constraint,list)||CollisionCount(list)!=3||
+      !CollisionList(data,constraint,list)||
       !ClothValue(s_clothUnity.getEnabled,bbc,enabled)||!enabled||
       !ClothValue(SurfaceMethod(il2cpp_object_get_class(process),"IsValid","System.Boolean"),process,valid)||!valid||
       !ClothValue(SurfaceMethod(il2cpp_object_get_class(process),"IsRunning","System.Boolean"),process,running)||!running||
       !ClothValue(SurfaceMethod(il2cpp_object_get_class(process),"get_TeamId","System.Int32"),process,team)||!ClothBoneTeamRegistered(process,team))return false;
+  const auto *sheet=s.contactPartner>=0&&s.contactPartner<s_clothBoneCount?&s_clothBoneSlots[s.contactPartner]:nullptr;
+  const ClothCalfShapes empty;
+  l.failure="consumer-partner-or-calf-identity";
+  if(sheet&&(!ClothBoneRibbonPair(*sheet,s)||!ClothBonePair(*sheet,s)||sheet->stopRequested||sheet->failed||sheet->tx.cancelled||
+      sheet->tx.phase!=eiem_cloth_rebuild::Phase::Active||!sheet->teamModeConfirmed||!sheet->local.published||
+      bbc!=ClothTarget(sheet->bbc)||process!=CollisionGc(sheet->process[1])||team!=sheet->team[1]||
+      data!=CollisionGc(sheet->candidateData)||data2!=CollisionGc(sheet->candidateData2)||
+      !ClothCalfRegistration(sheet->calfColliders,process,team,true)))return false;
+  std::array<void*,3> targets{},colliders{};
+  for(int k=0;k<3;++k){const int n=r.responses[k].frame.target;
+    if(n<0||size_t(n)>=s.bones.size())return false;targets[k]=ClothTarget(s.bones[n].bone);}
+  l.failure="consumer-collider-list";
+  if(!ClothBoneResponseColliders(list,targets,sheet?sheet->calfColliders:empty,colliders))return false;
   if(capture){l.process=ClothBoneHold(process);l.data=ClothBoneHold(data);l.data2=ClothBoneHold(data2);l.constraint=ClothBoneHold(constraint);l.list=ClothBoneHold(list);l.team=team;
     if(!l.process||!l.data||!l.data2||!l.constraint||!l.list)return false;}
   else if(process!=CollisionGc(l.process)||data!=CollisionGc(l.data)||data2!=CollisionGc(l.data2)||
       constraint!=CollisionGc(l.constraint)||list!=CollisionGc(l.list)||team!=l.team||l.colliders.size()!=3)return false;
-  for(int k=0;k<3;++k){const auto &a=r.responses[k];const int n=a.frame.target;auto t=ClothTarget(s.bones[n].bone);void *collider=nullptr;
-    for(int j=0;j<3;++j){auto c=CollisionItem(list,j,"BeyondDynamicBone.ColliderComponent");if(c&&CollisionTransform(c)==t){if(collider)return false;collider=c;}}
+  l.failure="source-collider-geometry-or-membership";
+  for(int k=0;k<3;++k){const auto &a=r.responses[k];const int n=a.frame.target;auto t=targets[k];auto collider=colliders[k];
     bool member=false,listed=false,reverse=false,separated=false,centered=false;int count=-1;char direction[24]{};Vector3 center{},size{};
     if(!collider||strcmp(il2cpp_class_get_name(il2cpp_object_get_class(collider)),"BeyondBoneCapsuleCollider")||
         CollisionParent(t)!=ClothTarget(s.bones[n].parent)||!ClothAnchorUnderOwner(t)||
@@ -60,6 +97,7 @@ static bool ClothBoneResponseRelation(bool capture) {
 }
 static bool ClothBoneResponsePeers(bool capture) {
   auto &s=ClothBoneState();auto &l=s.local.response;const auto &r=*s.local.recipe;
+  l.failure="peer-hierarchy-or-ownership";
   if(capture){for(int k=0;k<s_cloth.count;++k){auto bbc=ClothTarget(s_cloth.instances[k].ref);if(bbc==ClothTarget(s.bbc))continue;
       void *data=nullptr,*roots=nullptr;if(!bbc||!ClothInvoke(s_cloth.instances[k].api.serialize,bbc,nullptr,data)||!data||
           !CollisionField(data,"rootBones","System.Collections.Generic.List<UnityEngine.Transform>",roots))return false;
@@ -101,6 +139,7 @@ static bool ClothBoneResponsePrepare() {
 static bool ClothBoneResponseApply() {
   auto &s=ClothBoneState();auto &l=s.local.response;const auto &r=*s.local.recipe;
   if(!ClothBoneResponseRelation(false)||!ClothBoneResponsePeers(false))return false;
+  l.failure="source-frame-or-foreign-pose";
   using namespace eiem_cloth_response;
   std::vector<OutputMatrix> world(s.bones.size());std::set<int> read;
   std::array<OutputMatrix,3> wanted;std::array<Vector3,3> positions;std::array<Quaternion,3> rotations;
@@ -145,6 +184,6 @@ static void ClothBoneResponseTick() {
   __try {if(!l.attempted){l.attempted=true;ok=ClothBoneResponsePrepare();}else ok=l.prepared;if(ok)ok=ClothBoneResponseApply();}
   __except(EXCEPTION_EXECUTE_HANDLER){ok=false;}
   if(!ok){l.disabled=true;const bool restored=ClothBoneResponseRestore();
-    Log("[CLOTH-BONE-RESPONSE] stage=disabled consumer=%s reason=source-consumer-membership-or-pose-unconfirmed restored=%d acceptedInnerSimulationRetained=1 generation=%llu command=%u",
-        s.local.recipe->responseConsumer,int(restored),s.owner.generation,s.command);}
+    Log("[CLOTH-BONE-RESPONSE] stage=disabled consumer=%s reason=%s restored=%d acceptedInnerSimulationRetained=1 generation=%llu command=%u",
+        s.local.recipe->responseConsumer,l.failure,int(restored),s.owner.generation,s.command);}
 }

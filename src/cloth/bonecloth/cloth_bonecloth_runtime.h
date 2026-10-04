@@ -119,6 +119,8 @@ struct ClothBoneRuntime {
   std::vector<ClothBoneSharedTeam> sharedTeams;
   std::vector<ClothBoneAttachment> attachments;
   std::vector<ClothBoneAdditionalCollider> additionalColliders;
+  ClothCalfShapes calfColliders;
+  bool calfCleanup=false;
   std::vector<ClothBoneNativeProducer> nativeProducers;
   std::vector<ClothBoneOwnershipRef> ownership;
   std::vector<ClothBoneExcludedRef> originalExcluded;
@@ -543,6 +545,10 @@ static void ClothBoneDropReferences() {
   s_clothPreparationBudget.cancel(s_clothActorIndex);
   auto &s=ClothBoneState();
   if(s.owned.gameObject.handle){s.stopRequested=true;s.pending=true;return;}
+  if(!s.calfColliders.empty()&&(!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||!ClothCalfRelease(s.calfColliders,s.team[1]))) {
+    s.calfCleanup=true;s.pending=true;ClothBoneNote("calf-colliders-awaiting-native-retirement");return;
+  }
+  s.calfCleanup=false;
   s_clothLayerGate.Clear();
   s_clothDisplayView.Revoke();
   s_clothFinishView.Revoke();s_clothFinishChain.Clear();
@@ -724,6 +730,7 @@ static bool ClothBoneConfigure() {
   }
   for(const auto &r:s.local.fittedBody){auto c=ClothTarget(r.collider);if(!c||!s.local.fittedBodyCreated)return false;colliders.push_back(c);}
   if(!ClothBoneSideConfigure(colliders)) return ClothBoneReject("body-side-support-list-or-producer-unconfirmed");
+  if(!ClothCalfPrepare(s.calfColliders,colliders,s.profile->component))return ClothBoneReject("calf-contact-preparation-failed-original-retained");
   void *constraint=nullptr,*list=nullptr;
   if(!CollisionList(data,constraint,list) ||
       !SurfaceEnum(data,"connectionMode","BeyondDynamicBone.RenderSetupData.BoneConnectionMode",profile->runtimeBodyOnly?"Line":profile->NativeLoopMode()?"SequentialLoopMesh":"SequentialNonLoopMesh") ||
@@ -1245,11 +1252,11 @@ static void ClothBoneBoundaryImpl() {
   using namespace eiem_cloth_rebuild;
   auto &s=ClothBoneState(); const auto now=GetTickCount64(); const int frame=ClothFrame();
   if(!s.pending || !s_clothSurfaceAtBoundary || s_clothInputUpdateDepth!=1 || frame<0 || s.frame==frame) return;
-  if(!s.stopRequested&&ClothOwns(s.owner)&&!s.local.cleanup&&!s.supportCleanup&&
+  if(!s.stopRequested&&ClothOwns(s.owner)&&!s.local.cleanup&&!s.supportCleanup&&!s.calfCleanup&&
       (s.tx.phase==Phase::Idle||s.tx.phase==Phase::Prepared)&&!ClothPreparationTurn())return;
   s.frame=frame;
+  if(s.local.cleanup || s.supportCleanup || s.calfCleanup) { ClothBoneDropReferences();return; }
   if(s.profile&&s.profile->runtimeUnowned){ClothBoneOwnedBoundary();return;}
-  if(s.local.cleanup || s.supportCleanup) { ClothBoneDropReferences();return; }
   if(s.stopRequested) s.tx.Cancel(now);
   if(s.bbc.handle && ClothBoneDestroyed()) return;
   if(!s.referenceRestored && !ClothBoneRestorePose()) { ClothBoneNote("temporary-reference-restore-pending"); return; }
@@ -1472,7 +1479,7 @@ static void ClothBoneBoundaryImpl() {
       s.teamModeConfirmed=true;
       if(eiem_cloth_asset::SourceInactiveCoat(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d promotedInvalid=6 fixed=6 move=18 originalSelectionUnchanged=1 hierarchyWrites=0 waistPrivateSkin=%d visualVerified=0",
           s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1],s.local.requested&&s.local.recipe->CoatWaistSkinOnly());
-      if(eiem_cloth_asset::SourceForkCoatFront(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed frame=%d generation=%llu command=%u Process=%p team=%d releasedInternalFixed=4 fixed=5 move=31 hierarchyAndSkinWrites=0 sourceSelectionUnchanged=1 depthCurveSampling=native-recomputed visualVerified=0",
+      if(eiem_cloth_asset::SourceForkCoatFront(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed frame=%d generation=%llu command=%u Process=%p team=%d releasedInternalFixed=6 promotedShoulderInputs=2 fixed=5 move=33 hierarchyAndSkinWrites=0 sourceSelectionUnchanged=1 depthCurveSampling=native-recomputed visualVerified=0",
           frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1]);
       if(eiem_cloth_asset::SourceSeparatedCoat(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d releasedInternalFixed=%d retainedOriginalRoots=%d points=%d sourceSelectionUnchanged=1 hierarchyAndSkinWrites=0 depthCurveSampling=native-recomputed visualVerified=0",
           s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1],s.profile->releasedFixedCount,s.profile->rootCount,ClothBoneCandidate(s).EffectiveCount());

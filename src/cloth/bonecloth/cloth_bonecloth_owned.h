@@ -106,6 +106,7 @@ static bool ClothBoneOwnedConfigure() {
       !ClothValue(SurfaceMethod(il2cpp_object_get_class(prebuild),"UsePreBuild","System.Boolean"),prebuild,prebuilt)||prebuilt)return false;
   std::vector<void*> roots,colliders;for(int n=0;n<s.profile->rootCount;++n)roots.push_back(ClothTarget(s.bones[s.profile->roots[n]].bone));for(const auto &r:s.colliders)colliders.push_back(ClothTarget(r));
   ClothBoneOwnedStep("new-BBC-native-configuration");
+  if(!ClothCalfPrepare(s.calfColliders,colliders,s.profile->component))return false;
   if(!SurfaceEnum(data,"clothType","BeyondDynamicBone.ClothProcess.ClothType","BoneCloth")||
       !SurfaceEnum(data,"connectionMode","BeyondDynamicBone.RenderSetupData.BoneConnectionMode","SequentialLoopMesh")||
       !SurfaceList(data,"rootBones","System.Collections.Generic.List<UnityEngine.Transform>","UnityEngine.Transform",roots)||
@@ -172,7 +173,7 @@ static bool ClothBoneOwnedPolicy(bool active) {
   auto &s=ClothBoneState();auto process=CollisionGc(s.process[1]);void *team=nullptr,*manager=nullptr;ClothInputArray parameters{};int edge=-1,mode=-2;float ratio=NAN;bool enabled=false,skip=true;
   void *constraint=nullptr,*list=nullptr,*field=nullptr;int point=-1;
   if(!CollisionList(CollisionGc(s.candidateData),constraint,list)||!CollisionModeMetadata(il2cpp_object_get_class(constraint),field,point,edge))return false;
-  if(!ClothBoneTeamRegistered(process,s.team[1])||!ClothBoneOwnedVolumes(true)||!CollisionProcessMode(process,mode)||mode!=edge||
+  if(!ClothBoneTeamRegistered(process,s.team[1])||!ClothBoneOwnedVolumes(true)||!ClothCalfRegistration(s.calfColliders,process,s.team[1],true)||!CollisionProcessMode(process,mode)||mode!=edge||
       !ClothBoneContactTeam(s.team[1],process,team)||!ClothInputTeamField(team,"animationPoseRatio","System.Single",ratio)||!std::isfinite(ratio)||fabsf(ratio)>1e-6f||
       !ClothContactManager("get_Team","BeyondDynamicBone.TeamManager",manager)||!ClothInputArrayOpen(manager,"parameterArray","BeyondDynamicBone.ClothParameters",parameters))return false;
   auto box=ClothInputArrayBox(parameters,s.team[1]);if(!box||!CollisionParameterMode(box,mode)||mode!=edge)return false;

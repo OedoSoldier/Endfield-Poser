@@ -242,7 +242,7 @@ static void MmdSquadLoadActorCalibration(int slot) {
   {
     MmdSquadRigScope view(a.member);s_allBones=a.bones;RebuildHumanBones();
     a.profile=MmdCurrentProfile();
-    bool automatic=MmdBindCalibration(a.profile);
+    bool automatic=s.slots[slot].clip.bones.empty()||MmdBindCalibration(a.profile);
     if(!automatic&&!MmdLoadCalibration(a.profile)) {
       s.slots[slot].calibrated=false;s.slots[slot].calibration=u8"Avatar 不完整且缺少备用校准";
       throw std::runtime_error(u8"第 "+std::to_string(slot+1)+u8" 位无法自动适配；请切到该角色，在单人面板完成备用 T 姿校准。");
@@ -265,7 +265,8 @@ static void MmdSquadLoadActorCalibration(int slot) {
   }
   MmdSquadFaceMap(a,s.slots[slot].clip);
   {SMCActorScope face(a.face.get());SMCFaceSelectProfile(a.faceProfile,a.profile.model);SMCMotionNeutral(a.member.animator);}
-  s.slots[slot].calibrated=true;s.slots[slot].calibration=a.profile.fingerprint.find("avatar1-")==0?u8"Avatar 自动适配完成":u8"已读取保存的备用校准";
+  s.slots[slot].calibrated=true;s.slots[slot].calibration=s.slots[slot].clip.bones.empty()?u8"此动作无需身体校准":
+      a.profile.fingerprint.find("avatar1-")==0?u8"Avatar 自动适配完成":u8"已读取保存的备用校准";
   s.slots[slot].status=u8"骨架与校准就绪";
   if(poser_secondary::enabled&&!s.slots[slot].clip.bones.empty())
     poser_secondary::Prepare(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,MmdNow());
@@ -283,6 +284,7 @@ static void MmdSquadStop() {
   }
   for(auto &ptr:s.actors)if(ptr) {
     auto &a=*ptr;bool alive=!RuntimeClosing()&&UnityObjAlive(a.saved.animator)&&UnityObjAlive(a.saved.root);
+    MmdReleaseVisibility(a.saved);
     if(a.face) {
       SMCActorScope scope(a.face.get());SMCMotionPublish({});
       poser_gaze::Release(false,nullptr,SMCGazeContext());
@@ -366,8 +368,7 @@ static void MmdSquadDuration() {
   for(int i=0;i<4;++i) {
     enabled[i]=g_squad.slots[i].enabled;
     // Camera tracks belong to the shared camera, not an individual dancer.
-    for(auto &track:g_squad.slots[i].clip.bones)if(!track.second.empty())seconds[i]=(std::max)(seconds[i],track.second.back().frame/30.);
-    for(auto &track:g_squad.slots[i].clip.morphs)if(!track.second.empty())seconds[i]=(std::max)(seconds[i],track.second.back().frame/30.);
+    seconds[i]=g_squad.slots[i].clip.modelDuration();
   }
   auto &keys=MmdCameraKeys();g_squad.timeline.duration=mmd::SquadDuration(seconds,enabled,
     g_mmd.cameraSettings.enabled?mmd::CameraDuration(keys,g_mmd.cameraSettings):0);
@@ -463,6 +464,7 @@ static void MmdSquadApply() {
     auto &a=*s.actors[n];auto &slot=s.slots[n];
     if(!UnityObjAlive(a.saved.animator)||!UnityObjAlive(a.saved.root)) {MmdSquadStop();s.status=u8"队员实例已失效，已停止全部动作";return;}
     for(const auto &bone:a.bones)if(!UnityObjAlive(bone.transform)) {MmdSquadStop();s.status=u8"队员骨架已变化，已停止全部动作";return;}
+    MmdApplyVisibility(a.saved,slot.clip,frame);
     for(const auto &component:a.saved.components)MmdEnable(component.component,false);
     MmdSquadSampleActor(n,frame);
     auto &pose=a.mapper.output;
@@ -506,6 +508,7 @@ static void MmdSquadApply() {
       SMCMotionPublish(face);
       SMCGazeTick(&face);
       slot.status=SMCSectionReady()?u8"身体 / 表情已就绪":u8"身体已就绪，等待表情系统";
+      if(a.saved.visibility.failed)slot.status+=u8"；模型显示开关未能应用，详情见日志";
     }
     MmdHideSessionProps(a.saved);
     {
@@ -553,7 +556,7 @@ static void MmdSquadLoad(int slot,bool append=false,std::filesystem::path path={
         s_mmdDialog.store(nullptr);chosen=name;
       }
       result.file=mmd::Utf8(chosen.wstring());result.clip=mmd::ReadVmdFile(chosen);
-      if(result.clip.bones.empty()&&result.clip.morphs.empty())throw std::runtime_error(u8"此文件没有身体 / 表情轨道，镜头请单独选择");
+      if(result.clip.bones.empty()&&result.clip.morphs.empty()&&result.clip.visibility.empty())throw std::runtime_error(u8"此文件没有身体 / 表情 / 模型显示轨道，镜头请单独选择");
       if(append) {bool eyes=false;for(const auto &track:result.clip.bones)eyes|=mmd::EyeBone(track.first);
         if(result.clip.morphs.empty()&&!eyes)throw std::runtime_error(u8"没有可追加的表情或眼神轨道");}
       result.clip.cameras.clear();mmd::Recount(result.clip);

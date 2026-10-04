@@ -83,16 +83,29 @@ static void DrawMmdSecondaryControls() {
   ImGui::Checkbox(u8"衣物惯性物理增强",&s_clothTurnEnabled);
   if(s_clothTurnEnabled) {
     ImGui::SliderFloat(u8"衣物惯性强度",&s_clothTurnStrength,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"控制衣物、尾巴、耳部和挂件的惯性响应，头发使用下方独立强度。暂停后自然收敛；冻结衣物时不生效。单人和多人共用此设置。");
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"控制大块衣物、尾巴与耳部的惯性响应。按实际挂点的身体运动驱动；头发、飘带、腰带和挂件可分别调节。暂停后自然收敛，冻结衣物时不生效。单人和多人共用。");
+    ImGui::SameLine();if(ImGui::SmallButton(u8"复位##clothTurnStrength"))s_clothTurnStrength=1;
     ImGui::SliderFloat(u8"头发惯性强度",&s_clothHairStrength,0,3,"%.2f",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"独立控制头发对跳跃、移动和转身的响应，也缩放轻盈度带来的额外受力。默认 1，0 仅关闭额外惯性，保留游戏原有物理。支持双击输入和随适配预设保存；单人和多人共用。原有约束及受力上限仍然保留。");
     ImGui::SameLine();if(ImGui::SmallButton(u8"复位##hairStrength"))s_clothHairStrength=1;
+    if(ImGui::TreeNode(u8"饰物惯性")) {
+      auto gain=[](const char *name,float &value){ImGui::PushID(name);
+        ImGui::SliderFloat(name,&value,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SameLine();if(ImGui::SmallButton(u8"复位"))value=1;ImGui::PopID();};
+      gain(u8"飘带强度",s_clothRibbonStrength);gain(u8"腰带 / 绳带强度",s_clothBeltStrength);
+      gain(u8"挂件强度",s_clothAccessoryStrength);
+      ImGui::TextWrapped(u8"默认 1；0 关闭该类额外惯性，保留原有物理。按部件名称和实际挂点识别，未能确认挂点的饰物保留原有响应。");
+      ImGui::TreePop();
+    }
     float lightness=s_clothLightness*100.f;
     if(ImGui::SliderFloat(u8"衣物轻盈度",&lightness,0,100,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))
       s_clothLightness=lightness*.01f;
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"0%% 不增加空气响应。提高后，转身、横移和跳跃更容易带动衣物、头发和尾巴；上升时滞后，下落时向上飘。耳部和挂件响应较小。停下后自然回落，原有重力不变。可随适配预设保存。");
     ImGui::SameLine();if(ImGui::SmallButton(u8"复位##clothLightness"))s_clothLightness=0;
   }
+  ImGui::Checkbox(u8"饰物层间碰撞",&s_clothAttachmentContacts);
+  if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"仅补充能确认内外关系的饰物与衣物碰撞，保留已有碰撞。停止后恢复；不支持的部件保留原有物理。可随适配预设保存。");
+  if(s_clothAttachmentContacts)ImGui::TextDisabled(u8"层间碰撞：已补充 %u 组，%u 个部件保留原处理",s_clothAttachments.pairs,s_clothAttachments.skipped);
   ImGui::Checkbox(u8"第二骨骼物理增强",&poser_secondary::enabled);
   if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"仅用于单人和多人 MMD 动作播放。暂停保持，拖动清除惯性，停止恢复。");
   if(poser_secondary::enabled) {
@@ -298,6 +311,7 @@ static void DrawMmdCamera() {
     MmdBeginLoad(6);
   ImGui::SameLine();
   if (ImGui::Button(u8"移除镜头")) {
+    m.editedCamera.reset();m.editedCameraFile.clear();
     m.cameraFile.clear();
     m.cameraTrack.clear();
     m.clip.cameras.clear();
@@ -309,6 +323,15 @@ static void DrawMmdCamera() {
   ImGui::EndDisabled();
   if (m.session.active)
     ImGui::TextDisabled(u8"停止并恢复后可更换镜头文件");
+  if(m.editedCamera) {
+    DrawMmdFile(m.editedCameraFile);
+    ImGui::Checkbox(u8"随动作播放镜头",&s.enabled);
+    ImGui::SliderFloat3(u8"镜头偏移",&s.offset.x,-5,5);
+    ImGui::SliderFloat(u8"镜头远近",&s.distanceScale,.05f,10);
+    if(ImGui::SliderFloat(u8"镜头时间偏移",&s.timeOffset,-120,120))MmdUpdateDuration();
+    ImGui::SliderFloat(u8"视角修正",&s.fovOffset,-60,60);
+    return;
+  }
   if (keys.empty()) {
     ImGui::TextWrapped(u8"选择独立镜头 VMD，或打开包含镜头轨道的动作 VMD。也支持只播放镜头。");
     return;
@@ -325,6 +348,7 @@ static void DrawMmdCamera() {
   else if (mmd_camera::request.active && MmdNow() - mmd_camera::lastCallback > 2)
     ImGui::TextWrapped(u8"等待游戏相机更新；尚未确认镜头实际生效。");
 }
+static void DrawBlenderControls();
 static void DrawMmdPanel() {
   auto &m = g_mmd;
   if (!m.show)
@@ -335,6 +359,12 @@ static void DrawMmdPanel() {
   if (!ImGui::Begin(u8"MMD 播放器", &m.show, g_pinPanels ? ImGuiWindowFlags_NoMove : 0)) {
     ImGui::End();
     return;
+  }
+  DrawBlenderControls();
+  if(g_blenderEditing) {
+    ImGui::TextWrapped(u8"Blender 编辑动作正在控制角色。请在 Blender 时间轴或上方的 Blender 联动中操作。");
+    if(ImGui::Button(u8"停止并恢复"))MmdStop();
+    ImGui::End();return;
   }
   if (MmdSquadBusy()) {
     ImGui::TextWrapped(u8"多人播放器正在控制小队，请在多人面板暂停或停止。");
@@ -349,12 +379,12 @@ static void DrawMmdPanel() {
     if (ImGui::Button(u8"打开 VMD"))
       MmdBeginLoad(0);
     ImGui::SameLine();
-    if (ImGui::Button(u8"追加口型 / 表情 / 眼神"))
+    if (ImGui::Button(m.editedBody?u8"追加口型 / 表情":u8"追加口型 / 表情 / 眼神"))
       MmdBeginLoad(1);
     ImGui::EndDisabled();
     if (m.loading)
       ImGui::TextDisabled(u8"正在读取文件…");
-    DrawMmdFile(m.file);
+    DrawMmdFile(m.editedBody?m.editedBodyFile:m.file);
     ImGui::BeginDisabled(!MmdHasContent() || m.loading || m.preview);
     if (ImGui::Button(m.timeline.state == mmd::PlayState::Playing ? u8"暂停" : u8"播放")) {
       MmdPlaybackCommand(m.timeline.state == mmd::PlayState::Playing ? 1 : 0, false);
@@ -379,6 +409,8 @@ static void DrawMmdPanel() {
       MmdSeekOrStart(seconds);
     }
     ImGui::Text(u8"帧 %.1f / %.0f", m.timeline.seconds * 30, m.timeline.duration * 30);
+    if(m.session.active&&m.session.visibility.failed)
+      ImGui::TextWrapped(u8"模型显示开关未能应用，详情见日志。");
     if (m.session.active && !m.preview)
       ImGui::TextDisabled(m.timeline.state == mmd::PlayState::Playing ? u8"正在播放"
                           : m.timeline.seconds >= m.timeline.duration ? u8"已到末帧，保持姿态"
@@ -417,6 +449,7 @@ static void DrawMmdPanel() {
     if (ImGui::BeginTabBar("##mmd-options")) {
       if (ImGui::BeginTabItem(u8"动作")) {
         ImGui::BeginDisabled(m.loading || m.preview);
+        ImGui::BeginDisabled(bool(m.editedBody));
         int ikMode = int(m.ikMode);
         if (ImGui::Combo(u8"动作 IK", &ikMode, u8"跟随动作\0强制开启\0强制关闭\0")) {
           m.ikMode = static_cast<mmd::IkMode>(ikMode);
@@ -430,6 +463,8 @@ static void DrawMmdPanel() {
           m.scale = m.mapper.suggestedScale;
         if (!m.autoScale)
           ImGui::SliderFloat(u8"位移比例", &m.scale, .001f, .3f, "%.4f");
+        ImGui::EndDisabled();
+        if(m.editedBody)ImGui::TextDisabled(u8"已使用 Blender 的骨架姿态；在动作校准中调整位移、关节与四肢比例。");
         ImGui::SliderFloat(u8"高度修正", &m.height, -1, 1, "%.3f");
         ImGui::Checkbox(u8"地形跟随（坡面 / 台阶）", &m.terrain.enabled);
         if (m.terrain.enabled) {

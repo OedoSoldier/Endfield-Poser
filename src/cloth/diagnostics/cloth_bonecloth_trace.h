@@ -111,6 +111,25 @@ static bool ClothBoneSolverAccess(void *manager,uintptr_t &access,int &length,vo
   getItem=ClothMethod(c,"get_Item","UnityEngine.Transform","System.Int32");
   return getItem && ClothValue(ClothMethod(c,"get_length","System.Int32"),&access,length) && length>0 && length<=8192;
 }
+// Resolve only colliders owned by this candidate or its verified layer partner.
+// Calf supplements are separate from the original/fitted-body collider lists.
+static ClothRef ClothBoneSolverColliderRef(const ClothBoneRuntime &b,void *c) {
+  if(!c)return {};
+  ClothRef ref{};
+  for(size_t k=0;k<b.colliders.size();++k)
+    if(ClothTarget(b.colliders[k])==c && k<b.colliderTransforms.size()) ref=b.colliderTransforms[k];
+  for(const auto &extra:b.additionalColliders) if(ClothTarget(extra.ref)==c) ref=extra.transform;
+  for(const auto &calf:b.calfColliders)if(ClothTarget(calf.collider)==c)ref=calf.transform;
+  if(b.local.bodyCreated && ClothTarget(b.local.bodyCollider)==c) ref=b.local.bodyTransform;
+  for(const auto &r:b.local.fittedBody)if(ClothTarget(r.collider)==c)ref=r.transform;
+  for(const auto &side:b.local.side.shapes) if(ClothTarget(side.collider)==c) ref=side.transform;
+  if(b.contactConsumer>=0&&b.contactConsumer<s_clothBoneCount) {
+    const auto &consumer=s_clothBoneSlots[b.contactConsumer];
+    if(!ClothBonePair(b,consumer))return {};
+    for(const auto &side:consumer.local.side.shapes)if(ClothTarget(side.collider)==c)ref=side.transform;
+  }
+  return ref;
+}
 static bool ClothBoneSolverBind(int slot,void *manager,uintptr_t &access,void *&getItem,
                                 void *&teamBox,ClothInputSample &input) {
   auto &b=s_clothBoneSlots[slot];auto &s=s_clothBoneSolver[slot];auto &v=s.binding;
@@ -148,18 +167,7 @@ static bool ClothBoneSolverBind(int slot,void *manager,uintptr_t &access,void *&
     void *c=nullptr,*a[]{&n};if(!ClothInvoke(get,list,a,c)) return false;
     if(!c) { ++v.emptyColliderSlots;continue; }
     if(v.count>=ClothContactColliders) return false;
-    ClothRef ref{};
-    for(size_t k=0;k<b.colliders.size();++k)
-      if(ClothTarget(b.colliders[k])==c && k<b.colliderTransforms.size()) ref=b.colliderTransforms[k];
-    for(const auto &extra:b.additionalColliders) if(ClothTarget(extra.ref)==c) ref=extra.transform;
-    if(b.local.bodyCreated && ClothTarget(b.local.bodyCollider)==c) ref=b.local.bodyTransform;
-    for(const auto &r:b.local.fittedBody)if(ClothTarget(r.collider)==c)ref=r.transform;
-    for(const auto &side:b.local.side.shapes) if(ClothTarget(side.collider)==c) ref=side.transform;
-    if(b.contactConsumer>=0&&b.contactConsumer<s_clothBoneCount) {
-      const auto &consumer=s_clothBoneSlots[b.contactConsumer];
-      if(!ClothBonePair(b,consumer))return false;
-      for(const auto &side:consumer.local.side.shapes)if(ClothTarget(side.collider)==c)ref=side.transform;
-    }
+    const auto ref=ClothBoneSolverColliderRef(b,c);
     auto t=ClothTarget(ref);if(!t || CollisionTransform(c)!=t || !ClothAnchorUnderOwner(t)) return false;
     int index=chunk.start+n,actualId=0;int16_t ownerTeam=0;void *actual=nullptr,*ia[]{&index};
     if(!ClothInvoke(getItem,&access,ia,actual) || actual!=t ||
@@ -979,11 +987,22 @@ static bool ClothBoneResponseInputRead(int slot,void *manager,double &positionEr
   std::array<bool,3> found{};positionError=0;rotationDot=1;
   for(int n=0;n<chunk.count;++n){auto c=CollisionItem(list,n,"BeyondDynamicBone.ColliderComponent");if(!c)continue;int k=-1;
     for(int j=0;j<3;++j)if(c==ClothTarget(l.colliders[j]))k=j;
-    if(k<0||found[k])return false;found[k]=true;
+    void *expectedTransform=nullptr;
+    if(k>=0){if(found[k])return false;found[k]=true;
+      expectedTransform=ClothTarget(s.bones[s.local.recipe->responses[k].frame.target].bone);
+    }else{
+      // A rebuilt ribbon also owns calf capsules. They are native inputs, but
+      // are not one of the three frames driven by the skirt response.
+      const auto *sheet=s.contactPartner>=0&&s.contactPartner<s_clothBoneCount?&s_clothBoneSlots[s.contactPartner]:nullptr;
+      if(!sheet||!ClothBoneRibbonPair(*sheet,s)||!ClothBonePair(*sheet,s)||
+          process!=CollisionGc(sheet->process[1])||l.team!=sheet->team[1])return false;
+      expectedTransform=ClothTarget(ClothBoneSolverColliderRef(*sheet,c));
+    }
     int index=chunk.start+n;void *actual=nullptr,*args[]{&index};int16_t owner=0;double p[3]{},expected[4]{};float q[4]{};
-    if(!ClothInvoke(get,&access,args,actual)||actual!=ClothTarget(s.bones[s.local.recipe->responses[k].frame.target].bone)||
-        !ClothInputArrayValue(owners,index,"System.Int16",&owner,sizeof(owner))||owner!=l.team||
-        !ClothInputArrayValue(positions,index,"Unity.Mathematics.double3",p,sizeof(p))||
+    if(!expectedTransform||!ClothInvoke(get,&access,args,actual)||actual!=expectedTransform||
+        !ClothInputArrayValue(owners,index,"System.Int16",&owner,sizeof(owner))||owner!=l.team)return false;
+    if(k<0)continue;
+    if(!ClothInputArrayValue(positions,index,"Unity.Mathematics.double3",p,sizeof(p))||
         !ClothInputArrayValue(rotations,index,"Unity.Mathematics.quaternion",q,sizeof(q))||!eiem_cloth_response::Rotation(l.appliedWorld[k],expected))return false;
     double error=0,dot=0,norm=0;for(int j=0;j<3;++j){if(!std::isfinite(p[j]))return false;error+=(p[j]-l.appliedWorld[k].v[12+j])*(p[j]-l.appliedWorld[k].v[12+j]);}
     for(int j=0;j<4;++j){if(!std::isfinite(q[j]))return false;dot+=q[j]*expected[j];norm+=q[j]*q[j];}

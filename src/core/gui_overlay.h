@@ -23,6 +23,7 @@
 #include "base.h"
 #include "il2cpp_api.h"
 #include "frame_driver.h"
+#include "tool_close_state.h"
 #include "layered_readback.h"
 #include "overlay_device.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
@@ -52,6 +53,7 @@ static void SetGuiShutdownFn(void (*fn)()) { g_guiShutdownFn = fn; }
 
 static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
+static HANDLE g_guiThreadHandle=nullptr,g_hotkeyThreadHandle=nullptr;
 
 static bool GameClientRectOnScreen(RECT &rect) {
   POINT origin{};
@@ -1215,13 +1217,22 @@ static DWORD WINAPI GuiThread(LPVOID arg) {
 }
 
 static void StartGuiThread() {
-  if (RuntimeClosing() || g_guiRunning) return;
+  if (RuntimeClosing() || poser_close::Closing() || g_guiRunning) return;
+  if(g_guiThreadHandle) {
+    if(WaitForSingleObject(g_guiThreadHandle,0)!=WAIT_OBJECT_0)return;
+    CloseHandle(g_guiThreadHandle);g_guiThreadHandle=nullptr;
+  }
+  if(g_hotkeyThreadHandle) {
+    if(WaitForSingleObject(g_hotkeyThreadHandle,0)!=WAIT_OBJECT_0)return;
+    CloseHandle(g_hotkeyThreadHandle);g_hotkeyThreadHandle=nullptr;
+  }
   g_guiRunning = true;
   if (!g_hotkeyPollRun) {
     g_hotkeyPollRun = 1;
-    CreateThread(nullptr, 0, HotkeyPollThread, nullptr, 0, nullptr);
+    g_hotkeyThreadHandle=CreateThread(nullptr, 0, HotkeyPollThread, nullptr, 0, nullptr);
   }
-  CreateThread(nullptr, 0, GuiThread, nullptr, 0, nullptr);
+  g_guiThreadHandle=CreateThread(nullptr, 0, GuiThread, nullptr, 0, nullptr);
+  if(!g_guiThreadHandle){g_guiRunning=false;g_hotkeyPollRun=0;}
 }
 
 static void StopGuiThread() {

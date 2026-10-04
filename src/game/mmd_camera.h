@@ -53,6 +53,8 @@ static void *getMain = nullptr, *getFov = nullptr, *setFov = nullptr,
             *getOrtho = nullptr, *setOrtho = nullptr, *getSize = nullptr, *setSize = nullptr,
             *getPhysical = nullptr, *setPhysical = nullptr;
 static bool ready = false;
+static std::atomic<bool> observe{false};
+static std::shared_ptr<const mmd::CameraPose> observed;
 static void *brainClass=nullptr,*getDriverEnabled=nullptr,*setDriverEnabled=nullptr;
 struct LensVector {float x=0,y=0;};
 static void *getFocal=nullptr,*setFocal=nullptr,*getSensor=nullptr,
@@ -340,6 +342,16 @@ static void __fastcall Tail(void *self,float dt,void *method) {
       if(fixed)BuildFixed(camera,*fixed,sample);
     } else ReleaseFixed();
     const bool appliedSample=Pump(camera,sample);
+    if(observe.load()&&UnityObjAlive(camera)) {
+      void *transform=nullptr;
+      if(Call(g_component_get_transform,camera,nullptr,&transform)&&UnityObjAlive(transform)) {
+        mmd::CameraPose view;
+        view.position=GetBoneWorldPos(transform);view.rotation=GetBoneWorldRot(transform);
+        bool ortho=false;Read(getFov,camera,view.fov);Read(getOrtho,camera,ortho);Read(getSize,camera,view.orthoSize);
+        view.perspective=!ortho;view.target=view.position+view.rotation*Vec3{0,0,3};
+        std::atomic_store(&observed,std::make_shared<const mmd::CameraPose>(view));
+      }
+    }
     if(tracking&&sample.active) {
       if(appliedSample)status=u8"固定跟踪中（关闭跟踪恢复原相机）";
       else {fixedEnabled=false;fixedStatus=status.load();}

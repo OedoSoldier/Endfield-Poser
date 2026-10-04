@@ -7,6 +7,7 @@
 #include "game/smc_morph.h"
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
+#include "math/blender_bridge.h"
 #include "math/mmd_thumb.h"
 #include "math/mmd_calibration.h"
 #include "game/mmd_avatar.h"
@@ -17,6 +18,7 @@
 #include "game/mod_bridge.h"
 #endif
 #include "game/mmd_camera_settings.h"
+#include "game/mmd_visibility.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
 #include <chrono>
@@ -309,6 +311,7 @@ static int MmdChildCount(void *transform) {
 }
 #include "game/mmd_secondary_motion.h"
 struct MmdSession {
+  mmd_visibility::State visibility;
   poser_secondary::State secondary;
   bool bodyOwned = false;
   uint64_t cameraSession = 0;
@@ -332,6 +335,41 @@ struct MmdSession {
   std::vector<AccessoryBone> accessories;
   std::vector<AccessoryChain> chains;
 };
+static std::vector<mmd_visibility::State> s_mmdVisibilityRetired;
+static bool MmdVisibilityRestore(mmd_visibility::State &state) {
+  const bool owned=bool(state.lease);
+  if(mmd_visibility::Restore(state)) {
+    if(owned)Log("[MMD-VISIBILITY] stage=restored original render flags released");
+    return true;
+  }
+  if(!state.failed)Log("[MMD-VISIBILITY] renderer restoration deferred; retained original instance only");
+  state.failed=true;state.retryAt=MmdNow()+1;return false;
+}
+static void MmdVisibilityDrain() {
+  if(!ClothOnMainThread())return;
+  const double now=MmdNow();
+  for(auto it=s_mmdVisibilityRetired.begin();it!=s_mmdVisibilityRetired.end();)
+    if(now>=it->retryAt&&MmdVisibilityRestore(*it))it=s_mmdVisibilityRetired.erase(it);else ++it;
+}
+static void MmdReleaseVisibility(MmdSession &session) {
+  if(!session.visibility.lease)return;
+  if(ClothOnMainThread()&&MmdVisibilityRestore(session.visibility))return;
+  session.visibility.retryAt=0;
+  s_mmdVisibilityRetired.push_back(std::move(session.visibility));session.visibility={};
+}
+static void MmdApplyVisibility(MmdSession &session,const mmd::MotionClip &clip,double frame) {
+  MmdVisibilityDrain();
+  auto &state=session.visibility;
+  const bool hidden=bool(state.lease);
+  bool pending=false;for(const auto &old:s_mmdVisibilityRetired)
+    if(old.lease){void *root=nullptr;const auto life=old.lease->root.inspect(root);
+      pending|=life==mmd_visibility::Life::Unavailable||root==session.root;}
+  const bool ok=!pending&&mmd_visibility::Tick(state,session.animator,session.root,mmd::SampleVisibility(clip,frame),MmdNow());
+  if(!ok&&!state.failed)Log("[MMD-VISIBILITY] model display unavailable actor=%p frame=%.3f; motion continues, retained originals used for restoration",session.animator,frame);
+  if(ok&&hidden!=bool(state.lease))Log("[MMD-VISIBILITY] stage=%s actor=%p frame=%.3f renderers=%zu renderOnly=1",
+      state.lease?"hidden":"shown",session.animator,frame,state.lease?state.lease->renderers.size():size_t(0));
+  state.failed=!ok;
+}
 #include "math/mmd_face_bindings.h"
 using MmdMorphMapping=mmd_face_bindings::Mapping;
 struct MmdLoadResult {
@@ -355,6 +393,10 @@ struct MmdMotionOverride {
   std::string file;
 };
 struct MmdPlayer {
+  std::shared_ptr<const blender_bridge::Clip> editedBody,editedCamera;
+  std::string editedBodyFile,editedCameraFile;
+  std::map<std::string,float> editedFaces;
+  std::set<std::string> editedFaceOverrides;
   bool faceSettingsLoaded=false,faceLibraryStarted=false,faceLibraryLoading=false;
   std::vector<std::shared_ptr<const character_face::Profile>> faceLibrary;
   std::shared_ptr<const character_face::Profile> characterFace;
@@ -412,6 +454,8 @@ struct MmdPlayer {
 // by the CRT under the DLL loader lock after Windows has stopped other threads.
 // Normal plugin disable still performs MmdStop and joins imports explicitly.
 static MmdPlayer &g_mmd = *new MmdPlayer;
+static bool g_blenderEditing=false;
+static bool (*g_blenderTick)()=nullptr;
 struct MmdMotionView {
   mmd::MotionCalibration &motion;
   mmd::MotionAmplitude &amplitude;
@@ -479,13 +523,13 @@ static void MmdCancelStart() {
 static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
   return g_mmd.cameraFile.empty() ? g_mmd.clip.cameras : g_mmd.cameraTrack;
 }
-static bool MmdHasContent() { return !g_mmd.clip.empty() || !MmdCameraKeys().empty(); }
+static bool MmdHasBody() {return g_mmd.editedBody || !g_mmd.clip.bones.empty();}
+static bool MmdHasContent() { return g_mmd.editedBody || g_mmd.editedCamera || !g_mmd.clip.empty() || !MmdCameraKeys().empty(); }
 static void MmdUpdateDuration() {
   auto &m=g_mmd;const auto &keys=MmdCameraKeys();
-  uint32_t last=0;
-  for(const auto &kv:m.clip.bones)if(!kv.second.empty())last=(std::max)(last,kv.second.back().frame);
-  for(const auto &kv:m.clip.morphs)if(!kv.second.empty())last=(std::max)(last,kv.second.back().frame);
-  m.timeline.duration=(std::max)(last/30.0,mmd::CameraDuration(keys,m.cameraSettings));
+  m.timeline.duration=(std::max)(m.clip.modelDuration(),mmd::CameraDuration(keys,m.cameraSettings));
+  if(m.editedBody)m.timeline.duration=(std::max)(m.timeline.duration,m.editedBody->duration());
+  if(m.editedCamera)m.timeline.duration=(std::max)(m.timeline.duration,m.editedCamera->duration()+m.cameraSettings.timeOffset);
 }
 static void MmdSelectCameraSettings() {
   auto &m=g_mmd;
@@ -504,13 +548,18 @@ static void MmdCameraTrackChanged() {
 }
 static void MmdPublishCamera() {
   auto &m=g_mmd;auto &s=m.session;const auto &keys=MmdCameraKeys();
-  if (!s.active || m.preview || !m.cameraSettings.enabled || keys.empty() || !mmd_camera::ready) {
+  if (!s.active || m.preview || !m.cameraSettings.enabled || (!m.editedCamera&&keys.empty()) || !mmd_camera::ready) {
     mmd_camera::Stop();return;
   }
   // Track actual model-root motion; camera-only playback can follow locomotion.
   Vec3 delta=GetBoneWorldPos(s.root)-s.anchorWorld.position();
   Vec3 correction=s.bodyOwned?mmd::Rotation(s.anchorWorld)*Vec3{0,m.height,0}:Vec3{};
   correction.y+=s.terrain.rootOffset;
+  if(m.editedCamera) {
+    auto pose=blender_bridge::PlaceCamera(m.editedCamera->sample(m.timeline.seconds-m.cameraSettings.timeOffset),
+      m.cameraSettings,s.anchorWorld.position(),mmd::Rotation(s.anchorWorld),delta,correction);
+    mmd_camera::Publish({true,s.cameraSession,s.animator,pose,nullptr,0,m.timeline.seconds*30});return;
+  }
   mmd_camera::Publish({true,s.cameraSession,s.animator,
     mmd::PlaceCamera(mmd::SampleCamera(keys,mmd::CameraFrame(m.timeline.seconds,m.cameraSettings),m.cameraSettings),
       m.cameraSettings,s.anchorWorld.position(),s.cameraBasis,delta,m.scale,
@@ -545,43 +594,44 @@ static void MmdHideSessionProps(MmdSession &s, bool force = false) {
   if (!force && now < s.nextPropScan)
     return;
   s.nextPropScan = now + .2;
-  // Reassert hidden state if an independent idle/weapon controller enables it.
-  for (const auto &prop : s.props) {
-    bool active = false;
-    if (MmdActiveSelf(prop.object, &active) && active)
-      MmdSetActive(prop.object, false);
+  struct Node {void *transform;int parent;};
+  std::vector<Node> nodes,pending{{s.root,-1}};
+  std::vector<mmd::PlaybackVisibilityNode> visibility;
+  while(!pending.empty()&&nodes.size()<8192) {
+    const auto node=pending.back();pending.pop_back();
+    if(!UnityObjAlive(node.transform))continue;
+    char name[256]{};GetBoneName(node.transform,name,sizeof(name));
+    int index=int(nodes.size());nodes.push_back(node);
+    visibility.push_back({node.parent,node.transform!=s.root&&mmd::IsPlaybackPropNode(name),mmd::IsPlaybackPersistentEffect(name)});
+    int count=MmdChildCount(node.transform);
+    if(count<0||count>8192)return;
+    for(int child=0;child<count;++child){void *args[]{&child};
+      if(void *next=Invoke(g_transform_GetChild,node.transform,args))pending.push_back({next,index});}
   }
-  std::vector<void *> pending{s.root};
-  size_t visited = 0;
-  while (!pending.empty() && ++visited <= 8192) {
-    void *t = pending.back();
-    pending.pop_back();
-    if (!UnityObjAlive(t))
-      continue;
-    char name[256] = {};
-    GetBoneName(t, name, sizeof(name));
-    if (t != s.root && mmd::IsPlaybackPropNode(name)) {
-      void *object = Invoke(g_component_get_gameObject, t);
-      bool active = false;
-      if (MmdActiveSelf(object, &active)) {
-        auto found = std::find_if(
-            s.props.begin(), s.props.end(),
-            [&](const MmdSavedProp &p) { return p.object == object; });
-        if (found == s.props.end()) {
-          s.props.push_back({object, active});
-          Log("[MMD] prop hidden: %s (was active=%d)", name, int(active));
-        }
-        if (active)
-          MmdSetActive(object, false);
-      }
-      continue;
+  if(!pending.empty())return; // Do not hide an ancestor with an unvisited effect.
+  const auto hidden=mmd::PlaybackHiddenNodes(visibility);
+  // Effects can be attached after playback starts. Release an old container
+  // lease before hiding its non-effect children, preserving original activity.
+  std::vector<void*> desired;
+  for(size_t n=0;n<nodes.size()&&n<hidden.size();++n)
+    if(hidden[n]&&(nodes[n].parent<0||!hidden[nodes[n].parent]))
+      desired.push_back(Invoke(g_component_get_gameObject,nodes[n].transform));
+  for(auto it=s.props.begin();it!=s.props.end();) {
+    if(std::find(desired.begin(),desired.end(),it->object)==desired.end()) {
+      bool active=false;if(MmdActiveSelf(it->object,&active)&&active!=it->active)MmdSetActive(it->object,it->active);
+      it=s.props.erase(it);
+    } else ++it;
+  }
+  for(size_t n=0;n<nodes.size()&&n<hidden.size();++n) {
+    if(!hidden[n]||(nodes[n].parent>=0&&hidden[nodes[n].parent]))continue;
+    void *object=Invoke(g_component_get_gameObject,nodes[n].transform);bool active=false;
+    if(!MmdActiveSelf(object,&active))continue;
+    const auto found=std::find_if(s.props.begin(),s.props.end(),[&](const MmdSavedProp &p){return p.object==object;});
+    if(found==s.props.end()) {
+      s.props.push_back({object,active});char name[256]{};GetBoneName(nodes[n].transform,name,sizeof(name));
+      Log("[MMD] prop hidden: %s (was active=%d, persistent VFX retained)",name,int(active));
     }
-    int count = MmdChildCount(t);
-    for (int child = 0; child < count; ++child) {
-      void *args[] = {&child};
-      if (void *next = Invoke(g_transform_GetChild, t, args))
-        pending.push_back(next);
-    }
+    if(active)MmdSetActive(object,false);
   }
 }
 static void MmdHideProps(bool force = false) {MmdHideSessionProps(g_mmd.session,force);}
@@ -711,6 +761,7 @@ static void MmdPollCharacterFaces() {
 static void MmdReport() {
   auto &m = g_mmd;
   m.report = m.clip.warnings;
+  if(!m.clip.visibility.empty())m.report.push_back(u8"模型显示：按 VMD 显示开关逐帧播放（"+std::to_string(m.clip.visibility.size())+u8" 个关键帧）");
   m.report.insert(m.report.end(), m.rig.warnings.begin(), m.rig.warnings.end());
   mmd::RigEvaluator evaluation;
   auto roles = mmd::AdaptedRoles(m.adaptation);
@@ -793,7 +844,8 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}, int motionTa
     saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
     saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
     saved["motion_calibration"] = mmd::MotionCalibrationJson(m.motionCalibration);
-    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load(),s_clothAutoEnabled.load(),s_collisionGeometry.load(),s_clothRibbonDamping.load(),s_clothLightness,s_clothHairStrength});
+    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load(),s_clothAutoEnabled.load(),s_collisionGeometry.load(),s_clothRibbonDamping.load(),s_clothLightness,s_clothHairStrength,
+      s_clothTurnStrength,s_clothRibbonStrength,s_clothBeltStrength,s_clothAccessoryStrength,s_clothAttachmentContacts});
     saved["requires_pmx"] = m.reference;
     // Portable source structure check, never store a required local PMX path.
     if (m.reference) {
@@ -950,6 +1002,7 @@ static void MmdPollLoad() {
     return;
   }
   if (r.kind == 6) {
+    m.editedCamera.reset();m.editedCameraFile.clear();
     m.cameraTrack=std::move(r.clip.cameras);m.cameraFile=r.file;
     MmdCameraTrackChanged();MmdUpdateDuration();
     m.status=u8"镜头已导入，随动作时间轴播放";
@@ -985,6 +1038,9 @@ static void MmdPollLoad() {
         s_clothRibbonDamping.store(cloth.ribbonDamping);
         s_clothLightness=cloth.lightness;
         s_clothHairStrength=cloth.hairStrength;
+        s_clothTurnStrength=cloth.clothStrength;s_clothRibbonStrength=cloth.ribbonStrength;
+        s_clothBeltStrength=cloth.beltStrength;s_clothAccessoryStrength=cloth.accessoryStrength;
+        s_clothAttachmentContacts=cloth.attachmentContacts;
         ClothBoneQueueCommand(0,!cloth.enhancement);
         s_skirtDirty.store(true);
         m.ikMode = ik; m.adaptationFile = r.file;
@@ -1007,12 +1063,18 @@ static void MmdPollLoad() {
     m.reference = true;
     m.autoScale = true;
     m.referenceFile = r.file;
-  } else if (r.kind == 1)
-    mmd::AppendFace(m.clip, r.clip);
+  } else if (r.kind == 1) {
+    if(m.editedBody) {
+      for(const auto &track:r.clip.morphs) {m.clip.morphs[track.first]=track.second;m.editedFaceOverrides.insert(track.first);}
+      mmd::Recount(m.clip);
+    } else mmd::AppendFace(m.clip, r.clip);
+  }
   else {
     if (!r.clip.cameras.empty()) {
+      m.editedCamera.reset();m.editedCameraFile.clear();
       m.cameraTrack.clear();m.cameraFile.clear();m.cameraSettings.enabled=true;
     }
+    m.editedBody.reset();m.editedBodyFile.clear();m.editedFaceOverrides.clear();
     m.clip = std::move(r.clip);
     m.file = r.file;
     m.timeline.stop();
@@ -1073,12 +1135,12 @@ static std::string MmdPrepareThumbs(mmd::RetargetProfile &profile,bool enabled) 
   if(result.joints<6)status+=u8"；其余关节保留原生相对姿态";
   return status;
 }
-static void MmdCaptureSession() {
+static void MmdCaptureSession(bool preserveCurrent=false) {
   auto &m = g_mmd;
   auto &s = m.session;
   s = MmdSession{};
   s.active = true;
-  s.bodyOwned = m.preview || !m.clip.bones.empty() || !m.clip.morphs.empty();
+  s.bodyOwned = m.preview || MmdHasBody() || !m.clip.morphs.empty();
   s.cameraSession = ++mmd_camera::nextSession;
   s.animator = g_charAnimator;
   s.root = GetCharRootTransform();
@@ -1147,8 +1209,8 @@ static void MmdCaptureSession() {
     auto name=il2cpp_class_get_name(il2cpp_object_get_class(c.component));
     if(name&&!strcmp(name,"GrounderBipedIK")){mmd_terrain::Configure(s.terrain,c.component);break;}
   }
-  g_freezeAccessories = m.freezeCloth;
-  if (!m.preview && !m.freezeCloth) {
+  if(!preserveCurrent)g_freezeAccessories = m.freezeCloth;
+  if (!preserveCurrent && !m.preview && !m.freezeCloth) {
     for (int i=0; i<s_humanBoneCount; ++i) if (s_humanBones[i].humanBone==Head) {
       float h=GetBoneWorldPos(s_humanBones[i].transform).y-GetBoneWorldPos(s.root).y;
       s_clothCharacterHeight=std::isfinite(h)&&h>.1f&&h<5.f?h:1.245f;
@@ -1156,23 +1218,25 @@ static void MmdCaptureSession() {
     }
     ClothRequestPlayback(true, !g_frozen);
   }
-  if (g_frozen && !m.freezeCloth)
+  if (!preserveCurrent && g_frozen && !m.freezeCloth)
     SetAllPhysicsEnabled(true, true);
   if (!g_frozen)
     FreezeCharacter();
-  if (m.freezeCloth) {
+  if (!preserveCurrent && m.freezeCloth) {
     CaptureAccessorySnapshot();
     SetAllPhysicsEnabled(false, true);
   }
-  MmdHideProps(true);
+  if(!preserveCurrent)MmdHideProps(true);
   // Publish only after capture/freeze: retain the pre-playback face for Stop.
   // Preparation and T-pose preview also own a neutral expression.
-  SMCMotionNeutral(s.animator);
-  if(!m.preview&&poser_secondary::enabled&&!m.clip.bones.empty())
+  if(!preserveCurrent)SMCMotionNeutral(s.animator);
+  if(!m.preview&&poser_secondary::enabled&&MmdHasBody())
     poser_secondary::Prepare(s.secondary,s.animator,poser_secondary::ModelKey(m.profile.model),s_allBones,s.transforms,MmdNow());
 }
 static void MmdStop(void *nextEntity) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  g_blenderEditing=false;
+  mmd_camera::observe=false;
   SMCClearBindingPreview();
   if(nextEntity&&g_mmdSquadBridge.characterChanging)g_mmdSquadBridge.characterChanging(nextEntity);
   else if(g_mmdSquadBridge.stop)g_mmdSquadBridge.stop();
@@ -1190,10 +1254,11 @@ static void MmdStop(void *nextEntity) {
   poser_gaze::Release(false);
   InterlockedExchange(&g_mmdOwnsPose, 0);
   m.preview = false;
+  MmdReleaseVisibility(s);
   if (!s.active)
     return;
   if (!s.bodyOwned) {
-    s.active=false;s.references.reset();m.status=u8"镜头已停止，等待游戏回调恢复相机";
+    s.active=false;s.references.reset();m.status=u8"已停止，等待游戏回调恢复显示与镜头";
     return;
   }
   bool ownerAlive = UnityObjAlive(s.animator) && UnityObjAlive(s.root);
@@ -1259,6 +1324,28 @@ static void MmdCharacterChanging(void *nextEntity=nullptr) {
   m.status = u8"切换角色已停止动作，等待新角色骨架";
 }
 static bool MmdClothMayAdjustAnchor(void *transform);
+static void MmdSampleBody(double seconds) {
+  auto &m=g_mmd;
+  if(!m.editedBody) {m.mapper.sample(seconds*30,m.scale,m.inPlace,m.height,m.ikMode,m.amplitude,m.motionCalibration);return;}
+  const auto frame=m.editedBody->sample(seconds);
+  m.editedFaces=frame.faces;
+  m.playbackProfile=m.profile;
+  std::vector<Quat> rotations;std::vector<bool> writes(m.profile.bones.size(),false);
+  for(const auto &b:m.profile.bones)rotations.push_back(b.localRot);
+  for(const auto &b:frame.bones) {
+    if(b.index<0||size_t(b.index)>=rotations.size())continue;
+    rotations[b.index]=b.rotation;writes[b.index]=true;m.playbackProfile.bones[b.index].localPos=b.position;
+  }
+  Quat basis{};
+  if(m.profile.valid()) {
+    auto p=[&](int role){return m.profile.bones[m.profile.roles[role]].restPos;};
+    basis=mmd::BodyBasis(p(13),p(14),p(0),p(10));
+  }
+  Vec3 root=Conj(frame.hasAnchor?frame.anchor:Quat{})*frame.root;
+  m.mapper.sampleNative(m.playbackProfile,rotations,writes,root,basis,m.amplitude,m.motionCalibration);
+  if(m.inPlace){m.mapper.output.rootOffset.x=0;m.mapper.output.rootOffset.z=0;}
+  m.mapper.output.rootOffset.y+=m.height;
+}
 static void MmdApplyFrame() {
   if(!ClothOnMainThread())return;
   auto &m = g_mmd;
@@ -1271,14 +1358,15 @@ static void MmdApplyFrame() {
     return;
   }
   double frame = m.timeline.seconds * 30.;
-  if (!s.bodyOwned) {MmdPublishCamera();return;}
+  if (!s.bodyOwned) {MmdApplyVisibility(s,m.clip,frame);MmdPublishCamera();return;}
   if(ClothBlockFirstBodyPose("single-preparation",MmdClothMayAdjustAnchor)) {
     SMCMotionNeutral(s.animator);return;
   }
-  m.mapper.sample(frame, m.scale, m.inPlace, m.height, m.ikMode, m.amplitude, m.motionCalibration);
+  MmdApplyVisibility(s,m.clip,frame);
+  MmdSampleBody(m.timeline.seconds);
   auto &p = m.mapper.output;
   auto world=s.anchorWorld*mmd::TRS(p.rootOffset,{});
-  float ground=m.clip.bones.empty()?0:mmd_terrain::Apply(s.terrain,m.terrain,m.profile,p,world,s.anchorWorld,MmdNow(),m.timeline.seconds);
+  float ground=!MmdHasBody()?0:mmd_terrain::Apply(s.terrain,m.terrain,m.profile,p,world,s.anchorWorld,MmdNow(),m.timeline.seconds);
   mmd::Matrix anchorInverse;Vec3 groundLocal{};
   if(mmd::Inverse(s.anchorWorld,anchorInverse))groundLocal=mmd::terrain::Vector(anchorInverse,{0,ground,0});
   MmdRawPose(s.root, s.rootPos + s.rootRot * (p.rootOffset+groundLocal), s.rootRot);
@@ -1296,10 +1384,11 @@ static void MmdApplyFrame() {
     if (locked)
       continue;
     void *t = s_allBones[i].transform;
-    MmdRawPose(t, m.profile.bones[i].localPos, p.localRot[i]);
+    const auto position=m.editedBody?m.playbackProfile.bones[i].localPos:m.profile.bones[i].localPos;
+    MmdRawPose(t, position, p.localRot[i]);
     for (int h = 0; h < s_humanBoneCount; h++)
       if (s_humanBones[h].transform == t) {
-        s_humanBones[h].localPos = m.profile.bones[i].localPos;
+        s_humanBones[h].localPos = position;
         s_humanBones[h].localRot = p.localRot[i];
       }
   }
@@ -1311,7 +1400,7 @@ static void MmdApplyFrame() {
   face.settings=m.faceSettings;
   face.profile=m.characterFace;
   for(auto &kv:m.morphMap) {
-    float sample=mmd::SampleMorph(m.clip.morphs.at(kv.first),frame);
+    float sample=m.editedBody&&m.editedBody->hasFaces&&!m.editedFaceOverrides.count(kv.first)?m.editedFaces[kv.first]:mmd::SampleMorph(m.clip.morphs.at(kv.first),frame);
     mmd_face_bindings::Apply(kv.second,sample,face,[&](int id) {
       return m.characterFace&&s_characterProfile==m.characterFace&&s_characterBinding.ready&&
         s_characterBindingGeneration==s_faceGeneration&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id];
@@ -1336,9 +1425,9 @@ static void MmdApplyFrame() {
   ClothService(true,MmdClothMayAdjustAnchor,frame);
   m.timeline.holdClock(g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration),MmdNow());
   ClothTurnSubmit(m.profile,s_allBones,m.timeline.seconds,s.terrain.epoch,
-      m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,!m.clip.bones.empty());
+      m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,MmdHasBody());
   poser_secondary::Tick(s.secondary,s.animator,poser_secondary::ModelKey(m.profile.model),s_allBones,s.transforms,
-      MmdNow(),m.timeline.seconds,s.terrain.epoch,m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,!m.clip.bones.empty());
+      MmdNow(),m.timeline.seconds,s.terrain.epoch,m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,MmdHasBody());
   MmdPublishCamera();
 }
 static bool MmdClothMayAdjustAnchor(void *transform) {
@@ -1377,19 +1466,25 @@ static bool MmdStart() {
     m.timeline.play(MmdNow());
     return true;
   }
-  if (m.clip.bones.empty()) {
+  if (!MmdHasBody()) {
     if (!g_charAnimator || !UnityObjAlive(g_charAnimator))
       return false;
     m.profile = MmdCurrentProfile();
     m.profileRevision = -1;
   } else if (!MmdPrepareProfile())
     return false;
+  if(m.editedBody) {
+    const auto &clip=*m.editedBody;
+    if(clip.model!=CurrentCharModelKey()||clip.names.size()!=s_allBones.size()) {m.status=u8"Blender 动作的角色或骨架不匹配，请连接对应角色重新导出";return false;}
+    for(size_t i=0;i<s_allBones.size();++i)if(clip.names[i]!=s_allBones[i].name||clip.parents[i]!=s_allBones[i].parentIdx) {m.status=u8"Blender 动作骨架已改变，请重新导出";return false;}
+  }
   m.playbackProfile=m.profile;
-  m.thumbStatus=m.clip.bones.empty()?std::string{}:MmdPrepareThumbs(m.playbackProfile,m.adaptation.characterThumbs);
+  m.thumbStatus=(m.editedBody||m.clip.bones.empty())?std::string{}:MmdPrepareThumbs(m.playbackProfile,m.adaptation.characterThumbs);
   if (!m.clip.bones.empty() || !m.clip.morphs.empty())
     m.mapper.bind(m.rig, m.clip, m.playbackProfile, mmd::AdaptedRoles(m.adaptation), m.adaptation.tracks);
-  if (!m.clip.bones.empty() && m.autoScale)
+  if (!m.editedBody && !m.clip.bones.empty() && m.autoScale)
     m.scale = m.mapper.suggestedScale;
+  if(m.editedBody)MmdSampleBody(0);
   MmdCaptureSession();
   m.timeline.holdClock(g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration),MmdNow());
   InterlockedExchange(&g_mmdOwnsPose, 1);
@@ -1411,6 +1506,7 @@ static void MmdSeekOrStart(double seconds) {
 }
 static void MmdTick() {
   try {
+    MmdVisibilityDrain();
     auto &m = g_mmd;
     if(MmdSquadOwnsPose()||m.preview||m.loading||
        (m.session.active&&m.timeline.state==mmd::PlayState::Playing))SMCClearBindingPreview();
@@ -1422,6 +1518,7 @@ static void MmdTick() {
     ModBridgeService();
 #endif
     MmdSelectCameraSettings();
+    if(g_blenderTick && g_blenderTick())return;
     if(m.preview && m.session.active && m.session.animator==g_charAnimator)
       SMCMotionNeutral(m.session.animator);
     if(m.calibrateRequested&&ClothOnMainThread()&&!m.session.active&&!MmdSquadBusy()) {
@@ -1460,6 +1557,7 @@ static void MmdTick() {
 // Reset keeps the playback anchor and holds frame zero; Stop restores the pose
 // captured before playback. Pausing never captures or replaces that session.
 static void MmdPlaybackCommand(int command, bool allowSquad = true) {
+  if(g_blenderEditing && command!=2) {g_mmd.status=u8"Blender 编辑中，请在 Blender 时间轴控制预览或先断开";return;}
   // A live single session/calibration always owns transport. An idle squad
   // selection must never swallow pause/stop for the character on screen.
   if(allowSquad && !g_mmd.session.active && !g_mmd.preview && !s_mmdStartRequest.active &&

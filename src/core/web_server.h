@@ -14,6 +14,7 @@
 #include "nlohmann/json.hpp"
 #include "config.h"
 #include "user_agreement.h"
+#include "tool_close_state.h"
 #include "game/skeleton.h"
 #include "game/freeze.h"
 #include "math/pose_file.h"
@@ -22,8 +23,13 @@
 
 static int g_webPort = 18923;
 static std::atomic<bool> g_webRunning = false;
+static HANDLE g_webThreadHandle=nullptr;
 
 // ---- 简易 HTTP 响应 ----
+static bool HttpSendAll(SOCKET c,const char *data,size_t size) {
+  while(size) {int n=send(c,data,int((std::min)(size,size_t(65536))),0);if(n<=0)return false;data+=n;size-=n;}
+  return true;
+}
 static void HttpReply(SOCKET c, const char *ctype, const std::string &body) {
   char head[512];
   int n = snprintf(head, sizeof(head),
@@ -31,8 +37,7 @@ static void HttpReply(SOCKET c, const char *ctype, const std::string &body) {
                    "Access-Control-Allow-Origin: *\r\n"
                    "Content-Length: %d\r\nConnection: close\r\n\r\n",
                    ctype, (int)body.size());
-  send(c, head, n, 0);
-  send(c, body.data(), (int)body.size(), 0);
+  if(HttpSendAll(c,head,n))HttpSendAll(c,body.data(),body.size());
 }
 
 static void HttpJson(SOCKET c, const nlohmann::json &j) {
@@ -132,6 +137,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
           {"peak_vertical_force",s_clothTurn.peakVerticalForce},{"body_velocity_y",s_clothTurn.body.value.velocity.y},
           {"body_acceleration_y",s_clothTurn.body.value.acceleration.y},
           {"native_status",s_clothTurn.nativeStatus},{"force_readbacks",s_clothTurn.readbacks},{"force_readback_failures",s_clothTurn.readbackFailures}}},
+        {"attachment_contacts",{{"enabled",s_clothAttachmentContacts},{"pairs",s_clothAttachments.pairs},{"shapes",s_clothAttachments.shapes},{"retained",s_clothAttachments.skipped},
+          {"ribbon_strength",s_clothRibbonStrength},{"belt_strength",s_clothBeltStrength},{"accessory_strength",s_clothAccessoryStrength}}},
         {"cloth_active",s_cloth.active},{"cloth_failed",s_cloth.failed},
         {"cloth_preparing",cloth.autoPreparing},{"cloth_restoring",s_cloth.releasing||cloth.boneRestoring},
         {"cloth_authored",cloth.authoredApplied},{"cloth_connections",cloth.autoConnectionsApplied},
@@ -597,6 +604,7 @@ static void HandleAttachedRequest(SOCKET c, const std::string &path, const std::
   // Do not remain registered with IL2CPP while waiting on a socket or the pose
   // lock. Runtime abort APCs previously escaped from Winsock select on this thread.
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if(poser_close::Closing()){HttpJson(c,{{"ok",false},{"error","Poser is closing"}});return;}
   RuntimeThreadScope runtime;
   if (!runtime.ready) {
     HttpJson(c, {{"ok", false}, {"err", "Game runtime is unavailable"}});
@@ -606,14 +614,12 @@ static void HandleAttachedRequest(SOCKET c, const std::string &path, const std::
 }
 static void HandleClient(SOCKET c) {
   try {
-    char buf[8192];
-    int n = recv(c, buf, sizeof(buf) - 1, 0);
-    if (n <= 0) {
-      closesocket(c);
-      return;
+    if(poser_close::Closing()) {HttpJson(c,{{"ok",false},{"error","Poser is closed for this game session"}});closesocket(c);return;}
+    char buf[8192];std::string req;
+    while(req.find("\r\n\r\n")==std::string::npos) {
+      int n=recv(c,buf,sizeof(buf),0);if(n<=0)throw std::runtime_error("Incomplete HTTP header");
+      req.append(buf,n);if(req.size()>32768)throw std::runtime_error("HTTP header too large");
     }
-    buf[n] = 0;
-    std::string req(buf);
     std::string method, path, body;
     size_t sp = req.find(' ');
     if (sp != std::string::npos) {
@@ -623,13 +629,30 @@ static void HandleClient(SOCKET c) {
         path = req.substr(sp + 1, sp2 - sp - 1);
     }
     size_t hb = req.find("\r\n\r\n");
-    if (hb != std::string::npos)
-      body = req.substr(hb + 4);
+    std::string header=req.substr(0,hb);std::transform(header.begin(),header.end(),header.begin(),[](unsigned char x){return char(std::tolower(x));});
+    size_t length=0;auto cl=header.find("\r\ncontent-length:");
+    if(cl!=header.npos) {
+      size_t start=cl+17,end=header.find("\r\n",start);auto value=header.substr(start,end-start);
+      size_t used=0;length=std::stoull(value,&used);
+      if(value.find_first_not_of(" \t",used)!=value.npos||length>blender_bridge::MaxPacket)throw std::runtime_error("Invalid HTTP body length");
+    }
+    if(header.find("transfer-encoding:")!=header.npos)throw std::runtime_error("Chunked requests are unsupported");
+    body=req.substr(hb+4);
+    while(body.size()<length) {int n=recv(c,buf,int((std::min)(sizeof(buf),length-body.size())),0);if(n<=0)throw std::runtime_error("Incomplete HTTP body");body.append(buf,n);}
+    body.resize(length);
     if (path.empty())
       path = "/";
-    HandleAttachedRequest(c, path, body);
-  } catch (...) {
-    Log("[WEB] C++ exception in handler");
+    if(poser_close::Closing())HttpJson(c,{{"ok",false},{"error","Poser is closing"}});
+    else if(path.rfind("/api/blender/",0)==0) {
+      // Never hold g_poseMutex or attach to Unity while waiting for the game.
+      if(method!="POST"||header.find("\r\norigin:")!=header.npos)HttpJson(c,poser_blender::Error("Use a local Blender POST request"));
+      else {
+        auto j=nlohmann::json::parse(body);
+        HttpJson(c,poser_blender::Request(path.substr(13),j));
+      }
+    } else HandleAttachedRequest(c, path, body);
+  } catch (const std::exception &e) {
+    HttpJson(c,{{"ok",false},{"error",e.what()}});
   }
   closesocket(c);
 }
@@ -641,6 +664,7 @@ static DWORD WINAPI WebServerThread(LPVOID) {
   SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (s == INVALID_SOCKET) {
     Log("[WEB] socket failed");
+    WSACleanup();
     return 0;
   }
   int opt = 1;
@@ -652,11 +676,12 @@ static DWORD WINAPI WebServerThread(LPVOID) {
   if (bind(s, (sockaddr *)&addr, sizeof(addr)) != 0) {
     Log("[WEB] bind 127.0.0.1:%d failed (port in use?)", g_webPort);
     closesocket(s);
+    WSACleanup();
     return 0;
   }
   listen(s, 8);
   Log("[WEB] UI server: http://127.0.0.1:%d", g_webPort);
-  g_webRunning = !RuntimeClosing();
+  g_webRunning = !RuntimeClosing()&&!poser_close::Closing();
   while (g_webRunning && !RuntimeClosing()) {
     // 非阻塞 accept：500ms 超时轮询，g_webRunning 置假后可干净退出
     fd_set rfds;
@@ -681,9 +706,9 @@ static DWORD WINAPI WebServerThread(LPVOID) {
 }
 
 static void StartWebServer() {
-  if (RuntimeClosing() || g_webRunning)
+  if (RuntimeClosing() || poser_close::Closing() || g_webRunning || g_webThreadHandle)
     return;
-  CreateThread(nullptr, 0, WebServerThread, nullptr, 0, nullptr);
+  g_webThreadHandle=CreateThread(nullptr, 0, WebServerThread, nullptr, 0, nullptr);
 }
 
 // 内嵌网页（画布骨骼小人 + 滑条 + 按钮）

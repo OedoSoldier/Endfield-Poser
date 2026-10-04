@@ -390,8 +390,8 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
     auto proposed=attrs;for(int n=0;n<p.boneCount;++n){auto bone=p.bones[n];SourceUpperCoatSelection(p,n,bone);proposed[ids[n]]=bone.attribute;}
     const auto peers=SharedSelection(s,id,ids,proposed);
     Need(peers.proofs.empty()&&peers.foreign.empty(),"auto-upper-coat-input-owned-by-peer");
-    if(surface)surface->legReport+=" releasedWaistFixed=9 promotedUpperAttachments=7 upperOriginsRetained=4 sourceSkin=retained contact=Point";
-    const auto revised=std::string(p.signature)+"\nupper-coat-higher-attachments-free-waist-v2";
+    if(surface)surface->legReport+=" releasedWaistFixed=9 promotedUpperInputs=11 shoulderRootsRetained=7 sourceSkin=retained contact=Point";
+    const auto revised=std::string(p.signature)+"\nupper-coat-shoulder-attachments-free-upper-v3";
     p.signature=text(Digest(Bytes(revised.begin(),revised.end())));
   }
   if(bodyOnly){p.runtimeBodyOnly=true;out->faces.resize(1);out->lines.resize(1);out->graphs.resize(1);
@@ -472,7 +472,7 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &c
       try{GenerateUnowned(package,scene,query,result);}catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"unowned-waist-discovery",e.what()});}
       result.meshReads+=scene.meshReads;result.meshCacheHits+=scene.meshCacheHits;result.meshCacheBytes+=scene.meshCacheBytes;result.meshDecodeMs+=scene.meshDecodeMs;
       result.sources=package.sources;result.sources[manifest.sourceName]=manifest.sourceHash;
-      std::string key="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-v1-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-v2-fixed-apron-v1-bundle-v2-cell-aspect-v1-leg-coverage-native-lines-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1\n"+manifest.sourceHash;for(const auto &p:package.sources)key+="\n"+p.first+"="+p.second;key+="\nendminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-lower-v2-pelvis-overlap-v1";result.key=Digest(Bytes(key.begin(),key.end()));
+      std::string key="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-belt-follow-v2-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-v2-fixed-apron-v1-bundle-v2-cell-aspect-v1-leg-coverage-native-lines-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1\n"+manifest.sourceHash;for(const auto &p:package.sources)key+="\n"+p.first+"="+p.second;key+="\nendminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-upper-v3-no-pelvis-bridge-v1-character-waist-clearance-v1";result.key=Digest(Bytes(key.begin(),key.end()));
     }
   }Need(matched,bindingIssue.empty()?"auto-source-full-binding-not-confirmed":bindingIssue.c_str());
   ResolveGeneratedRenderers(result);

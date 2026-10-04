@@ -204,7 +204,7 @@ static void DrawMmdSquadPanel() {
           DrawMmdFile(g_mmd.musicFile);
           ImGui::Checkbox(u8"播放音乐", &g_mmd.musicEnabled);
           ImGui::SliderFloat(u8"音乐音量", &g_mmd.musicVolume, 0, 1, "%.2f");
-          ImGui::SliderFloat(u8"音乐偏移（秒）", &g_mmd.musicOffset, -30, 30, "%.2f");
+          ImGui::SliderFloat(u8"音乐偏移（秒）", &g_mmd.musicOffset, -120, 120, "%.2f");
         }
         if (!MmdCameraKeys().empty()) {
           DrawMmdFile(g_mmd.cameraFile.empty() ? g_mmd.file : g_mmd.cameraFile);

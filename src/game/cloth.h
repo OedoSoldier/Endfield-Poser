@@ -298,6 +298,8 @@ struct ClothInstance {
   ClothPoseProbe poseProbes[8]{};
   bool anchorsCaptured = false, anchorsPolling = false;
   bool skirt = false;
+  uint32_t ribbonData=0,ribbonOriginal=0,ribbonCopy=0;
+  bool ribbonAdjusted=false,ribbonChecked=false;
   uint64_t nextPoll = 0, colliderDeadline = 0, lastObservedAt = 0;
   bool wasSuspended = false;
   unsigned processChanges = 0;
@@ -805,7 +807,7 @@ static bool ClothApplyColliders(ClothInstance &i, bool dirty, uint64_t now) {
 #include "cloth/core/cloth_collision.h"
 
 static bool ClothRestore() {
-  if (ClothBoneLeased()) return false;
+  if (ClothBoneLeased()||ClothAttachmentPending()||ClothCalfPending()) return false;
   bool ok = true, parametersChanged = false;
   for (size_t n = 0; n < s_cloth.anchors.count; ++n)
     ok &= ClothRestoreAnchor(s_cloth.anchors.entries[n].value);
@@ -816,6 +818,7 @@ static bool ClothRestore() {
   for (int n = 0; n < s_cloth.count; ++n) {
     ClothInstance &i = s_cloth.instances[n];
     void *obj = nullptr, *unused = nullptr;
+    ok &= ClothRestoreRibbonResponse(i);
     const auto life = ClothInspect(i.ref, obj);
     if (life == ClothLife::Unreadable) { ok = false; continue; }
     if (life == ClothLife::Destroyed) continue;
@@ -862,6 +865,7 @@ static bool ClothRestore() {
         il2cpp_gchandle_free(s_cloth.instances[n].processHandle);
       if (s_cloth.instances[n].weightSerializeHandle)
         il2cpp_gchandle_free(s_cloth.instances[n].weightSerializeHandle);
+      ClothFreeRibbonResponse(s_cloth.instances[n]);
       for (int p = 0; p < s_cloth.instances[n].poseProbeCount; ++p)
         ClothFree(s_cloth.instances[n].poseProbes[p].ref);
     }

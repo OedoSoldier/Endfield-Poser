@@ -51,6 +51,25 @@ static void OpenLogInExplorer() {
 }
 
 static void RefreshCharacterBones();
+static void RequestToolClose();
+static void ToolCloseMaintenance();
+
+#include "game/blender_bridge.h"
+static void DrawBlenderControls() {
+  if(!ImGui::CollapsingHeader(u8"Blender 联动"))return;
+  ImGui::TextWrapped("%s",poser_blender::status.c_str());
+  ImGui::TextWrapped(u8"在 Blender 的 Endfield 页签连接编辑。动作和镜头分别导出、分别加载，共用下方播放控制。");
+  if(g_blenderEditing&&ImGui::Button(u8"断开 Blender 并恢复"))poser_blender::localCommand=3;
+  ImGui::BeginDisabled(poser_blender::loading||g_mmd.loading||g_mmd.session.active||MmdSquadBusy());
+  if(ImGui::Button(u8"加载 Blender 动作 / 表情"))poser_blender::OpenEditedMotion(false);
+  ImGui::SameLine();if(ImGui::Button(u8"加载 Blender 镜头"))poser_blender::OpenEditedMotion(true);
+  if(g_mmd.editedBody&&ImGui::Button(u8"移除 Blender 动作")) {
+    g_mmd.editedBody.reset();g_mmd.editedBodyFile.clear();MmdUpdateDuration();
+  }
+  ImGui::EndDisabled();
+  if(g_mmd.editedBody)ImGui::TextWrapped(u8"骨架：%s",g_mmd.editedBodyFile.c_str());
+  if(g_mmd.editedCamera)ImGui::TextWrapped(u8"镜头：%s",g_mmd.editedCameraFile.c_str());
+}
 
 #include "core/web_server.h"
 
@@ -83,11 +102,11 @@ static AP_PluginInfo g_info = {
 
 APPLEPIE_PLUGIN_EXPORT AP_PluginInfo *AP_GetPluginInfo() { return &g_info; }
 static std::mutex g_pluginLifecycleMutex;
-static bool g_pluginEnabled = true;
+static std::atomic<bool> g_pluginEnabled{true};
 static bool g_pluginInitialized = false;
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginEnable() {
   std::lock_guard<std::mutex> lock(g_pluginLifecycleMutex);
-  if (RuntimeClosing()) return false;
+  if (RuntimeClosing() || poser_close::Closing()) return false;
   g_pluginEnabled = true;
   if (g_pluginInitialized) StartGuiThread();
   return true;
@@ -98,8 +117,9 @@ APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
   if (g_pluginInitialized) StopGuiThread();
   return true;
 }
-APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() { return LoadPoserConfig(); }
+APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() { return !poser_close::Closing() && LoadPoserConfig(); }
 APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
+  if(poser_close::Closing())return 0;
   // 向管理器声明的热键：管理器面板会列出它们，并按其 configKey 写回 poser_config.txt
   // （改完由管理器调用 AP_ReloadConfig 生效）。
   // 截图热键不声明：插件内没有实现（截图走 tools/screenshot.ps1），
@@ -140,6 +160,7 @@ static bool CursorVisible() {
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
 static void PrepareCharacterHandoff(void *nextEntity=nullptr) {
+  if(poser_close::Closing())return;
   // Called before replacing any current actor handle, including delayed
   // captures. Save cached values; never query the outgoing skeleton for them.
   void *oldAnimator = g_charAnimator;
@@ -205,6 +226,8 @@ static void UpdateOverlayCursor() {
     }
 }
 static void GameFrameTickBody() {
+  if(poser_close::Closing())return;
+  MmdVisibilityDrain();
   if (!poser_agreement::Allowed()) {
     TakeHotkeyFreeze();
     InterlockedExchange(&g_mmdHotkeyRequests, 0);
@@ -287,6 +310,7 @@ static void GameFrameTickBody() {
     else if (mmdKeys & (1 << 3)) MmdPlaybackCommand(3);
     else if (mmdKeys & (1 << 1)) MmdPlaybackCommand(1);
     else if (mmdKeys & 1) MmdPlaybackCommand(0);
+    poser_blender::Service();
     MmdTick();
   } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
@@ -329,6 +353,9 @@ static void DrawPoserGuiBody() {
     ImGui::Text("v%s", POSER_VERSION);
     ImGui::SameLine();
     if (ImGui::SmallButton(u8"用户协议")) g_showUserAgreement = true;
+    ImGui::SameLine();
+    if(ImGui::SmallButton(u8"本次关闭 Poser")) {RequestToolClose();ImGui::End();return;}
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"停止播放与联动，恢复角色和衣物，关闭工具。重启游戏后重新加载。");
     // 当前实际生效的热键（配置可能是老版本留下的值，别让用户以为"默认就是 L/P"）
     {
       char hk1[48] = {}, hk2[48] = {};
@@ -540,6 +567,12 @@ void DrawPoserGui() {
     return;
   }
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if(poser_close::Closing()) {
+    ImGui::Begin("Endfield Poser",nullptr,ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::TextUnformatted(u8"正在关闭 Poser…");
+    ImGui::TextWrapped(u8"正在恢复角色、镜头和衣物，请保持游戏运行。完成后面板自动关闭，重启游戏后重新加载。");
+    ImGui::End();return;
+  }
   SMCClearBindingPreview(); // A held preview button renews it during this draw.
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
@@ -556,6 +589,7 @@ void DrawPoserGui() {
 // 1=冻结/解冻 2=T-pose
 static void ExtControl(int code) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if(poser_close::Closing())return;
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
   if (!poser_agreement::Allowed()) return;
@@ -581,6 +615,7 @@ static void ExtControl(int code) {
 // 冻结状态下禁用插件/卸载时，把 Animator、IK、布料物理、形态键都还原回去，
 // 否则头发布料会一直僵在冻结姿态。
 static void OnGuiShutdownRestore() {
+  if(poser_close::Closing())return; // Already restored by the game-thread close flow.
   // During game shutdown its objects are being destroyed, not handed back to
   // gameplay. Avoid restoration, import joins or reattaching to a closing VM.
   if (RuntimeClosing()) {Log("[EXIT] editor stopped; skipped game-object restoration");return;}
@@ -591,6 +626,7 @@ static void OnGuiShutdownRestore() {
   mmd_camera::SetFixed(false);
   MmdStop();
   s_mmdClosing.store(true);
+  poser_blender::Shutdown();
   if(HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
   if(g_mmd.loading) { g_mmd.loader.wait(); g_mmd.loading=false; }
   if(g_squad.loading) {g_squad.loader.wait();g_squad.loading=false;}
@@ -609,10 +645,78 @@ static void OnGuiShutdownRestore() {
   while (GetTickCount64()<deadline) {
     { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
       if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring() &&
-          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load()) return; }
+          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && s_mmdVisibilityRetired.empty()) return; }
     Sleep(10);
   }
   Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
+}
+
+static void RequestToolClose() {
+  if(!poser_close::state.request())return;
+  g_pluginEnabled=false;g_webRunning=false;g_hotkeyPollRun=0;
+  InterlockedExchange(&g_mmdHotkeyRequests,0);TakeHotkeyFreeze();
+  s_mmdClosing=true;poser_blender::closing=true;
+  if(HWND dialog=s_mmdDialog.load())PostMessageW(dialog,WM_CLOSE,0,0);
+  if(HWND dialog=poser_blender::fileDialog.load())PostMessageW(dialog,WM_CLOSE,0,0);
+  Log("[TOOL-CLOSE] requested; game-thread restoration pending; restart-only=1");
+}
+static bool ToolAttachmentsRestored() {
+  if(mmd_camera::restorePending.load()||mmd_camera::fixedHolding.load()||
+      !s_mmdVisibilityRetired.empty()||!g_frozenGrips.empty())return false;
+  for(unsigned slot=0;slot<ClothActorCount;++slot) {
+    if(!s_ClothActorRequest.values[slot]&&!s_clothActors.values[slot])continue;
+    ClothActorScope scope(slot);
+    if(ClothActorEngaged(slot)||ClothBonePending()||ClothBoneLeased()||
+        ClothAttachmentPending()||ClothCalfPending())return false;
+  }
+  return true;
+}
+static DWORD WINAPI ToolCloseWorker(LPVOID) {
+  // No joins on Unity/overlay callbacks or under g_poseMutex. Keep trampoline
+  // storage and this DLL resident for callbacks already inside the original;
+  // disabling hooks restores their entry bytes without freeing live code.
+  HMODULE retained=nullptr;
+  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+      reinterpret_cast<LPCWSTR>(&ToolCloseWorker),&retained);
+  poser_blender::Shutdown();
+  if(g_mmd.loading){g_mmd.loader.wait();g_mmd.loading=false;}
+  if(g_squad.loading){g_squad.loader.wait();g_squad.loading=false;}
+  if(g_mmd.faceLibraryLoading){g_mmd.faceLoader.wait();g_mmd.faceLibraryLoading=false;}
+  StopGuiThread();
+  for(HANDLE *handle:{&g_guiThreadHandle,&g_hotkeyThreadHandle,&g_webThreadHandle}) {
+    if(*handle){WaitForSingleObject(*handle,INFINITE);CloseHandle(*handle);*handle=nullptr;}
+  }
+  if(!RuntimeClosing())BeginRuntimeQuit("user-tool-close");
+  while(g_runtimeAdmission.active())Sleep(10);
+  const auto result=MH_DisableHook(MH_ALL_HOOKS);
+  if(result==MH_OK||result==MH_ERROR_NOT_INITIALIZED) {
+    poser_close::state.phase=poser_close::Phase::Closed;
+    Log("[TOOL-CLOSE] complete; actors-restored=1 services-stopped=1 hooks-disabled=1 restart-only=1");
+  } else Log("[TOOL-CLOSE] hook detach failed=%d; services stopped, module retained",result);
+  return 0;
+}
+static void ToolCloseMaintenance() {
+  if(!poser_close::Closing()||!ClothOnMainThread()||RuntimeClosing())return;
+  if(poser_close::state.beginRestore()) {
+    poser_blender::End();mmd_camera::SetFixed(false);MmdStop();
+    poser_blender::restoreFixed=false;poser_blender::fixedReferences.reset();
+    if(g_frozen)UnfreezeCharacter();
+    RestoreBlendShapes();ReleaseAllGrips();SMCReleaseFreeze();ResetSMCState();
+    FreeGripHandle(s_editorSMC.retainedCore);s_editorSMC.retainedCore=0;
+    g_charStates.clear();
+    for(unsigned slot=0;slot<ClothActorCount;++slot) {
+      if(!s_ClothActorRequest.values[slot]&&!s_clothActors.values[slot])continue;
+      ClothActorScope scope(slot);ClothRequestPlayback(false);ClothRelease("user-tool-close");
+    }
+    Log("[TOOL-CLOSE] restoring; original cloth/camera callbacks retained until ready");
+  }
+  if(poser_close::state.phase!=poser_close::Phase::Restoring)return;
+  MmdVisibilityDrain();
+  if(poser_close::state.beginDrain(ToolAttachmentsRestored())) {
+    HANDLE worker=CreateThread(nullptr,0,ToolCloseWorker,nullptr,0,nullptr);
+    if(worker)CloseHandle(worker);
+    else {poser_close::state.phase=poser_close::Phase::Restoring;Log("[TOOL-CLOSE] worker creation failed; retry on next game frame");}
+  }
 }
 
 // 姿态文件扩展：从骨 + 形态键（skeleton.h 通过钩子调用，避免底层反向包含）
@@ -648,7 +752,7 @@ static void PoseApplyExtras(const PoseDoc &doc) {
 // 命令：toggle / freeze / tpose / reset
 static void ProcessControlFileBody() {
   // File polling itself must not keep a managed runtime thread registered.
-  if (RuntimeClosing() || GetFileAttributesW(PoserFilePath(L"poser_control.txt").c_str())==INVALID_FILE_ATTRIBUTES) return;
+  if (RuntimeClosing() || poser_close::Closing() || GetFileAttributesW(PoserFilePath(L"poser_control.txt").c_str())==INVALID_FILE_ATTRIBUTES) return;
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
@@ -657,6 +761,7 @@ static void ProcessControlFileBody() {
     return;
   char line[32768];
   while (fgets(line, sizeof(line), f)) {
+    if(poser_close::Closing())break;
     if(strlen(line)>=3 && memcmp(line,"\xef\xbb\xbf",3)==0)
       memmove(line,line+3,strlen(line+3)+1);
     char *e = line + strlen(line) - 1;
@@ -664,6 +769,7 @@ static void ProcessControlFileBody() {
       *e-- = 0;
     if (!*line)
       continue;
+    if(strcmp(line,"close_poser")==0){RequestToolClose();break;}
     if (!poser_agreement::Allowed() && strcmp(line, "toggle") != 0) {
       Log("[CTRL] command ignored: user agreement required");
       continue;
@@ -836,9 +942,9 @@ static DWORD WINAPI InitThread(LPVOID) {
     DWORD observed=g_frameGameThreadId.load();
     return observed?observed:(g_gameHwnd?GetWindowThreadProcessId(g_gameHwnd,nullptr):0);
   };
-  s_clothHostEnabled=[](){return g_pluginEnabled;};
+  s_clothHostEnabled=[](){return g_pluginEnabled.load();};
   s_clothHostIdle=[](){return !MmdOwnsPose()&&!MmdSquadBusy()&&!g_mmd.preview;};
-  g_gameMaintenance = []() { ClothServiceActors(); };
+  g_gameMaintenance = []() { ClothServiceActors();ToolCloseMaintenance(); };
   InstallFrameHook();
   mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）

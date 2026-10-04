@@ -334,6 +334,7 @@ static bool ClothBoneColliderIdentity(void *process,int team,bool restoring=fals
 static bool ClothBoneAdditionalIdentity(void *process,int team,bool restoring) {
   auto &s=ClothBoneState();
   const bool candidate=process==CollisionGc(s.process[1]);
+  if(!ClothCalfRegistration(s.calfColliders,process,team,candidate&&!restoring))return false;
   bool checked[eiem_cloth_rebuild::BatchCapacity]{};
   for(auto &c:s.additionalColliders) {
     auto collider=ClothTarget(c.ref);bool member=false,listed=false;int count=-1;
@@ -386,6 +387,7 @@ static bool ClothBoneColliderTeamsAbsent(int team) {
   };
   for(auto &c:ClothBoneState().colliders) if(!absent(c)) return false;
   for(auto &c:ClothBoneState().additionalColliders) if(!absent(c.ref)) return false;
+  for(auto &c:ClothBoneState().calfColliders) if(!absent(c.collider)) return false;
   if(ClothBoneState().local.bodyCollider.handle && !absent(ClothBoneState().local.bodyCollider)) return false;
   for(const auto &r:ClothBoneState().local.fittedBody)if(r.collider.handle&&!absent(r.collider))return false;
   return true;
@@ -413,7 +415,7 @@ static bool ClothBoneCapturePeerRoots(const ClothInstance &peer,void *bbc,void *
     const bool authoredInput=ClothBoneOwnershipInputRoot(bbc,root);
     int inputAncestors=0;
     for(size_t b=0;b<s.bones.size()&&b<size_t(s.profile->boneCount);++b) if(!s.profile->Foreign(int(b))&&
-        (p.CandidateAttribute(int(b))==2 || (eiem_cloth_asset::SourceSeparatedCoat(p)&&p.ReleasedFixed(int(b))) || eiem_cloth_asset::SourceForkCoatRelease(p,int(b)) || eiem_cloth_asset::SourceUpperCoatRelease(p,int(b)) || eiem_cloth_asset::SourceUpperCoatRoot(p,int(b))>=0 || p.InputAnchor(int(b)) || eiem_cloth_asset::SourceShortRelease(p,int(b)) || eiem_cloth_asset::SourceShortWaist(p,int(b)) || eiem_cloth_asset::SourceApronRelease(p,int(b)))) {
+        (p.CandidateAttribute(int(b))==2 || (eiem_cloth_asset::SourceSeparatedCoat(p)&&p.ReleasedFixed(int(b))) || eiem_cloth_asset::SourceForkCoatRelease(p,int(b)) || eiem_cloth_asset::SourceForkCoatRoot(p,int(b)) || eiem_cloth_asset::SourceUpperCoatRelease(p,int(b)) || eiem_cloth_asset::SourceUpperCoatRoot(p,int(b))>=0 || p.InputAnchor(int(b)) || eiem_cloth_asset::SourceShortRelease(p,int(b)) || eiem_cloth_asset::SourceShortWaist(p,int(b)) || eiem_cloth_asset::SourceApronRelease(p,int(b)))) {
       if(ClothBoneOwnershipProved(bbc,int(b)))continue;
       auto t=ClothTarget(s.bones[b].bone);
       void *a=nullptr,*bResult=nullptr,*argsA[]{t},*argsB[]{root};

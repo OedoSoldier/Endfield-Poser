@@ -2,7 +2,7 @@
 #include "cloth_asset_recipe.h"
 
 namespace eiem_cloth_asset {
-constexpr const char *AutoAlgorithm="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-fixed-depth-v1-panel-fit-v3-long-skin-envelope-calf-knee-contour-v14-ribbon-width-v1-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-clearance-v4-fixed-apron-ordered-volumes-v3-prebuild-v1-bundle-v2-reader-v1-cell-aspect-v1-source-decode-v2-source-waist-panel-point-v1-leg-regions-native-lines-prebuild-closure-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1-owner-renderer-scope-v1-endminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-lower-v2-pelvis-overlap-v1";
+constexpr const char *AutoAlgorithm="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-fixed-depth-v1-panel-fit-v3-long-skin-envelope-calf-knee-contour-v14-ribbon-width-belt-follow-v2-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-clearance-v4-fixed-apron-ordered-volumes-v3-prebuild-v1-bundle-v2-reader-v1-cell-aspect-v1-source-decode-v2-source-waist-panel-point-v1-leg-regions-native-lines-prebuild-closure-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1-owner-renderer-scope-v1-endminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-upper-v3-no-pelvis-bridge-v1-character-waist-clearance-v1";
 inline std::string QueryKey(const Query &q,const std::wstring &root,
     const std::vector<std::pair<std::wstring,std::string>> &indices) {
   Bytes bytes;
@@ -31,6 +31,8 @@ inline size_t ResultBytes(const Generated &g){size_t n=sizeof(g)+g.liveRenderers
     n+=p->graphOrder.source.capacity()*sizeof(eiem_cloth_graph::Face)+p->graphOrder.adjacent.capacity()*sizeof(eiem_cloth_graph::Edge)+p->graphOrder.rules.capacity()*sizeof(eiem_cloth_graph::Rule);
     for(const auto &r:p->graphOrder.rules)n+=r.choices.capacity()*sizeof(eiem_cloth_graph::Choice);}
   for(const auto &r:g.dense){n+=sizeof(*r)+r->added.size()*sizeof(ClothBoneAsset)+(r->columns.size()+r->roots.size()+r->parents.size())*sizeof(int)+r->radii.size()*sizeof(float)+r->cross.size()*sizeof(std::array<int,2>);
+    n+=r->graphOrder.source.capacity()*sizeof(eiem_cloth_graph::Face)+r->graphOrder.adjacent.capacity()*sizeof(eiem_cloth_graph::Edge)+r->graphOrder.rules.capacity()*sizeof(eiem_cloth_graph::Rule);
+    for(const auto &rule:r->graphOrder.rules)n+=rule.choices.capacity()*sizeof(eiem_cloth_graph::Choice);
     n+=r->bodyBindings.size()*sizeof(ClothBoneBinding)+r->bodySpheres.size()*sizeof(ClothBoneBodySphere);
     n+=r->responses.size()*sizeof(ClothBoneResponseFrame)+r->responsePoints.size()*sizeof(ClothBoneResponsePoint)+(r->responseFaces.size()+r->layerFaces.size())*sizeof(ClothBoneResponseFace);
     n+=r->densityReport.size();for(const auto &s:r->strings)n+=64+s.size();for(const auto &f:r->faces)n+=f.size()*sizeof(std::array<int,3>);for(const auto &l:r->lines)n+=l.size()*sizeof(std::array<int,2>);

@@ -152,6 +152,8 @@ Write-Host ''
 if ($RunTests) {
 Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(
+  @{ Name = 'test_blender_protocol'; Src = 'tests\test_blender_protocol.cpp' }
+  @{ Name = 'test_tool_close'; Src = 'tests\test_tool_close.cpp' }
   @{ Name = 'test_user_agreement'; Src = 'tests\test_user_agreement.cpp' },
   @{ Name = 'test_agreement_ui'; Src = 'tests\test_agreement_ui.cpp' },
   @{ Name = 'test_slider_input'; Src = 'tests\test_slider_input.cpp' },
@@ -205,7 +207,8 @@ $tests = @(
 foreach ($t in $tests) {
   if (-not (Test-Path -LiteralPath $t.Src)) { throw "Missing local test source: $($t.Src)" }
   $testFeature = if ($t.Name -eq 'test_mod_bridge_runtime') { '/DPOSER_ENABLE_XXMI_BRIDGE=1' } else { '' }
-  Invoke-Cl "$common $testFeature $inc $($t.Src) /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib /link $sdkLibFlags"
+  $testExtra = if ($t.Name -eq 'test_tool_close') { 'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp' } else { '' }
+  Invoke-Cl "$common $testFeature $inc $($t.Src) $testExtra /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib /link $sdkLibFlags"
   & ".\build\tests\$($t.Name).exe"
   if ($LASTEXITCODE -ne 0) { throw "test $($t.Name) failed with exit $LASTEXITCODE" }
 }

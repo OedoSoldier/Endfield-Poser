@@ -453,21 +453,36 @@ static bool ClothPrefetchNeedsHooks();
 static void ClothPrefetchBoundary();
 static bool ClothTurnNeeded();
 static void ClothTurnBoundary();
+static bool ClothAttachmentPending();
+static bool ClothAttachmentNeeded();
+static void ClothAttachmentRelease();
+static void ClothAttachmentBoundary();
+static bool ClothCalfPending();
+static bool ClothCalfNeeded();
+static bool ClothCalfRetiring();
+static void ClothCalfContactsRelease();
+static void ClothCalfBoundary();
 
 static void ClothCollisionRelease(const char *reason) {
+  ClothAttachmentRelease();
+  ClothCalfContactsRelease();
   __try { ClothBoneRelease(reason); }
   __except (EXCEPTION_EXECUTE_HANDLER) {
     Log("[CLOTH-CONTACT-FAULT] release-retains-owned-references");
   }
 }
-static bool ClothCollisionNeedsMaintenance() { return ClothBonePending(); }
+static bool ClothCollisionNeedsMaintenance() { return ClothBonePending()||ClothAttachmentNeeded()||ClothCalfNeeded(); }
 #include "../diagnostics/cloth_input_trace.h"
 #include "../diagnostics/cloth_collision_snapshot.h"
 #include "../native/cloth_native_runtime.h"
+#include "../native/cloth_calf_colliders.h"
 #include "../bonecloth/cloth_bonecloth_runtime.h"
 #include "../bonecloth/cloth_bonecloth_prefetch.h"
 #include "../diagnostics/cloth_bonecloth_trace.h"
+#include "../native/cloth_ribbon_response.h"
 #include "../native/cloth_turn_runtime.h"
+#include "../native/cloth_attachment_contacts.h"
+#include "../native/cloth_calf_contacts.h"
 static void CollisionPublishUi() {
   CollisionUi ui{};
   ui.session = s_cloth.active ? s_cloth.owner.session : 0;
@@ -531,6 +546,7 @@ static void ClothCollisionServiceUi() {
 }
 static void ClothCollisionMaintenance() {
   if (!ClothOnMainThread() || !ClothCollisionNeedsMaintenance()) return;
+  if((ClothAttachmentNeeded()||ClothCalfNeeded())&&s_clothInputHookInstaller)s_clothInputHookInstaller();
   __try { ClothBoneService(false, ClothFrame()); }
   __except (EXCEPTION_EXECUTE_HANDLER) {
     ClothBoneRelease("maintenance-native-exception");

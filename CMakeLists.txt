@@ -51,12 +51,16 @@ if(WIN32)
     src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/game/mmd_secondary_motion.h src/math/mmd_secondary_motion.h src/integrations/sbm_mmd_api.h
     src/math/secondary_body_motion.h src/game/secondary_body_runtime.h src/game/secondary_body_settings.h src/integrations/secondary_bone_profiles.h
-    src/cloth/native/cloth_turn_runtime.h src/math/cloth_turn_motion.h
+    src/cloth/native/cloth_turn_runtime.h
+      src/cloth/native/cloth_ribbon_response.h src/math/cloth_turn_motion.h
+    src/cloth/native/cloth_attachment_contacts.h src/math/cloth_attachment.h
+    src/cloth/native/cloth_calf_colliders.h src/cloth/native/cloth_calf_contacts.h
+    src/cloth/collision/cloth_calf_math.h
     src/core/build_features.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h src/editor/panel_scale.h
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
-    src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/plugin_paths.h src/core/proxy_loader.h
+    src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/tool_close_state.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
     src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h src/math/eye_gaze_profile.h
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
@@ -72,10 +76,9 @@ if(WIN32)
     src/cloth/collision/cloth_contact_finish_install.h src/cloth/diagnostics/cloth_ribbon_motion_trace.h
     src/cloth/assets/cloth_asset_coat_calves.h
     src/cloth/assets/cloth_asset_coat_torso.h
-    src/cloth/assets/cloth_asset_coat_waist_panels.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
     src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
-    src/math/face_mixing.h
+    src/math/face_mixing.h src/math/face_eyelid.h
     src/game/char_state.h
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
     src/editor/panel_bones.h
@@ -173,6 +176,15 @@ add_poser_test(test_face_mixing tests/test_face_mixing.cpp)
 add_poser_test(test_eye_gaze tests/test_eye_gaze.cpp)
 set_tests_properties(test_character_faces PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
+  add_poser_test(test_tool_close tests/test_tool_close.cpp)
+  target_sources(test_tool_close PRIVATE
+    deps/imgui/imgui.cpp deps/imgui/imgui_draw.cpp deps/imgui/imgui_tables.cpp deps/imgui/imgui_widgets.cpp
+    deps/imgui/imgui_impl_dx11.cpp deps/imgui/imgui_impl_win32.cpp deps/imguizmo/ImGuizmo.cpp)
+  target_include_directories(test_tool_close PRIVATE deps deps/imgui deps/imguizmo deps/minhook_lib/include)
+  target_compile_definitions(test_tool_close PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
+  target_compile_options(test_tool_close PRIVATE /EHa)
+  target_link_libraries(test_tool_close PRIVATE cloth_decoder d3d11 dxgi d3dcompiler dwmapi ole32
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_user_agreement tests/test_user_agreement.cpp)
   add_poser_test(test_mmd_large tests/test_mmd_large.cpp)
   add_poser_test(test_smc_ownership tests/test_smc_ownership.cpp)

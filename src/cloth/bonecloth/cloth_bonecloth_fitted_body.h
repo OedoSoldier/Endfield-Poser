@@ -37,9 +37,8 @@ static bool ClothBoneFittedBodyCreate() {
   if(!ctor||!add)return false;
   for(int n=0;n<r.bodySphereCount;++n){const auto &fit=r.bodySpheres[n];
     if(fit.bone<0||size_t(fit.bone)>=l.bodyRenderer.bones.size()||!ClothFinitePosition(fit.center)||!std::isfinite(fit.radius)||fit.radius<=0||fit.radius>.25f)return false;
-    const bool hip=coat&&r.sourceCoatCalves&&r.CoatTorsoCoverage()&&n==2;
     const bool torso=coat&&r.CoatTorsoCoverage()&&n>=r.bodySphereCount-2;
-    const bool capsule=fit.Capsule();if(capsule&&((longSkirt&&n<12)||!std::isfinite(fit.endRadius)||fit.endRadius<=0||fit.endRadius>.25f||(!thighs&&!torso&&!hip&&fit.endRadius>=fit.radius)||
+    const bool capsule=fit.Capsule();if(capsule&&((longSkirt&&n<12)||!std::isfinite(fit.endRadius)||fit.endRadius<=0||fit.endRadius>.25f||(!thighs&&!torso&&fit.endRadius>=fit.radius)||
         !std::isfinite(fit.length)||fit.length<=fit.radius+fit.endRadius||fit.length>1))return false;
     if(!capsule&&(panels||thighs||coat||n>=12||fit.endRadius!=0||fit.length!=0))return false;
     auto cls=SurfaceClass("BeyondDynamicBone",capsule?"BeyondBoneCapsuleCollider":"BeyondBoneSphereCollider");
@@ -67,7 +66,7 @@ static bool ClothBoneFittedBodyCreate() {
     if(!ClothInvoke(update,component,nullptr,unused)||!ClothBoneFittedBodyGeometry(n)||
         !CollisionTeams(component,s.team[0],member,count)||member||count!=0)return false;
     Log("[CLOTH-BONE-FITTED-BODY] stage=created generation=%llu index=%d collider=%d parent=%d center=%g,%g,%g radius=%g endRadius=%g length=%g shape=%s scale=%g originalCapsuleWrites=0 nativeRegistration=pending",
-        s.owner.generation,n,shape.collider.id.instance,shape.parent.id.instance,fit.center.x,fit.center.y,fit.center.z,radius,endRadius,length,capsule?(hip?"pelvis-bridge-capsule":torso?(n==r.bodySphereCount-2?"chest-capsule":"transverse-waist-capsule"):thighs?"thigh-capsule":"calf-capsule"):"proximal-sphere",scale.x);
+        s.owner.generation,n,shape.collider.id.instance,shape.parent.id.instance,fit.center.x,fit.center.y,fit.center.z,radius,endRadius,length,capsule?(torso?(n==r.bodySphereCount-2?"chest-capsule":"transverse-waist-capsule"):thighs?"thigh-capsule":"calf-capsule"):"proximal-sphere",scale.x);
   }
   l.fittedBodyCreated=true;return ClothBoneFittedBodyIdentity();
 }
@@ -82,8 +81,7 @@ static bool ClothBoneFittedBodyRegistration(void *process,int team,bool restorin
   if(candidate&&!l.fittedBodyRegistered){l.fittedBodyRegistered=true;int capsules=0;for(int n=0;n<l.recipe->bodySphereCount;++n)capsules+=l.recipe->bodySpheres[n].Capsule();
     const bool thighs=l.recipe->NativeBodyOnly();
     const int torso=l.recipe->sourceCoatTorso?2:0;
-    const int hips=l.recipe->sourceCoatTorso&&l.recipe->sourceCoatCalves?1:0;
-    Log("[CLOTH-BONE-FITTED-BODY] stage=registered generation=%llu Process=%p team=%d shapes=%zu spheres=%d calfCapsules=%d thighCapsules=%d torsoCapsules=%d hipBridgeCapsules=%d listAndTeamReadback=1 contactVerified=0 visualVerified=0",s.owner.generation,process,team,l.fittedBody.size(),int(l.fittedBody.size())-capsules,thighs?0:capsules-torso-hips,thighs?capsules:0,torso,hips);}
+    Log("[CLOTH-BONE-FITTED-BODY] stage=registered generation=%llu Process=%p team=%d shapes=%zu spheres=%d calfCapsules=%d thighCapsules=%d torsoCapsules=%d listAndTeamReadback=1 contactVerified=0 visualVerified=0",s.owner.generation,process,team,l.fittedBody.size(),int(l.fittedBody.size())-capsules,thighs?0:capsules-torso,thighs?capsules:0,torso);}
   return true;
 }
 static bool ClothBoneFittedBodyReleaseReady() {

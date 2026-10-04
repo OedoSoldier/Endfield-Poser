@@ -428,6 +428,19 @@ class Retargeter {
   }
 
 public:
+  // Already-retargeted Blender bones still use the player's sizing and joint
+  // correction stage. Never retarget them a second time through an MMD rig.
+  void sampleNative(const RetargetProfile &profile, const std::vector<Quat> &rotations,
+                    const std::vector<bool> &writes, Vec3 root, Quat bodyBasis,
+                    const MotionAmplitude &amplitude, const MotionCalibration &calibration) {
+    target_=&profile;basis_=bodyBasis;armTwists_.clear();
+    neutralLocal_.clear();for(const auto &b:profile.bones)neutralLocal_.push_back(b.localRot);
+    output.localRot=rotations;output.write=writes;
+    output.worldRot.resize(profile.bones.size());output.worldPos.resize(profile.bones.size());
+    output.worldMatrix.resize(profile.bones.size());output.legIkActive={false,false};
+    output.rootOffset=CalibratedTravel(root,calibration);
+    world();applyMotionCalibration(calibration);applyAmplitude(amplitude,calibration);
+  }
   SampledPose output;
   float suggestedScale = .08f;
   Quat sourceBasis() const { return basis_; }

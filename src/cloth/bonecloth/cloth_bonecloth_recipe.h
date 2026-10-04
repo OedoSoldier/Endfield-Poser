@@ -113,11 +113,12 @@ struct ClothBoneLocalRecipe {
       !nativeLayer&&!contactProducer&&!FittedSkin()&&!sourceShortSkin&&!sourceShortSides&&!sourceCoatWaist&&
       !resampledPanel&&!ribbonSurface&&!separatedPanels&&!separatedWidth&&!partialSurface&&!rootSkinTransition&&
       tetherStretch==0&&bendingStiffness<0&&rootRotation<0;}
+  const eiem_cloth_graph::OrderContract *nativeGraphOrder=nullptr;
   bool RetainsSourceReference() const {return CoatWaistSkinOnly()||NativeBodyOnly()||ForkCoatBodyOnly();}
   bool RetainsBindings() const {return CoatWaistSkinOnly();}
   bool CoatCalfCoverage() const {
     if(!sourceCoatCalves||!runtimeGenerated||nativeLayer||meshCount||!bodyCoverage||!bodyAsset||!bodyAsset->bones||
-        bodySphereCount!=(sourceCoatTorso?5:2)||!bodySpheres||!eiem_cloth_asset::SourceOriginalCoverageCoat(prefabSha,"MC_Endminm_Coat"))return false;
+        bodySphereCount!=(sourceCoatTorso?4:2)||!bodySpheres||!eiem_cloth_asset::SourceOriginalCoverageCoat(prefabSha,"MC_Endminm_Coat"))return false;
     const char *names[]{"Bip001_L_Calf","Bip001_R_Calf"},*parents[]{"Bip001_L_Thigh","Bip001_R_Thigh"};
     for(int n=0;n<2;++n){const auto &c=bodySpheres[n];if(c.bone<0||c.bone>=bodyAsset->boneCount)return false;
       const auto &b=bodyAsset->bones[c.bone];
@@ -133,9 +134,9 @@ struct ClothBoneLocalRecipe {
     const bool male=eiem_cloth_asset::SourceOriginalCoverageCoat(prefabSha,"MC_Endminm_Coat");
     if(!sourceCoatTorso||!runtimeGenerated||nativeLayer||meshCount||!bodyCoverage||!bodyAsset||!bodyAsset->bones||!bodySpheres||
         (male?!CoatCalfCoverage():(!eiem_cloth_asset::SourceForkCoatBody(prefabSha,"MC_Coat")||sourceCoatCalves))||
-        bodySphereCount!=(male?5:2))return false;
-    const char *names[]{"Bip001_Pelvis","Bip001_Spine1","Bip001_Spine"},*parents[]{"Bip001","Bip001_Spine","Bip001_Pelvis"};
-    for(int n=male?0:1;n<3;++n){const auto &c=bodySpheres[(male?2:-1)+n];if(c.bone<0||c.bone>=bodyAsset->boneCount)return false;
+        bodySphereCount!=(male?4:2))return false;
+    const char *names[]{"Bip001_Spine1","Bip001_Spine"},*parents[]{"Bip001_Spine","Bip001_Pelvis"};
+    for(int n=0;n<2;++n){const auto &c=bodySpheres[(male?2:0)+n];if(c.bone<0||c.bone>=bodyAsset->boneCount)return false;
       const auto &b=bodyAsset->bones[c.bone];const auto &q=c.rotation;
       const double norm=double(q.x)*q.x+double(q.y)*q.y+double(q.z)*q.z+double(q.w)*q.w;
       if(!b.name||!b.parent||strcmp(b.name,names[n])||strcmp(b.parent,parents[n])||!c.Capsule()||

@@ -119,6 +119,7 @@ static void FinishGameRenderPose(int frame,int source) {
   g_renderPoseFinish(frame);
 }
 static void SampleGameRenderFrame(int source) {
+  if(RuntimeClosing())return;
   if (!g_frameRunning.load() && !g_gameMaintenance)
     return;
   try {

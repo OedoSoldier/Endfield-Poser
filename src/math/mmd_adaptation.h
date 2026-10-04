@@ -4,10 +4,13 @@
 #include "nlohmann/json.hpp"
 
 namespace mmd {
-struct NativeClothPreset { float hipRadius = .124f; bool enhancement = true; int geometry = 1; float ribbonDamping = .3f; float lightness = 0; float hairStrength = 1; };
+struct NativeClothPreset { float hipRadius = .124f; bool enhancement = true; int geometry = 1; float ribbonDamping = .3f; float lightness = 0; float hairStrength = 1;
+  float clothStrength=1,ribbonStrength=1,beltStrength=1,accessoryStrength=1;bool attachmentContacts=true; };
 inline nlohmann::json NativeClothJson(const NativeClothPreset &c) {
   return {{"hip_radius", c.hipRadius}, {"enhancement", c.enhancement}, {"geometry", c.geometry},
-          {"ribbon_damping", c.ribbonDamping},{"lightness",c.lightness},{"hair_strength",c.hairStrength}};
+          {"ribbon_damping", c.ribbonDamping},{"lightness",c.lightness},{"hair_strength",c.hairStrength},
+          {"cloth_strength",c.clothStrength},{"ribbon_strength",c.ribbonStrength},{"belt_strength",c.beltStrength},
+          {"accessory_strength",c.accessoryStrength},{"attachment_contacts",c.attachmentContacts}};
 }
 inline NativeClothPreset ReadNativeCloth(const nlohmann::json &preset) {
   NativeClothPreset c;
@@ -29,6 +32,11 @@ inline NativeClothPreset ReadNativeCloth(const nlohmann::json &preset) {
   c.hairStrength=j.value("hair_strength",1.f);
   if(!std::isfinite(c.hairStrength)||c.hairStrength<0||c.hairStrength>3)
     throw std::runtime_error(u8"头发惯性强度必须在 0–3 之间");
+  auto gain=[&](const char *key){float value=j.value(key,1.f);
+    if(!std::isfinite(value)||value<0||value>2)throw std::runtime_error(u8"衣物与饰物惯性强度必须在 0–2 之间");return value;};
+  c.clothStrength=gain("cloth_strength");c.ribbonStrength=gain("ribbon_strength");
+  c.beltStrength=gain("belt_strength");c.accessoryStrength=gain("accessory_strength");
+  c.attachmentContacts=j.value("attachment_contacts",true);
   return c;
 }
 inline const std::array<const char *, int(MotionPart::Count)> &MotionPartKeys() {

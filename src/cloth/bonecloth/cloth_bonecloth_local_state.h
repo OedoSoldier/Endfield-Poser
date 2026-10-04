@@ -34,6 +34,7 @@ struct ClothResponsePose {
 };
 struct ClothResponsePeer {ClothRef bbc{};uint32_t data=0,roots=0;std::vector<ClothRef> rootRefs;};
 struct ClothResponseState {
+  const char *failure="source-recipe-unconfirmed";
   ClothRef consumer{};uint32_t process=0,data=0,data2=0,constraint=0,list=0;
   int team=0,frame=-1;unsigned updates=0;
   std::vector<ClothRef> colliders;
@@ -167,10 +168,10 @@ struct ClothBoneLocalState {
   std::vector<std::array<int,2>> colliderInputPopulated;
   bool panelReturnCaptured=false;
   int panelReturnCount=0;
-  std::array<int,16> panelReturnIndices{};
+  std::array<int,32> panelReturnIndices{};
   eiem_cloth::Owner panelReturnOwner{};unsigned panelReturnCommand=0;
-  std::array<std::array<int,2>,16> panelReturnIds{};
-  Vector3 panelReturnPosition[16]{},panelReturnScale[16]{};Quaternion panelReturnRotation[16]{};
+  std::array<std::array<int,2>,32> panelReturnIds{};
+  Vector3 panelReturnPosition[32]{},panelReturnScale[32]{};Quaternion panelReturnRotation[32]{};
   unsigned createStage=0;
   size_t createBone=0,createLayer=0,meshCursor=0;
   uint32_t registryScan=0;

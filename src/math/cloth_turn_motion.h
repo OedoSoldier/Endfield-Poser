@@ -5,17 +5,37 @@
 namespace cloth_turn {
 using mmd_secondary::Finite;
 using mmd_secondary::Limited;
-enum class Part { None, Cloth, Hair, Tail, Ear, Accessory };
+enum class Part { None, Cloth, Hair, Tail, Ear, Accessory, Ribbon, Belt };
 inline bool HeadPart(Part p){return p==Part::Hair||p==Part::Ear;}
+inline bool AttachmentPart(Part p){return p==Part::Ribbon||p==Part::Belt||p==Part::Accessory;}
+struct Response {float inertia=1,air=1,limit=12,smoothing=.05f;};
+inline Response Material(Part p) {
+  switch(p) {
+    case Part::Ribbon:return {.75f,.55f,8,.075f};
+    case Part::Belt:return {.5f,.15f,6,.09f};
+    case Part::Accessory:return {.4f,.08f,4,.10f};
+    case Part::Ear:return {.3f,.25f,6,.05f};
+    default:return {};
+  }
+}
 inline Part Classify(std::string name) {
   for(char &c:name)if(c>='A'&&c<='Z')c+=char('a'-'A');
   for(const char *key:{"breast","bust","weapon","sword","ultmachine"})
     if(name.find(key)!=name.npos)return Part::None;
+  if(name=="mc_wolfhead")return Part::Accessory;
+  // An earring is a pendant; a coat/cape prefix does not turn its props into cloth.
+  for(const char *key:{"bag","lantern","pendant","props","acc_","wing","armband","earring",
+      "ornament","decorate","_chunk","_hoop","_card"})
+    if(name.find(key)!=name.npos)return Part::Accessory;
   // Ponytails are hair; test this before the animal-tail rule.
   if(name.find("hair")!=name.npos||name.find("bang")!=name.npos)return Part::Hair;
   if(name.find("tail")!=name.npos)return Part::Tail;
   if(name.find("ear")!=name.npos)return Part::Ear;
-  for(const char *key:{"coat","cloak","cape","skirt","dress","ribbon","robbin","sleeve","cloth","scarf","apron","tie","rope","strap"})
+  for(const char *key:{"belt","strap","rope","tie","chain","thread"})
+    if(name.find(key)!=name.npos)return Part::Belt;
+  for(const char *key:{"ribbon","robbin","_robin","piaodai","scarf","streamer"})
+    if(name.find(key)!=name.npos)return Part::Ribbon;
+  for(const char *key:{"coat","cloak","cape","skirt","dress","ribbon","robbin","sleeve","cloth","scarf","apron","tie","rope","strap","pants"})
     if(name.find(key)!=name.npos)return Part::Cloth;
   for(const char *key:{"bag","lantern","pendant","props","acc_","hat","wing","armband"})
     if(name.find(key)!=name.npos)return Part::Accessory;
@@ -64,15 +84,15 @@ struct Motion {
     // flow instead opposes ascent/descent: it must not turn both directions
     // into upward lift or add a force to a stationary pose.
     const float vertical=std::clamp(flow.y,-6.f,6.f);
-    const float response=part==Part::Ear?.25f:part==Part::Accessory?.35f:1.f;
+    const float response=Material(part).air;
     const float verticalDrag=std::clamp(-.20f*vertical*std::fabs(vertical)*extra,-6.f,6.f)*response;
     flow=Limited({flow.x,0,flow.z},6.f);
     const float radius=HeadPart(part)?.18f:part==Part::Tail?.35f:.30f;
     // A finite patch still sees moving air during a turn when its component
     // center lies on the rotation axis. No game mesh is needed for this proxy.
     const float pressure=(std::min)(12.f,Dot(flow,flow)+.5f*radius*radius*Dot(omega,omega));
-    const Vec3 drag=Limited(flow*(-.06f*Len(flow)*extra),2.f);
-    const float lift=(std::min)(6.f,2.f*pressure*extra)*(part==Part::Ear?.25f:part==Part::Accessory?.35f:1.f);
+    const Vec3 drag=Limited(flow*(-.06f*Len(flow)*extra),2.f)*response;
+    const float lift=(std::min)(6.f,2.f*pressure*extra)*response;
     return drag+Vec3{0,lift+verticalDrag,0};
   }
   Vec3 impulse(Vec3 center,float strength,float lightness=0,Part part=Part::Cloth,const Shape *shape=nullptr) const {
@@ -81,7 +101,7 @@ struct Motion {
     const Vec3 tangent=Cross(omega,radius);
     // Supplemental inertial lag and outward force. BBC retains its own
     // gravity, collision, constraints and depth-weighted particle response.
-    const float response=part==Part::Ear?.3f:part==Part::Accessory?.4f:1.f;
+    const auto material=Material(part);const float response=material.inertia;
     // Vertical body motion needs its own response: the former uniform 0.35
     // gain made takeoff/apex/landing weak even with lightness disabled. Keep
     // horizontal/turn tuning, native gravity and the final force bound intact.
@@ -91,7 +111,8 @@ struct Motion {
     // Hair has an independent gain covering both inertia and moving-air
     // response. Zero disables our extra force, leaving native physics alone.
     const float gain=std::clamp(strength,0.f,part==Part::Hair?3.f:2.f);
-    return Limited(a*(response*gain)+airResponse(pose.position+radius,lightness,part)*(part==Part::Hair?gain:1.f),12.f)*dt;
+    return Limited(a*(response*gain)+airResponse(pose.position+radius,lightness,part)*
+        ((part==Part::Hair||AttachmentPart(part))?gain:1.f),material.limit)*dt;
   }
 };
 struct Tracker {
@@ -103,7 +124,7 @@ struct Tracker {
     previous=p;clock=now;cursor=time;epoch=revision;ready=true;playing=running;
     velocityReady=false;velocity=omega={};value={};value.pose=p;
   }
-  Motion step(Pose p,double now,double time,uint64_t revision,bool running) {
+  Motion step(Pose p,double now,double time,uint64_t revision,bool running,float smoothing=.05f) {
     if(!Finite(p.position)||!Finite(p.rotation)||!std::isfinite(now)||!std::isfinite(time)) {
       *this={};return {};
     }
@@ -120,7 +141,8 @@ struct Tracker {
     if(dq.w<0)dq={-dq.x,-dq.y,-dq.z,-dq.w};
     Vec3 xyz{dq.x,dq.y,dq.z};const float length=Len(xyz);
     const Vec3 w=Limited(length>1e-7f?xyz*float(2*std::atan2(length,dq.w)/(length*dt)):Vec3{},12.f);
-    const float filter=1-std::exp(-float(dt)/.05f);
+    if(!std::isfinite(smoothing))smoothing=.05f;
+    const float filter=1-std::exp(-float(dt)/std::clamp(smoothing,.02f,.2f));
     const Vec3 a=velocityReady?Limited((v-velocity)*float(1/dt),50.f):Vec3{};
     const Vec3 aa=velocityReady?Limited((w-omega)*float(1/dt),80.f):Vec3{};
     value.acceleration=value.acceleration+(a-value.acceleration)*filter;

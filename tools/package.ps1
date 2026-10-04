@@ -53,7 +53,12 @@ try {
     foreach ($relative in @('安全安装.bat', 'tools\deploy.ps1', 'tools\character_face_resources.ps1',
             'README.md', 'LICENSE', 'docs\tutorial.md', 'docs\mmd-player.md', 'docs\user-agreement.md', 'docs\xxmi-bridge.md',
             'resources\character-faces\README.md', 'tools\blender\endfield_poser_bridge\README.md',
-            'tools\blender\endfield_poser_bridge\__init__.py')) {
+            'tools\blender\install.ps1', 'tools\blender\install_addon.py',
+            'tools\blender\endfield_poser_bridge\__init__.py',
+            'tools\blender\endfield_poser_bridge\rig.py',
+            'tools\blender\endfield_poser_bridge\animation.py',
+            'tools\blender\endfield_poser_bridge\console.py',
+            'tools\blender\endfield_poser_bridge\transport.py')) {
         $files[$relative] = Join-Path $root $relative
     }
     foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'licenses') -Filter '*.txt' -File) {
@@ -89,6 +94,18 @@ try {
         [IO.File]::Copy($files[$relative], $destination, $false)
         if ((Get-PoserResourceHash $destination) -ne $hashes[$relative]) { throw "Copy verification failed: $relative" }
     }
+    # Keep one release download, with a ready-to-install Blender add-on inside.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $addonArchive = [IO.Compression.ZipFile]::Open((Join-Path $package 'Blender联动插件.zip'), [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($relative in $files.Keys | Sort-Object) {
+            if (-not $relative.StartsWith('tools\blender\endfield_poser_bridge\')) { continue }
+            $entry = $relative.Substring('tools\blender\'.Length).Replace('\', '/')
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($addonArchive,
+                (Join-Path $package $relative), $entry, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    } finally { $addonArchive.Dispose() }
     $utf8 = [Text.UTF8Encoding]::new($false)
     $instructions = @"
 Endfield Poser $version (Windows x64)
@@ -98,6 +115,10 @@ Endfield Poser $version (Windows x64)
 3. 角色表情校准随包自动安装；自定义校准、设置和姿态保留。同名文件被修改时会提示并保留。
 4. 启动游戏，阅读并确认使用协议。按 L 打开面板，按 P 冻结角色。
 5. 卸载时退出游戏，运行同一向导并选择卸载；校准、设置、姿态和备份保留。
+
+可选 Blender 编辑：在 Blender 5.2 或以上版本的插件管理中，从磁盘安装包内的 Blender联动插件.zip，
+启用 Endfield Poser Bridge。3D 视图按 N，在 Endfield 页签连接游戏角色。更新插件后请保存工程并重开 Blender。
+详细步骤见 tools/blender/endfield_poser_bridge/README.md。只播放 MMD 无需安装 Blender。
 
 更新时使用新版安装包里的向导，无需先卸载。向导不会自动下载更新，会显示当前版本和安装包版本。
 

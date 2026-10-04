@@ -26,14 +26,18 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateRibbon(Package &packag
     world.push_back(s.World(b));positions.push_back(Transform(world.back(),{0,0,0}));}
   out->roots={center[0]};out->originalRoots=out->roots;
   out->faces.emplace_back();out->lines.emplace_back();out->graphs.emplace_back();for(int row=1;row<5;++row)out->lines[0].push_back({center[row-1],center[row]});
-  std::vector<MeshView> meshes;
-  for(const auto &entry:s.file.objects)if(s.file.Class(entry.first)==137){const auto palette=Refs(s.file.Get(entry.first).At("m_Bones"));bool uses=false;for(int row=1;row<5;++row)uses|=std::find(palette.begin(),palette.end(),ids[center[row]])!=palette.end();if(!uses)continue;
+  std::vector<MeshView> meshes;int ribbonReference=-1;
+  std::set<int64_t> skinBones;for(int row=1;row<5;++row)skinBones.insert(ids[center[row]]);
+  for(size_t n=0;n<ids.size();++n)if(RibbonBeltBone(out->bones[n]))skinBones.insert(ids[n]);
+  Need(skinBones.size()==8,"ribbon-belt-source-chain");
+  for(const auto &entry:s.file.objects)if(s.file.Class(entry.first)==137){const auto palette=Refs(s.file.Get(entry.first).At("m_Bones"));bool uses=false;for(auto b:palette)uses|=skinBones.count(b)!=0;if(!uses)continue;
     auto m=ReadMesh(package,s,entry.first);size_t matched=0;for(const auto &live:query.renderers)matched+=RendererMatch(s,m,live);
     Need(matched==1&&!query.reservedRenderers.count({m.name,m.parent})&&!query.reservedRenderers.count({m.name,""}),"ribbon-live-renderer-binding-unconfirmed");
-    bool positive=false;for(size_t n=0;n<m.world.size();++n)for(size_t k=0;k<m.weights[n].size();++k)if(m.weights[n][k]>0)for(int row=1;row<5;++row)positive|=m.bones[int(m.indices[n][k])]==ids[center[row]];if(!positive)continue;
+    bool positive=false,surface=false;for(size_t n=0;n<m.world.size();++n)for(size_t k=0;k<m.weights[n].size();++k)if(m.weights[n][k]>0){const auto b=m.bones[int(m.indices[n][k])];positive|=skinBones.count(b)!=0;for(int row=1;row<5;++row)surface|=b==ids[center[row]];}if(!positive)continue;
+    if(surface&&(ribbonReference<0||m.vertices>meshes[ribbonReference].vertices))ribbonReference=int(meshes.size());
     std::vector<ClothBoneBinding> binding;for(size_t k=0;k<m.bones.size();++k){const auto b=m.bones[k];ClothBoneBinding v{text(s.Name(b)),text(s.Name(s.Parent(b))),index.count(b)?index[b]:-1,{}};for(int j=0;j<16;++j)v.bind[j]=float(m.binds[k][j]);binding.push_back(v);}out->bindings.push_back(std::move(binding));
     out->renderers.push_back({text(m.name),text(m.mesh),text(m.root),m.vertices,m.submeshes,nullptr,0,text(m.parent)});meshes.push_back(std::move(m));}
-  Need(!meshes.empty()&&meshes.size()<=8,"ribbon-renderer-coverage");
+  Need(ribbonReference>=0&&meshes.size()<=16,("ribbon-renderer-coverage-"+std::to_string(meshes.size())).c_str());
   int64_t producer=0;for(const auto &o:s.file.objects)if(s.file.Class(o.first)==114&&s.Name(o.first)=="MC_Seraph_Skirt"){Need(!producer,"ribbon-producer-ambiguous");producer=o.first;}
   Need(producer!=0,"ribbon-producer-missing");auto producerBones=s.Branch(Refs(s.file.Get(producer).At("serializeData").At("rootBones")));
   for(auto c:Refs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(c);Need(std::find(producerBones.begin(),producerBones.end(),t)!=producerBones.end(),"ribbon-collider-source-not-main-skirt");out->colliders.push_back({text(s.Name(c)),text(s.Name(s.Parent(t)))});}
@@ -41,10 +45,10 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateRibbon(Package &packag
   std::string signature="runtime-native-ribbon-source-v1\n"+s.file.sha+"\n"+std::to_string(id);for(const auto &source:package.sources)signature+="\n"+source.first+"="+source.second;
   p.signature=text(Digest(Bytes(signature.begin(),signature.end())));out->Link();eiem_cloth_cache::Validate(*out);
   auto d=std::make_shared<DenseRecipe>();auto &r=d->view;r.runtimeGenerated=true;r.ribbonSurface=true;r.multipleLod=true;r.loop=false;r.originalCount=9;r.originalRoots=1;r.depth=5;
-  r.baseSignature=d->String(p.signature);r.prefabSha=d->String(p.prefabSha);signature="native-ribbon-width-five-columns-v1\n"+signature;r.signature=d->String(Digest(Bytes(signature.begin(),signature.end())));
+  r.baseSignature=d->String(p.signature);r.prefabSha=d->String(p.prefabSha);signature="native-ribbon-width-five-columns-belt-follow-v2\n"+signature;r.signature=d->String(Digest(Bytes(signature.begin(),signature.end())));
   d->radiusCurve=CurveSamples(sd.At("radius"),true);d->distanceCurve=CurveSamples(sd.At("distanceConstraint").At("stiffness"),false);
   auto bones=out->bones;for(auto &b:bones)if(b.attribute)b.column=2;for(const auto &b:bones)d->columns.push_back(b.column);
-  const auto best=std::max_element(meshes.begin(),meshes.end(),[](const MeshView &a,const MeshView &b){return a.vertices<b.vertices;});
+  const auto best=meshes.begin()+ribbonReference;
   const auto inverse=Inverse(world[center[0]]);std::vector<Point> local;std::vector<bool> pure(best->world.size(),true);
   for(size_t n=0;n<best->world.size();++n){double sum=0;for(size_t k=0;k<best->weights[n].size();++k){const auto w=best->weights[n][k];sum+=w;if(w>0){const auto b=best->bones[int(best->indices[n][k])];pure[n]=pure[n]&&index.count(b)&&attrs.at(b)>0;}}auto v=best->world[n];for(auto &x:v)x/=sum;local.push_back(Transform(inverse,v));}
   std::vector<std::array<int,3>> surface;double lo=1e30,hi=-1e30;for(auto f:best->triangles)if(pure[f[0]]&&pure[f[1]]&&pure[f[2]]){surface.push_back(f);for(int v:f){lo=(std::min)(lo,local[v][0]);hi=(std::max)(hi,local[v][0]);}}
