@@ -63,6 +63,8 @@ if(WIN32)
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/tool_close_state.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
     src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h src/math/eye_gaze_profile.h
+    src/game/first_person.h src/math/first_person.h
+    src/game/blush.h src/math/blush.h
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
     src/game/mmd_runtime_api.h src/game/mmd_avatar.h src/math/mmd_avatar.h
     src/math/mmd_thumb.h resources/character-thumbs/builtin.h
@@ -75,7 +77,7 @@ if(WIN32)
     src/cloth/collision/cloth_display_install.h src/cloth/collision/cloth_contact_finish_state.h
     src/cloth/collision/cloth_contact_finish_install.h src/cloth/diagnostics/cloth_ribbon_motion_trace.h
     src/cloth/assets/cloth_asset_coat_calves.h
-    src/cloth/assets/cloth_asset_coat_torso.h
+    src/cloth/assets/cloth_asset_coat_graph.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
     src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
     src/math/face_mixing.h src/math/face_eyelid.h
@@ -236,6 +238,14 @@ if(MSVC)
   target_compile_options(test_mmd_secondary_runtime PRIVATE /EHa)
   add_poser_test(test_mmd_runtime tests/test_mmd_runtime.cpp)
   add_poser_test(test_mmd_environment_runtime tests/test_mmd_environment_runtime.cpp)
+  add_poser_test(test_frame_limit tests/test_frame_limit.cpp)
+  target_include_directories(test_frame_limit PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_frame_limit PRIVATE /EHa)
+  target_link_libraries(test_frame_limit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  add_poser_test(test_blush_runtime tests/test_blush_runtime.cpp)
+  target_include_directories(test_blush_runtime PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_blush_runtime PRIVATE /EHa)
+  target_link_libraries(test_blush_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_include_directories(test_mmd_environment_runtime PRIVATE deps/minhook_lib/include)
   target_compile_options(test_mmd_environment_runtime PRIVATE /EHa)
   target_link_libraries(test_mmd_environment_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)

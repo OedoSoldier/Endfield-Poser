@@ -80,8 +80,31 @@ static bool DrawMmdAmplitude(mmd::MotionAmplitude &a, int scope) {
 
 static void DrawMmdSecondaryControls() {
   poser_secondary::LoadSettings();
+  if(ImGui::Checkbox(u8"第二骨骼物理增强",&poser_secondary::enabled))poser_secondary::SaveSettings();
+  if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"仅用于单人和多人 MMD 动作播放。暂停保持，拖动清除惯性，停止恢复。");
+  if(poser_secondary::enabled) {
+    ImGui::SliderFloat(u8"第二骨骼摆动强度",&poser_secondary::strength,0,3,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+    if(ImGui::TreeNode(u8"第二骨骼方向与回弹")) {
+      auto &c=poser_secondary::settings;
+      ImGui::SliderFloat(u8"上下响应",&c.vertical,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"左右响应",&c.lateral,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"前后响应",&c.depth,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"回弹频率",&c.frequency,1,6,"%.2f Hz",ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat(u8"回弹阻尼",&c.damping,.25f,1.5f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+      float angle=c.angleLimit*57.29578f;
+      if(ImGui::SliderFloat(u8"摆动角度上限",&angle,0,34,"%.1f°",ImGuiSliderFlags_AlwaysClamp))c.angleLimit=angle/57.29578f;
+      ImGui::TextWrapped(u8"功能已内置，仅在 MMD 动作中响应身体运动。单人、多人分别计算；暂停保持，拖动清除惯性。");
+      ImGui::TreePop();
+    }
+  }
+  if(poser_secondary::enabled) {
+  if(ImGui::SmallButton(u8"保存第二骨骼物理设置"))poser_secondary::SaveSettings();
+  ImGui::SameLine();if(ImGui::SmallButton(u8"复位参数##secondary")){poser_secondary::settings={};poser_secondary::strength=1;}
+  if(!poser_secondary::settingsStatus.empty())ImGui::TextWrapped(u8"%s",poser_secondary::settingsStatus.c_str());
+  }
+  ImGui::Separator();
   ImGui::Checkbox(u8"衣物惯性物理增强",&s_clothTurnEnabled);
-  if(s_clothTurnEnabled) {
+  if(s_clothTurnEnabled && ImGui::TreeNode(u8"衣物、头发与饰物参数")) {
     ImGui::SliderFloat(u8"衣物惯性强度",&s_clothTurnStrength,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"控制大块衣物、尾巴与耳部的惯性响应。按实际挂点的身体运动驱动；头发、飘带、腰带和挂件可分别调节。暂停后自然收敛，冻结衣物时不生效。单人和多人共用。");
     ImGui::SameLine();if(ImGui::SmallButton(u8"复位##clothTurnStrength"))s_clothTurnStrength=1;
@@ -102,49 +125,22 @@ static void DrawMmdSecondaryControls() {
       s_clothLightness=lightness*.01f;
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"0%% 不增加空气响应。提高后，转身、横移和跳跃更容易带动衣物、头发和尾巴；上升时滞后，下落时向上飘。耳部和挂件响应较小。停下后自然回落，原有重力不变。可随适配预设保存。");
     ImGui::SameLine();if(ImGui::SmallButton(u8"复位##clothLightness"))s_clothLightness=0;
+    ImGui::TreePop();
   }
   ImGui::Checkbox(u8"饰物层间碰撞",&s_clothAttachmentContacts);
   if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"仅补充能确认内外关系的饰物与衣物碰撞，保留已有碰撞。停止后恢复；不支持的部件保留原有物理。可随适配预设保存。");
   if(s_clothAttachmentContacts)ImGui::TextDisabled(u8"层间碰撞：已补充 %u 组，%u 个部件保留原处理",s_clothAttachments.pairs,s_clothAttachments.skipped);
-  ImGui::Checkbox(u8"第二骨骼物理增强",&poser_secondary::enabled);
-  if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"仅用于单人和多人 MMD 动作播放。暂停保持，拖动清除惯性，停止恢复。");
-  if(poser_secondary::enabled) {
-    ImGui::SliderFloat(u8"第二骨骼摆动强度",&poser_secondary::strength,0,3,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-    if(ImGui::TreeNode(u8"第二骨骼方向与回弹")) {
-      auto &c=poser_secondary::settings;
-      ImGui::SliderFloat(u8"上下响应",&c.vertical,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-      ImGui::SliderFloat(u8"左右响应",&c.lateral,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-      ImGui::SliderFloat(u8"前后响应",&c.depth,0,2,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-      ImGui::SliderFloat(u8"回弹频率",&c.frequency,1,6,"%.2f Hz",ImGuiSliderFlags_AlwaysClamp);
-      ImGui::SliderFloat(u8"回弹阻尼",&c.damping,.25f,1.5f,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-      float angle=c.angleLimit*57.29578f;
-      if(ImGui::SliderFloat(u8"摆动角度上限",&angle,0,34,"%.1f°",ImGuiSliderFlags_AlwaysClamp))c.angleLimit=angle/57.29578f;
-      ImGui::TextWrapped(u8"功能已内置，仅在 MMD 动作中响应身体运动。单人、多人分别计算；暂停保持，拖动清除惯性。");
-      ImGui::TreePop();
-    }
-  }
-  if(ImGui::SmallButton(u8"保存第二骨骼物理设置"))poser_secondary::SaveSettings();
-  ImGui::SameLine();if(ImGui::SmallButton(u8"复位参数##secondary")){poser_secondary::settings={};poser_secondary::strength=1;}
-  if(!poser_secondary::settingsStatus.empty())ImGui::TextWrapped(u8"%s",poser_secondary::settingsStatus.c_str());
+
 }
 static void DrawMmdCloth() {
-  if (!ImGui::CollapsingHeader(u8"衣物物理"))
-    return;
   auto &m = g_mmd;
-  DrawMmdSecondaryControls();
-  if(poser_secondary::enabled)ImGui::TextWrapped(u8"第二骨骼：%s",m.session.secondary.status.c_str());
-  if(s_clothTurnEnabled) {
-    ImGui::TextWrapped(u8"衣物惯性：%s",s_clothTurn.status);
-    ImGui::TextDisabled(u8"衣物 %u / 头发 %u / 尾巴 %u / 耳部 %u / 挂件 %u",s_clothTurn.clothing,s_clothTurn.hair,s_clothTurn.tail,s_clothTurn.ears,s_clothTurn.accessories);
-    ImGui::TextDisabled(u8"其中碰撞增强部件：%u",s_clothTurn.enhancedCount);
-    ImGui::TextWrapped(u8"%s",s_clothTurn.nativeStatus);
-  }
   if (ImGui::Checkbox(u8"冻结头发 / 衣物", &m.freezeCloth) && m.session.active && m.session.bodyOwned) {
     g_freezeAccessories = m.freezeCloth;
     if (m.freezeCloth)
       CaptureAccessorySnapshot();
     SetAllPhysicsEnabled(!m.freezeCloth, true);
   }
+  DrawMmdSecondaryControls();
   s_collisionInspect.store(true);
   const auto ui = CollisionGetUi();
   if(g_mmd.timeline.clockHeld) {
@@ -192,6 +188,16 @@ static void DrawMmdCloth() {
         s_skirtDirty.store(true);
       }
     }
+    ImGui::TreePop();
+  }
+  if(ImGui::TreeNode(u8"物理状态详情")) {
+  if(poser_secondary::enabled)ImGui::TextWrapped(u8"第二骨骼：%s",m.session.secondary.status.c_str());
+  if(s_clothTurnEnabled) {
+    ImGui::TextWrapped(u8"衣物惯性：%s",s_clothTurn.status);
+    ImGui::TextDisabled(u8"衣物 %u / 头发 %u / 尾巴 %u / 耳部 %u / 挂件 %u",s_clothTurn.clothing,s_clothTurn.hair,s_clothTurn.tail,s_clothTurn.ears,s_clothTurn.accessories);
+    ImGui::TextDisabled(u8"其中碰撞增强部件：%u",s_clothTurn.enhancedCount);
+    ImGui::TextWrapped(u8"%s",s_clothTurn.nativeStatus);
+  }
     ImGui::TreePop();
   }
   ImGui::TextWrapped(u8"服装变形异常时关闭增强；不能保证消除全部穿模。");
@@ -274,6 +280,37 @@ static bool DrawMmdCameraSettings(double seconds, float targetHeight) {
     MmdUpdateDuration();
   return changed;
 }
+static void DrawFirstPersonControls(bool playback,bool squad=false) {
+  if(!ImGui::CollapsingHeader(playback?u8"MMD 第一人称":u8"第一人称视角"))return;
+  auto &s=first_person::settings;
+  bool changed=false;
+  ImGui::BeginDisabled(!mmd_camera::ready);
+  changed|=ImGui::Checkbox(playback?u8"播放时使用第一人称":u8"日常第一人称",playback?&s.mmdEnabled:&s.enabled);
+  ImGui::EndDisabled();
+  if(playback) {
+    if(squad) {
+      int member=s.member+1;
+      if(ImGui::Combo(u8"观看队员",&member,u8"当前操控角色\0第 1 位\0第 2 位\0第 3 位\0第 4 位\0")) {
+        s.member=member-1;changed=true;
+      }
+    }
+    int direction=s.followHead?0:1;
+    if(ImGui::Combo(u8"观看方向",&direction,u8"跟随动作头部\0游戏鼠标环视\0")){s.followHead=direction==0;changed=true;}
+  }
+  changed|=ImGui::Checkbox(u8"隐藏自身头部",&s.hideHead);
+  changed|=ImGui::SliderFloat3(u8"眼睛偏移（右／上／前）",&s.offset.x,-.6f,.6f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+  changed|=ImGui::SliderFloat(u8"俯仰修正",&s.pitch,-45,45,"%.1f deg",ImGuiSliderFlags_AlwaysClamp);
+  changed|=ImGui::SliderFloat(u8"视野角度",&s.fov,25,110,"%.1f deg",ImGuiSliderFlags_AlwaysClamp);
+  if(ImGui::Button(u8"复位第一人称参数")) {
+    auto defaults=first_person::Settings{};s.offset=defaults.offset;s.pitch=defaults.pitch;s.fov=defaults.fov;
+    s.hideHead=defaults.hideHead;s.followHead=defaults.followHead;changed=true;
+  }
+  if(changed)first_person::Publish();
+  ImGui::TextWrapped(playback?u8"优先于固定跟踪和动作镜头；暂停、拖动或隐藏面板后仍生效。停止后结束 MMD 第一人称，日常视角开关保持原设置。":
+    u8"保留游戏鼠标环视；第一人称中不显示骨骼操作叠加层。MMD 播放视角在播放器的“镜头与音乐”中独立开启。");
+  if(squad)ImGui::TextWrapped(u8"选择的队员必须参与播放；可在播放或暂停时切换观看队员。");
+  ImGui::TextWrapped("%s",first_person::status.load());
+}
 static void DrawFixedCameraControls() {
   if(!ImGui::CollapsingHeader(u8"固定跟踪镜头"))return;
   auto &s=mmd_camera::fixedSettings;static mmd::FixedCameraStore store;
@@ -295,12 +332,11 @@ static void DrawFixedCameraControls() {
   ImGui::SameLine();if(ImGui::Button(u8"保存跟踪参数"))store.save(path,s);
   if(changed&&mmd_camera::fixedEnabled)mmd_camera::SetFixed(true,mmd_camera::fixedRequest.actor);
   ImGui::TextWrapped(u8"保持开启时的拍摄方向，跟随角色位移；勾选“不跟踪跳跃”可锁定高度。无需镜头文件；暂停、停止动作或关闭面板后继续跟踪。关闭跟踪或切人后恢复原相机。");
-  ImGui::TextWrapped(u8"开启时优先于 VMD 镜头。焦点跟随取景点；非物理相机按 35mm 画幅换算焦距。");
+  ImGui::TextWrapped(u8"开启时优先于 VMD 镜头；第一人称开启时暂时让位。焦点跟随取景点；非物理相机按 35mm 画幅换算焦距。");
   ImGui::TextWrapped("%s",mmd_camera::fixedStatus.load());
   if(!store.status.empty())ImGui::TextWrapped("%s",store.status.c_str());
 }
 static void DrawMmdCamera() {
-  DrawFixedCameraControls();
   if (!ImGui::CollapsingHeader(u8"MMD 镜头"))
     return;
   auto &m = g_mmd;
@@ -348,6 +384,114 @@ static void DrawMmdCamera() {
   else if (mmd_camera::request.active && MmdNow() - mmd_camera::lastCallback > 2)
     ImGui::TextWrapped(u8"等待游戏相机更新；尚未确认镜头实际生效。");
 }
+static void DrawMmdBlushStyle() {
+  const std::string current=s_characterProfile?s_characterProfile->key:SMCGazeContext().modelKey;
+  static std::string selected;
+  if(!ImGui::TreeNode(u8"脸红样式"))return;
+  const auto key=selected.empty()?current:selected;
+  auto label=poser_blush::labels.find(key);
+  const char *title=selected.empty()?u8"当前角色":label!=poser_blush::labels.end()?label->second.c_str():key.c_str();
+  if(ImGui::BeginCombo(u8"角色",title)) {
+    if(ImGui::Selectable(u8"当前角色",selected.empty()))selected.clear();
+    for(const auto &entry:poser_blush::labels)
+      if(ImGui::Selectable(entry.second.c_str(),selected==entry.first))selected=entry.first;
+    ImGui::EndCombo();
+  }
+  const auto model=selected.empty()?current:selected;
+  ImGui::BeginDisabled(model.empty());
+  auto profile=poser_blush::ProfileFor(model);
+  int style=profile.style==2?1:0;
+  if(ImGui::Combo(u8"脸红",&style,u8"样式 0（默认）\0样式 2\0")) {
+    profile.style=style==1?2:0;
+    poser_blush::profiles[model]=profile;poser_blush::Save();
+  }
+  ImGui::EndDisabled();
+  ImGui::TextDisabled(u8"跟随动作中的脸红权重；按角色保存，单人与多人共用。");
+  if(!poser_blush::profileError.empty())ImGui::TextWrapped("%s",poser_blush::profileError.c_str());
+  ImGui::TreePop();
+}
+static void DrawMmdFaceSettings() {
+  auto &m=g_mmd;
+  if (ImGui::CollapsingHeader(u8"表情映射与强度", ImGuiTreeNodeFlags_DefaultOpen)) {
+    auto &settings = m.faceSettings;
+    if (m.characterFace) {
+      ImGui::Text(u8"当前角色校准：%s", m.characterFace->label.c_str());
+      if (s_characterBinding.ready)
+        ImGui::Text(u8"可用表情 %d / %d", s_characterBinding.usableCount,
+                    int(m.characterFace->morphs.size()));
+      else
+        ImGui::TextWrapped("%s", s_characterBinding.status.empty() ? u8"等待当前角色中性脸"
+                                                                   : s_characterBinding.status.c_str());
+    } else
+      ImGui::TextWrapped(u8"当前角色没有 MMD 表情校准。");
+    if (m.faceLibraryLoading)
+      ImGui::TextDisabled(u8"正在读取角色校准…");
+    if (!m.faceLibraryError.empty())
+      ImGui::TextWrapped(u8"校准读取失败，已保留原数据：%s", m.faceLibraryError.c_str());
+    float percent = settings.strength * 100;
+    if (ImGui::SliderFloat(u8"整体表情强度", &percent, 0, 200, "%.0f%%"))
+      settings.strength = percent * .01f;
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      MmdSaveFaceSettings();
+    ImGui::SameLine();
+    if (ImGui::SmallButton(u8"复位全部强度")) {
+      settings.strength = 1;
+      settings.gain.fill(1);
+      MmdSaveFaceSettings();
+    }
+    if (ImGui::BeginTable("##faceregions", 3, ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn(u8"部位", 0, .65f);
+      ImGui::TableSetupColumn(u8"映射方式", 0, 1.7f);
+      ImGui::TableSetupColumn(u8"独立强度", 0, 1.f);
+      ImGui::TableHeadersRow();
+      for (int r = 0; r < face_mixing::RegionCount; ++r) {
+        ImGui::PushID(r);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(face_mixing::Label(r));
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1);
+        int mode = int(settings.driver[r]);
+        if (ImGui::Combo("##source", &mode, u8"角色专属映射\0固定表情映射\0关闭\0")) {
+          settings.driver[r] = static_cast<face_mixing::Driver>(mode);
+          MmdSaveFaceSettings();
+          MmdReport();
+        }
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1);
+        float regionPercent = settings.gain[r] * 100;
+        if (ImGui::SliderFloat("##strength", &regionPercent, 0, 200, "%.0f%%"))
+          settings.gain[r] = regionPercent * .01f;
+        if (ImGui::IsItemDeactivatedAfterEdit())
+          MmdSaveFaceSettings();
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+    if (ImGui::SmallButton(u8"全部使用角色专属映射")) {
+      settings.driver.fill(face_mixing::Driver::Character);
+      MmdSaveFaceSettings();
+      MmdReport();
+    }
+    if(ImGui::TreeNode(u8"自动映射与校准")) {
+    ImGui::BeginDisabled(MmdOwnsPose() || m.faceLibraryLoading);
+    if (ImGui::SmallButton(u8"重新读取校准"))
+      MmdReloadCharacterFaces();
+    ImGui::EndDisabled();
+    if (ImGui::Checkbox(u8"专属校准缺失时使用固定映射", &settings.fallback)) {
+      MmdSaveFaceSettings();
+      MmdReport();
+    }
+
+      ImGui::TreePop();
+    }
+    ImGui::TextWrapped(
+        u8"整体和部位强度可以在播放或暂停时调整；可在表情面板的“眼睛朝向”覆盖动作眼神。");
+  }
+  DrawMmdBlushStyle();
+  DrawMmdFaceBindings();
+}
+
 static void DrawBlenderControls();
 static void DrawMmdPanel() {
   auto &m = g_mmd;
@@ -360,8 +504,8 @@ static void DrawMmdPanel() {
     ImGui::End();
     return;
   }
-  DrawBlenderControls();
   if(g_blenderEditing) {
+    DrawBlenderControls();
     ImGui::TextWrapped(u8"Blender 编辑动作正在控制角色。请在 Blender 时间轴或上方的 Blender 联动中操作。");
     if(ImGui::Button(u8"停止并恢复"))MmdStop();
     ImGui::End();return;
@@ -373,8 +517,6 @@ static void DrawMmdPanel() {
     return;
   }
   try {
-    DrawMmdHotkeyHints();
-    ImGui::Separator();
     ImGui::BeginDisabled(m.loading || m.session.active);
     if (ImGui::Button(u8"打开 VMD"))
       MmdBeginLoad(0);
@@ -449,6 +591,10 @@ static void DrawMmdPanel() {
     if (ImGui::BeginTabBar("##mmd-options")) {
       if (ImGui::BeginTabItem(u8"动作")) {
         ImGui::BeginDisabled(m.loading || m.preview);
+        if (ImGui::Button(u8"动作校准…")) {
+          if (g_mmdSquadBridge.selectSingle) g_mmdSquadBridge.selectSingle();
+          MmdOpenMotionCalibration();
+        }
         ImGui::BeginDisabled(bool(m.editedBody));
         int ikMode = int(m.ikMode);
         if (ImGui::Combo(u8"动作 IK", &ikMode, u8"跟随动作\0强制开启\0强制关闭\0")) {
@@ -459,10 +605,6 @@ static void DrawMmdPanel() {
           ImGui::SetTooltip(
               u8"手动覆盖脚部、脚尖及 PMX 的 "
               u8"IK；暂停时也会立即更新姿态。\n关闭后按骨骼旋转播放；开启后使用所选骨架的 IK 目标。");
-        if (ImGui::Checkbox(u8"按角色腿长自动适配位移", &m.autoScale) && m.autoScale && m.session.active)
-          m.scale = m.mapper.suggestedScale;
-        if (!m.autoScale)
-          ImGui::SliderFloat(u8"位移比例", &m.scale, .001f, .3f, "%.4f");
         ImGui::EndDisabled();
         if(m.editedBody)ImGui::TextDisabled(u8"已使用 Blender 的骨架姿态；在动作校准中调整位移、关节与四肢比例。");
         ImGui::SliderFloat(u8"高度修正", &m.height, -1, 1, "%.3f");
@@ -471,11 +613,15 @@ static void DrawMmdPanel() {
           ImGui::SliderFloat(u8"贴地强度", &m.terrain.strength, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
           ImGui::TextWrapped("%s", m.session.terrain.status);
         }
-        if (ImGui::Button(u8"动作校准…")) {
-          if (g_mmdSquadBridge.selectSingle) g_mmdSquadBridge.selectSingle();
-          MmdOpenMotionCalibration();
+        if(ImGui::TreeNode(u8"自动位移适配")) {
+          ImGui::BeginDisabled(bool(m.editedBody));
+        if (ImGui::Checkbox(u8"按角色腿长自动适配位移", &m.autoScale) && m.autoScale && m.session.active)
+          m.scale = m.mapper.suggestedScale;
+        if (!m.autoScale)
+          ImGui::SliderFloat(u8"位移比例", &m.scale, .001f, .3f, "%.4f");
+          ImGui::EndDisabled();
+          ImGui::TreePop();
         }
-        DrawMmdCloth();
         ImGui::EndDisabled();
         ImGui::EndTabItem();
       }
@@ -516,86 +662,26 @@ static void DrawMmdPanel() {
           if (!m.musicError.empty())
             ImGui::TextWrapped("%s", m.musicError.c_str());
         }
+        DrawFixedCameraControls();
+        DrawFirstPersonControls(true);
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem(u8"表情")) {
-        if (ImGui::CollapsingHeader(u8"角色表情与强度", ImGuiTreeNodeFlags_DefaultOpen)) {
-          auto &settings = m.faceSettings;
-          if (m.characterFace) {
-            ImGui::Text(u8"当前角色校准：%s", m.characterFace->label.c_str());
-            if (s_characterBinding.ready)
-              ImGui::Text(u8"可用表情 %d / %d", s_characterBinding.usableCount,
-                          int(m.characterFace->morphs.size()));
-            else
-              ImGui::TextWrapped("%s", s_characterBinding.status.empty() ? u8"等待当前角色中性脸"
-                                                                         : s_characterBinding.status.c_str());
-          } else
-            ImGui::TextWrapped(u8"当前角色没有 MMD 表情校准。");
-          if (m.faceLibraryLoading)
-            ImGui::TextDisabled(u8"正在读取角色校准…");
-          if (!m.faceLibraryError.empty())
-            ImGui::TextWrapped(u8"校准读取失败，已保留原数据：%s", m.faceLibraryError.c_str());
-          ImGui::BeginDisabled(MmdOwnsPose() || m.faceLibraryLoading);
-          if (ImGui::SmallButton(u8"重新读取校准"))
-            MmdReloadCharacterFaces();
-          ImGui::EndDisabled();
-          if (ImGui::Checkbox(u8"专属校准缺失时使用固定映射", &settings.fallback)) {
-            MmdSaveFaceSettings();
-            MmdReport();
-          }
-
-          float percent = settings.strength * 100;
-          if (ImGui::SliderFloat(u8"整体表情强度", &percent, 0, 200, "%.0f%%"))
-            settings.strength = percent * .01f;
-          if (ImGui::IsItemDeactivatedAfterEdit())
-            MmdSaveFaceSettings();
-          ImGui::SameLine();
-          if (ImGui::SmallButton(u8"复位全部强度")) {
-            settings.strength = 1;
-            settings.gain.fill(1);
-            MmdSaveFaceSettings();
-          }
-          if (ImGui::BeginTable("##faceregions", 3, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn(u8"部位", 0, .65f);
-            ImGui::TableSetupColumn(u8"映射方式", 0, 1.7f);
-            ImGui::TableSetupColumn(u8"独立强度", 0, 1.f);
-            ImGui::TableHeadersRow();
-            for (int r = 0; r < face_mixing::RegionCount; ++r) {
-              ImGui::PushID(r);
-              ImGui::TableNextRow();
-              ImGui::TableNextColumn();
-              ImGui::TextUnformatted(face_mixing::Label(r));
-              ImGui::TableNextColumn();
-              ImGui::SetNextItemWidth(-1);
-              int mode = int(settings.driver[r]);
-              if (ImGui::Combo("##source", &mode, u8"角色专属映射\0固定表情映射\0关闭\0")) {
-                settings.driver[r] = static_cast<face_mixing::Driver>(mode);
-                MmdSaveFaceSettings();
-                MmdReport();
-              }
-              ImGui::TableNextColumn();
-              ImGui::SetNextItemWidth(-1);
-              float regionPercent = settings.gain[r] * 100;
-              if (ImGui::SliderFloat("##strength", &regionPercent, 0, 200, "%.0f%%"))
-                settings.gain[r] = regionPercent * .01f;
-              if (ImGui::IsItemDeactivatedAfterEdit())
-                MmdSaveFaceSettings();
-              ImGui::PopID();
-            }
-            ImGui::EndTable();
-          }
-          if (ImGui::SmallButton(u8"全部使用角色专属映射")) {
-            settings.driver.fill(face_mixing::Driver::Character);
-            MmdSaveFaceSettings();
-            MmdReport();
-          }
-          ImGui::TextWrapped(
-              u8"整体和部位强度可以在播放或暂停时调整；可在表情面板的“眼睛朝向”覆盖动作眼神。");
-        }
-        DrawMmdFaceBindings();
+        DrawMmdFaceSettings();
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem(u8"物理")) {
+        ImGui::BeginDisabled(m.loading || m.preview);
+        DrawMmdCloth();
+        ImGui::EndDisabled();
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem(u8"Blender")) {
+        DrawBlenderControls();
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem(u8"高级")) {
+        if(ImGui::CollapsingHeader(u8"播放快捷键"))DrawMmdHotkeyHints();
         ImGui::TextDisabled(u8"播放时自动适配；动作异常时再调整以下设置。");
         if (ImGui::CollapsingHeader(u8"源骨架与参考姿态")) {
           ImGui::BeginDisabled(m.loading || m.session.active);

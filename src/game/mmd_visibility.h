@@ -12,16 +12,17 @@ struct Api {
 } static api;
 inline bool Ready() {
   if(api.query&&api.rendererType&&api.instance&&api.get&&api.set&&api.childOf)return true;
-  if(!il2cpp_class_get_type||!il2cpp_type_get_object||!g_gameObjectClass||!g_transformClass)return false;
+  if(!il2cpp_class_get_type||!il2cpp_type_get_object||!g_gameObjectClass)return false;
   auto renderer=mmd_api::Class("UnityEngine","Renderer"),object=mmd_api::Class("UnityEngine","Object");
-  if(!renderer||!object)return false;
+  auto transform=mmd_api::Class("UnityEngine","Transform");
+  if(!renderer||!object||!transform)return false;
   Api next;
   next.query=mmd_api::Method(g_gameObjectClass,"GetComponentsInChildren","UnityEngine.Component[]",{"System.Type","System.Boolean"});
   auto type=il2cpp_class_get_type(renderer);next.rendererType=type?il2cpp_type_get_object(type):nullptr;
   next.instance=mmd_api::Method(object,"GetInstanceID","System.Int32");
   next.get=mmd_api::Method(renderer,"get_forceRenderingOff","System.Boolean");
   next.set=mmd_api::Method(renderer,"set_forceRenderingOff","System.Void",{"System.Boolean"});
-  next.childOf=mmd_api::Method(g_transformClass,"IsChildOf","System.Boolean",{"UnityEngine.Transform"});
+  next.childOf=mmd_api::Method(transform,"IsChildOf","System.Boolean",{"UnityEngine.Transform"});
   if(!next.query||!next.rendererType||!next.instance||!next.get||!next.set||!next.childOf)return false;
   api=next;return true;
 }

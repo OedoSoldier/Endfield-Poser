@@ -89,8 +89,8 @@ struct ClothBoneLocalRecipe {
   bool sourceBodyOnly=false;
   bool sourceShortSkin=false;
   bool sourceShortSides=false;
-  bool sourceCoatCalves=false;
-  bool sourceCoatTorso=false;
+  bool sourceCoatLegs=false;
+  bool sourceForkCoat=false;
   int nativeLayer=0;
   const char *layerPeer=nullptr;
   const ClothBoneResponseFace *layerFaces=nullptr;int layerFaceCount=0;
@@ -114,49 +114,41 @@ struct ClothBoneLocalRecipe {
       !resampledPanel&&!ribbonSurface&&!separatedPanels&&!separatedWidth&&!partialSurface&&!rootSkinTransition&&
       tetherStretch==0&&bendingStiffness<0&&rootRotation<0;}
   const eiem_cloth_graph::OrderContract *nativeGraphOrder=nullptr;
-  bool RetainsSourceReference() const {return CoatWaistSkinOnly()||NativeBodyOnly()||ForkCoatBodyOnly();}
+  bool RetainsSourceReference() const {return CoatWaistSkinOnly()||NativeBodyOnly()||ForkCoatGraphOnly();}
   bool RetainsBindings() const {return CoatWaistSkinOnly();}
-  bool CoatCalfCoverage() const {
-    if(!sourceCoatCalves||!runtimeGenerated||nativeLayer||meshCount||!bodyCoverage||!bodyAsset||!bodyAsset->bones||
-        bodySphereCount!=(sourceCoatTorso?4:2)||!bodySpheres||!eiem_cloth_asset::SourceOriginalCoverageCoat(prefabSha,"MC_Endminm_Coat"))return false;
-    const char *names[]{"Bip001_L_Calf","Bip001_R_Calf"},*parents[]{"Bip001_L_Thigh","Bip001_R_Thigh"};
-    for(int n=0;n<2;++n){const auto &c=bodySpheres[n];if(c.bone<0||c.bone>=bodyAsset->boneCount)return false;
+  bool CoatLegCoverage() const {
+    if(!sourceCoatLegs||!runtimeGenerated||nativeLayer||meshCount||!bodyCoverage||!bodyAsset||!bodyAsset->bones||
+        bodySphereCount!=4||!bodySpheres||!eiem_cloth_asset::SourceOriginalCoverageCoat(prefabSha,"MC_Endminm_Coat"))return false;
+    const char *names[]{"Bip001_L_Calf","Bip001_R_Calf","Bip001_L_Thigh","Bip001_R_Thigh"};
+    const char *parents[]{"Bip001_L_Thigh","Bip001_R_Thigh","Bip001_Pelvis","Bip001_Pelvis"};
+    for(int n=0;n<4;++n){const auto &c=bodySpheres[n];if(c.bone<0||c.bone>=bodyAsset->boneCount)return false;
       const auto &b=bodyAsset->bones[c.bone];
       const auto &q=c.rotation;const double norm=double(q.x)*q.x+double(q.y)*q.y+double(q.z)*q.z+double(q.w)*q.w;
       if(!b.name||!b.parent||strcmp(b.name,names[n])||strcmp(b.parent,parents[n])||!c.Capsule()||
           !std::isfinite(c.center.x)||!std::isfinite(c.center.y)||!std::isfinite(c.center.z)||!std::isfinite(norm)||std::abs(norm-1)>.001||
           !std::isfinite(c.radius)||!std::isfinite(c.endRadius)||!std::isfinite(c.length)||
-          c.radius<=0||c.radius>.25f||c.endRadius<=0||c.endRadius>=c.radius||c.length<=c.radius+c.endRadius||c.length>1)return false;
+          c.radius<=0||c.radius>.25f||c.endRadius<=0||(n<2?c.endRadius>=c.radius:c.endRadius!=c.radius)||
+          c.length<=c.radius+c.endRadius||c.length>1)return false;
     }
-    return true;
+    const auto &a=bodySpheres[2],&b=bodySpheres[3];
+    return std::abs(a.radius-b.radius)<1e-6&&std::abs(a.endRadius-b.endRadius)<1e-6&&std::abs(a.length-b.length)<1e-6&&
+        std::abs(a.center.x-b.center.x)<1e-6&&std::abs(a.center.y-b.center.y)<1e-6&&std::abs(a.center.z)<1e-6&&std::abs(b.center.z)<1e-6&&
+        a.center.x<0&&std::abs(a.rotation.x)+std::abs(a.rotation.y)+std::abs(a.rotation.z)<1e-6&&
+        std::abs(b.rotation.x)+std::abs(b.rotation.y)+std::abs(b.rotation.z)<1e-6;
   }
-  bool CoatTorsoCoverage() const {
-    const bool male=eiem_cloth_asset::SourceOriginalCoverageCoat(prefabSha,"MC_Endminm_Coat");
-    if(!sourceCoatTorso||!runtimeGenerated||nativeLayer||meshCount||!bodyCoverage||!bodyAsset||!bodyAsset->bones||!bodySpheres||
-        (male?!CoatCalfCoverage():(!eiem_cloth_asset::SourceForkCoatBody(prefabSha,"MC_Coat")||sourceCoatCalves))||
-        bodySphereCount!=(male?4:2))return false;
-    const char *names[]{"Bip001_Spine1","Bip001_Spine"},*parents[]{"Bip001_Spine","Bip001_Pelvis"};
-    for(int n=0;n<2;++n){const auto &c=bodySpheres[(male?2:0)+n];if(c.bone<0||c.bone>=bodyAsset->boneCount)return false;
-      const auto &b=bodyAsset->bones[c.bone];const auto &q=c.rotation;
-      const double norm=double(q.x)*q.x+double(q.y)*q.y+double(q.z)*q.z+double(q.w)*q.w;
-      if(!b.name||!b.parent||strcmp(b.name,names[n])||strcmp(b.parent,parents[n])||!c.Capsule()||
-          !std::isfinite(c.center.x)||!std::isfinite(c.center.y)||!std::isfinite(c.center.z)||!std::isfinite(norm)||std::abs(norm-1)>.001||
-          !std::isfinite(c.radius)||!std::isfinite(c.endRadius)||!std::isfinite(c.length)||c.radius<.06f||c.radius>.16f||
-          c.endRadius!=c.radius||c.length<=2*c.radius||c.length>.5f)return false;
-    }
-    return true;
-  }
-  bool ForkCoatBodyOnly() const {return CoatTorsoCoverage()&&!sourceCoatCalves&&!loop&&multipleLod&&
+  bool ForkCoatGraphOnly() const {return sourceForkCoat&&runtimeGenerated&&!sourceCoatLegs&&!loop&&multipleLod&&
+      eiem_cloth_asset::SourceForkCoatIdentity(prefabSha,"MC_Coat")&&
+      !bodyCoverage&&!bodyAsset&&!bodySphereCount&&!bodySpheres&&!nativeLayer&&!meshCount&&
       originalCount==70&&originalRoots==5&&rootCount==5&&depth==6&&!addedCount&&!crossCount&&graphs&&graphCount>0&&
       !separatedPanels&&!separatedWidth&&!FittedSkin()&&!sourceShortSkin&&!sourceShortSides&&!sourceCoatWaist&&!sourceBodyOnly&&
       !resampledPanel&&!ribbonSurface&&!partialSurface&&!rootSkinTransition&&!contactProducer&&radiusCurve&&distanceCurve&&
       tetherStretch==0&&bendingStiffness<0&&rootRotation<0;}
   bool NativePanelsOnly() const {return runtimeGenerated&&separatedPanels>=2&&separatedPanels<=ClothBoneMaxSeparatedPanels&&!loop&&
-      !separatedWidth&&meshCount==0&&(!bodyCoverage||(nativeLayer==2&&bodyAsset&&bodySphereCount==2)||(CoatCalfCoverage()&&(!sourceCoatTorso||CoatTorsoCoverage())))&&!FittedSkin()&&!sourceShortSkin&&!resampledPanel&&!ribbonSurface;}
+      !separatedWidth&&meshCount==0&&(!bodyCoverage||(nativeLayer==2&&bodyAsset&&bodySphereCount==2)||CoatLegCoverage())&&!FittedSkin()&&!sourceShortSkin&&!resampledPanel&&!ribbonSurface;}
   bool NativeRibbonWidth() const {return runtimeGenerated&&separatedWidth&&separatedPanels==3&&!loop&&
       originalCount==45&&originalRoots==7&&depth==6&&addedCount==74&&rootCount==23&&meshCount>0&&meshCount<=8&&
       !bodyCoverage&&!nativeLayer&&!FittedSkin()&&!sourceShortSkin&&!resampledPanel&&!ribbonSurface;}
-  bool NativeSkinRetained() const {return NativeBodyOnly()||ForkCoatBodyOnly()||NativePanelsOnly()||(sourceShortSkin&&runtimeGenerated&&(!loop||sourceShortSides)&&
+  bool NativeSkinRetained() const {return NativeBodyOnly()||ForkCoatGraphOnly()||NativePanelsOnly()||(sourceShortSkin&&runtimeGenerated&&(!loop||sourceShortSides)&&
       separatedPanels>=0&&separatedPanels<=3&&meshCount==0&&!bodyCoverage&&!FittedSkin()&&!resampledPanel&&!ribbonSurface);}
   bool SourcePoseLease() const {return FittedSkin()||sourceShortSkin;}
   size_t fixedSkinVertices=0;

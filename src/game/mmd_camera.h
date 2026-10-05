@@ -1,7 +1,9 @@
 #pragma once
 #include "core/frame_driver.h"
+#include "core/tool_close_state.h"
 #include "core/game_hooks.h"
 #include "math/mmd_camera.h"
+#include "game/first_person.h"
 #include <string>
 #include <memory>
 
@@ -52,6 +54,7 @@ static std::atomic<const char*> status{u8"镜头未启用"};
 static void *getMain = nullptr, *getFov = nullptr, *setFov = nullptr,
             *getOrtho = nullptr, *setOrtho = nullptr, *getSize = nullptr, *setSize = nullptr,
             *getPhysical = nullptr, *setPhysical = nullptr;
+static void *getNear=nullptr,*setNear=nullptr;
 static bool ready = false;
 static std::atomic<bool> observe{false};
 static std::shared_ptr<const mmd::CameraPose> observed;
@@ -69,12 +72,15 @@ struct Lease {
   void *camera = nullptr, *transform = nullptr;
   uint32_t cameraRef = 0, transformRef = 0;
   uint64_t session = 0;
+  int mode=0; // 0: authored/fixed, 1: native free look, 2: animated head.
   Vec3 position;
   Quat rotation;
   float fov = 60, size = 5;
   bool ortho = false, physical = false;
   bool hasPose = false;
   mmd::CameraPose lastPose;
+  Quat inputRotation;
+  bool hasInputRotation=false;
   void *driver=nullptr;
   uint32_t driverRef=0;
   bool driverEnabled=false;
@@ -85,6 +91,8 @@ struct Lease {
   float focalLength=0;
   int gateFit=0;
   LensVector lensShift;
+  bool nearCaptured=false;
+  float nearClip=.3f;
 } static lease;
 static bool Call(void *method,void *object,void **args=nullptr,void **result=nullptr) {
   if (!method || !il2cpp_runtime_invoke) return false;
@@ -102,6 +110,49 @@ template<class T> static bool Read(void *method,void *object,T &value) {
 }
 template<class T> static bool Write(void *method,void *object,T value) {
   void *args[]={&value};return Call(method,object,args);
+}
+struct FirstHeadLease {
+  void *head=nullptr,*actor=nullptr;
+  uintptr_t native=0;
+  uint32_t headRef=0,actorRef=0;
+  Vec3 scale{1,1,1};
+  bool hidden=false;
+} static firstHead;
+static uintptr_t NativeIdentity(void *object) {
+  if(!object)return 0;
+  __try {return *reinterpret_cast<uintptr_t*>(static_cast<char*>(object)+0x10);}
+  __except(1){return 0;}
+}
+// Before posing, temporarily restore the scale; retain the original capture.
+// A failed restore keeps ownership and is retried, including during shutdown.
+static bool RestoreFirstHead(bool release=true) {
+  if(!firstHead.head)return true;
+  if(firstHead.hidden&&firstHead.native==NativeIdentity(firstHead.head)) {
+    if(!Write(g_transform_set_localScale,firstHead.head,firstHead.scale)) {
+      first_person::status=u8"等待恢复原角色头部";return false;
+    }
+  }
+  firstHead.hidden=false;
+  if(release) {
+    FreeGripHandle(firstHead.headRef);FreeGripHandle(firstHead.actorRef);
+    firstHead={};first_person::headHolding=false;
+  }
+  return true;
+}
+static bool HideFirstHead(void *actor,void *head) {
+  if(!g_transform_get_localScale||!g_transform_set_localScale||!il2cpp_gchandle_new||!il2cpp_gchandle_free)return false;
+  if(firstHead.head&&(firstHead.head!=head||firstHead.actor!=actor||firstHead.native!=NativeIdentity(head)))
+    if(!RestoreFirstHead())return false;
+  if(!firstHead.head) {
+    Vec3 scale;auto native=NativeIdentity(head);
+    if(!native||!Read(g_transform_get_localScale,head,scale)||!first_person::Finite(scale))return false;
+    firstHead={head,actor,native,il2cpp_gchandle_new(head,false),il2cpp_gchandle_new(actor,false),scale};
+    first_person::headHolding=true;
+    if(!firstHead.headRef||!firstHead.actorRef){RestoreFirstHead();return false;}
+  }
+  // Mark ownership before writing: an invocation can fail after a partial write.
+  firstHead.hidden=true;
+  return Write(g_transform_set_localScale,head,firstHead.scale*.001f);
 }
 static void *CameraComponent(void *camera,void *klass) {
   if(!klass || !g_component_get_gameObject || !g_gameObject_GetComponent ||
@@ -134,10 +185,13 @@ static void ReleaseRefs() {
   focusActive=false;focusDistance=0;
 }
 static bool Restore() {
+  first_person::active=false;
+  if(!RestoreFirstHead())return false;
   if (!lease.camera) return true;
   bool ok=true;
   if(UnityObjAlive(lease.focusData)) ok=FocusValue(lease.focusData,lease.originalFocus,true)&&ok;
   if (UnityObjAlive(lease.camera)) {
+    if(lease.nearCaptured)ok=Write(setNear,lease.camera,lease.nearClip)&&ok;
     // Physical mode may recalculate FOV from focal length. Restore it first.
     if (setPhysical) ok=Write(setPhysical,lease.camera,lease.physical)&&ok;
     ok=Write(setOrtho,lease.camera,lease.ortho)&&ok;
@@ -158,18 +212,23 @@ static bool Restore() {
   else status=u8"等待恢复原相机设置";
   return ok;
 }
-static bool Capture(void *camera,const Request &sample) {
+static bool Capture(void *camera,const Request &sample,int mode=0) {
   if (!UnityObjAlive(camera) || !il2cpp_gchandle_new || !il2cpp_gchandle_free) return false;
   void *transform=nullptr;
   if (!Call(g_component_get_transform,camera,nullptr,&transform) || !UnityObjAlive(transform)) return false;
   Lease saved;
   saved.camera=camera;saved.transform=transform;saved.session=sample.session;
+  saved.mode=mode;
   if (!Read(g_transform_get_localPosition,transform,saved.position) ||
       !Read(g_transform_get_localRotation,transform,saved.rotation) ||
       !Read(getFov,camera,saved.fov) || !Read(getOrtho,camera,saved.ortho) ||
       !Read(getSize,camera,saved.size) ||
       (getPhysical && !Read(getPhysical,camera,saved.physical))) return false;
   if (!std::isfinite(saved.fov) || !std::isfinite(saved.size)) return false;
+  if(getNear&&setNear) {
+    if(!Read(getNear,camera,saved.nearClip)||!std::isfinite(saved.nearClip)||saved.nearClip<=0)return false;
+    saved.nearCaptured=true;
+  }
   if(saved.physical && getFocal && setFocal && getSensor && getGate && setGate && getShift && setShift) {
     LensVector sensor;
     if(!Read(getFocal,camera,saved.focalLength) || !Read(getGate,camera,saved.gateFit) ||
@@ -190,7 +249,7 @@ static bool Capture(void *camera,const Request &sample) {
   }
   // Discover once per lease. Use Behaviour's verified bool property and retain
   // its exact original value, including an already disabled camera driver.
-  if(brainClass && getDriverEnabled && setDriverEnabled && g_component_get_gameObject &&
+  if(mode!=1 && brainClass && getDriverEnabled && setDriverEnabled && g_component_get_gameObject &&
      g_gameObject_GetComponent && il2cpp_class_get_type && il2cpp_type_get_object) {
     void *go=nullptr,*driver=nullptr;
     void *type=il2cpp_type_get_object(il2cpp_class_get_type(brainClass));void *args[]={type};
@@ -253,7 +312,7 @@ static bool Pump(void *camera,const Request &sample) {
       !std::isfinite(QuatLen(p.rotation)) || QuatLen(p.rotation)<.5f) {
     desiredActive=false;Restore();status=u8"镜头参数不是有限数值，请复位镜头调整";return false;
   }
-  if (lease.camera && (lease.camera!=camera || lease.session!=sample.session))
+  if (lease.camera && (lease.camera!=camera || lease.session!=sample.session || lease.mode!=0))
     if (!Restore()) return false;
   if (!UnityObjAlive(camera)) {status=u8"等待游戏主相机";return false;}
   if (!lease.camera && !Capture(camera,sample)) {status=u8"无法保存原相机状态，未接管";return false;}
@@ -266,6 +325,66 @@ static bool Pump(void *camera,const Request &sample) {
   return true;
 }
 static void Pump(void *camera) {Pump(camera,request);}
+static bool PumpFirstPerson(void *camera,const first_person::Settings &s,
+    const first_person::Context *context) {
+  first_person::active=false;
+  const bool playback=context&&context->playback;
+  if(poser_close::Closing())return false;
+  if(context&&context->blocked){first_person::status=u8"第一人称暂让位于校准或 Blender 编辑";return false;}
+  if(!(playback?s.mmdEnabled:s.enabled)) {
+    first_person::status=!playback&&s.mmdEnabled?u8"第一人称：等待 MMD 播放":u8"第一人称未开启";return false;
+  }
+  ++callbacks;lastCallback=FrameNow();
+  if(!first_person::Valid(s)||CharacterSwitchInProgress()||!UnityObjAlive(g_charAnimator)) {
+    Restore();first_person::status=u8"第一人称：等待角色就绪";return true;
+  }
+  first_person::Target current;const first_person::Target *target=nullptr;
+  if(playback) {
+    if(context->owner==g_charAnimator)target=first_person::Select(*context,s,g_charAnimator);
+  } else {
+    current.actor=g_charAnimator;current.head=GetHumanoidBone(Head);target=&current;
+  }
+  if(!target||!UnityObjAlive(target->actor)||!UnityObjAlive(target->head)) {
+    Restore();first_person::status=playback?u8"第一人称：所选队员未参与或头骨不可用":u8"第一人称：等待角色头骨";
+    return true;
+  }
+  const bool headLook=playback&&s.followHead&&target->oriented;
+  const int mode=headLook?2:1;
+  const uint64_t session=playback?context->session:0;
+  if(lease.camera&&(lease.camera!=camera||lease.session!=session||lease.mode!=mode))
+    if(!Restore())return true;
+  if(!RestoreFirstHead(false))return true;
+  if(!UnityObjAlive(camera)){first_person::status=u8"第一人称：等待主相机";return true;}
+  if(!lease.camera) {
+    Request request;request.session=session;
+    if(!Capture(camera,request,mode)){first_person::status=u8"第一人称：无法保存原相机";return true;}
+  }
+  Vec3 position;Quat rotation;
+  if(!UnityObjAlive(lease.transform)||!Read(g_transform_get_position,target->head,position)||
+      !Read(g_transform_get_rotation,headLook?target->head:lease.transform,rotation)) {
+    Restore();first_person::status=u8"第一人称：无法读取目标姿态";return true;
+  }
+  if(headLook)rotation=NormQ(rotation*target->headToView);
+  else {
+    // Do not compound pitch when a paused driver leaves our last result intact.
+    if(lease.hasPose&&lease.hasInputRotation&&Quat::Angle(rotation,lease.lastPose.rotation)<.001f)
+      rotation=lease.inputRotation;
+    else {lease.inputRotation=rotation;lease.hasInputRotation=true;}
+  }
+  first_person::Settings view=s;
+  mmd::CameraPose pose;
+  if(!first_person::Solve(position,rotation,view,pose)||!Apply(camera,lease.transform,pose)||
+      (lease.nearCaptured&&!Write(setNear,camera,.02f))) {
+    Restore();first_person::status=u8"第一人称写入失败，等待恢复";return true;
+  }
+  bool hidden=true;
+  if(s.hideHead)hidden=HideFirstHead(target->actor,target->head);
+  else hidden=RestoreFirstHead();
+  lease.lastPose=pose;lease.hasPose=true;++applied;first_person::active=true;
+  first_person::status=!hidden?u8"第一人称中；头部隐藏未就绪":headLook?u8"第一人称：跟随动作头部":
+    playback&&s.followHead?u8"头部朝向未校准，暂用游戏环视":u8"第一人称：游戏鼠标环视";
+  status=first_person::status.load();return true;
+}
 struct FixedLease {
   uint64_t session=0;void *actor=nullptr,*target=nullptr;
   uint32_t actorRef=0,targetRef=0;Quat reference;
@@ -325,6 +444,7 @@ static void (*framePulse)() = nullptr;
 static bool (*needsCamera)() = nullptr;
 static void (*afterCamera)(void *) = nullptr;
 static void __fastcall Tail(void *self,float dt,void *method) {
+  if(!RuntimeClosing())RestoreFirstHead(false);
   original(self,dt,method);
   if (RuntimeClosing()) return;
   if (framePulse) framePulse();
@@ -333,15 +453,19 @@ static void __fastcall Tail(void *self,float dt,void *method) {
     // handoff, replacement or restoration. Leases belong only to this callback.
     auto snapshot=std::atomic_load(&published);
     Request sample=snapshot?*snapshot:Request{};
-    sample.active=sample.active && desiredActive.load() && sample.session==desiredSession.load();
+    sample.active=sample.active && !poser_close::Closing() && desiredActive.load() && sample.session==desiredSession.load();
     void *camera=nullptr;
     Call(getMain,self,nullptr,&camera);
-    const bool tracking=fixedEnabled.load();
+    auto fpContext=std::atomic_load(&first_person::context);
+    const bool first=PumpFirstPerson(camera,first_person::Snapshot(),fpContext.get());
+    if(!first&&lease.mode!=0&&!Restore())return;
+    const bool tracking=!first&&!poser_close::Closing()&&fixedEnabled.load();
     if(tracking) {
       auto fixed=std::atomic_load(&fixedPublished);sample={};
       if(fixed)BuildFixed(camera,*fixed,sample);
-    } else ReleaseFixed();
-    const bool appliedSample=Pump(camera,sample);
+    } else if(!fixedEnabled.load()||poser_close::Closing())ReleaseFixed();
+    bool appliedSample=false;
+    if(!first&&RestoreFirstHead())appliedSample=Pump(camera,sample);
     if(observe.load()&&UnityObjAlive(camera)) {
       void *transform=nullptr;
       if(Call(g_component_get_transform,camera,nullptr,&transform)&&UnityObjAlive(transform)) {
@@ -359,7 +483,7 @@ static void __fastcall Tail(void *self,float dt,void *method) {
     // Observe the final game/MMD camera, after any playback offset is applied.
     std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
     if(lock.owns_lock() && afterCamera)afterCamera(camera);
-  } catch (...) {desiredActive=false;fixedEnabled=false;status=u8"相机回调异常，等待恢复";}
+  } catch (...) {desiredActive=false;fixedEnabled=false;first_person::active=false;Restore();status=u8"相机回调异常，等待恢复";}
 }
 static bool Signature(void *method,bool isStatic,int result,int argument=-1) {
   if (!method || !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||
@@ -420,6 +544,8 @@ static void Initialize() {
   getFov=Typed(camera,"get_fieldOfView",0xc);setFov=Typed(camera,"set_fieldOfView",1,0xc);
   getOrtho=Typed(camera,"get_orthographic",2);setOrtho=Typed(camera,"set_orthographic",1,2);
   getSize=Typed(camera,"get_orthographicSize",0xc);setSize=Typed(camera,"set_orthographicSize",1,0xc);
+  getNear=Typed(camera,"get_nearClipPlane",0xc);setNear=Typed(camera,"set_nearClipPlane",1,0xc);
+  if(!getNear||!setNear)getNear=setNear=nullptr;
   getPhysical=Typed(camera,"get_usePhysicalProperties",2);setPhysical=Typed(camera,"set_usePhysicalProperties",1,2);
   if (!getPhysical || !setPhysical) getPhysical=setPhysical=nullptr;
   getFocal=Typed(camera,"get_focalLength",0xc);setFocal=Typed(camera,"set_focalLength",1,0xc);
@@ -429,6 +555,7 @@ static void Initialize() {
   auto valueIs=[](void *method,bool setter,const char *name){
     return method && MetadataClassIs(setter?il2cpp_method_get_param(method,0):il2cpp_method_get_return_type(method),"UnityEngine",name);
   };
+  if(!valueIs(g_transform_set_localScale,true,"Vector3"))g_transform_set_localScale=nullptr;
   if(!valueIs(getSensor,false,"Vector2") || !valueIs(getShift,false,"Vector2") ||
      !valueIs(setShift,true,"Vector2") || !valueIs(getGate,false,"GateFitMode") || !valueIs(setGate,true,"GateFitMode"))
     getSensor=getShift=setShift=getGate=setGate=nullptr;

@@ -1,8 +1,11 @@
 ﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$GameDir,
-    [ValidateSet('Install', 'Uninstall')][string]$Action = 'Install',
-    [string]$SourceRoot
+    [ValidateSet('Install', 'Uninstall', 'Update')][string]$Action = 'Install',
+    [string]$SourceRoot,
+    [ValidateSet('Auto', 'Mirror', 'GitHub', 'Custom')][string]$DownloadSource = 'Auto',
+    [string]$MirrorUrl,
+    [switch]$CheckOnly
 )
 
 # This script never starts/stops the game or copies a developer's runtime data.
@@ -100,9 +103,20 @@ try {
     if (-not $GameDir) {
         Write-Host 'Endfield Poser - 安装 / 更新 / 卸载'
         $GameDir = (Read-Host '输入含 Endfield.exe 的游戏目录（可拖入文件夹）').Trim().Trim('"')
-        $choice = Read-Host '1 = 安装或更新（默认）；2 = 卸载并保留配置与姿态'
+        $choice = Read-Host '1 = 安装本地包；2 = 卸载并保留数据；3 = 在线安装 / 更新（默认）'
         if ($choice -eq '2') { $Action = 'Uninstall' }
-        elseif ($choice -and $choice -ne '1') { throw 'Invalid choice.' }
+        elseif (-not $choice -or $choice -eq '3') { $Action = 'Update' }
+        elseif ($choice -eq '1') { $Action = 'Install' }
+        else { throw 'Invalid choice.' }
+        if ($Action -eq 'Update') {
+            $sourceChoice = Read-Host '下载源：1 = GitHub 优先、镜像备用（默认）；2 = 内置镜像优先；3 = 仅 GitHub；4 = 自定义镜像'
+            switch ($sourceChoice) {
+                '2' { $DownloadSource = 'Mirror' }
+                '3' { $DownloadSource = 'GitHub' }
+                '4' { $DownloadSource = 'Custom'; $MirrorUrl = Read-Host '输入 HTTPS 镜像前缀' }
+                default { if ($sourceChoice -and $sourceChoice -ne '1') { throw 'Invalid download source.' } }
+            }
+        }
     }
     if (-not $GameDir) { throw 'Game directory is required.' }
     $script:GameRoot = (Resolve-Path -LiteralPath $GameDir).ProviderPath.TrimEnd('\')
@@ -112,6 +126,14 @@ try {
             throw "Not an Endfield game directory (missing $name): $script:GameRoot"
         }
     }
+    if ($Action -eq 'Update') {
+        . (Join-Path $PSScriptRoot 'update_release.ps1')
+        if ($CheckOnly -or $PSCmdlet.ShouldProcess($script:GameRoot, '下载最新版并备份安装，保留用户数据')) {
+            Invoke-PoserUpdate $script:GameRoot $DownloadSource $MirrorUrl -CheckOnly:$CheckOnly
+        }
+        return
+    }
+    if ($CheckOnly) { throw '-CheckOnly 仅用于 -Action Update。' }
     Assert-GameStopped
 
     $ownedNames = @('plugin\poser.dll', 'd3dcompiler_47.dll', 'vulkan-1.dll')

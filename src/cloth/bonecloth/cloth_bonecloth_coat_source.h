@@ -2,8 +2,8 @@
 #include "cloth_bonecloth_profile.h"
 #include <cstring>
 namespace eiem_cloth_asset {
-// Verified original coat: retain its authored collider set and skin. Additional
-// calf contact is fitted from the matching installed lower-body asset.
+// Verified original coat: retain its authored skin and all non-thigh contacts.
+// Calf coverage and symmetric thigh replacements belong only to the candidate.
 inline bool SourceOriginalCoverageCoat(const char *sha,const char *component) {
   return sha&&component&&!strcmp(sha,"df16c2a933748015a9ed62661054c56acfe53f7893a93cf82a8472a946dea3fc")&&
       !strcmp(component,"MC_Endminm_Coat");
@@ -11,8 +11,20 @@ inline bool SourceOriginalCoverageCoat(const char *sha,const char *component) {
 inline bool OriginalCoverageCoatEligible(bool source,unsigned required,unsigned listed,unsigned covered) {
   return source&&(required&3)!=0&&(listed&covered&3)==3&&(required&~covered&~12u)==0;
 }
-inline bool SourceForkCoatBody(const char *sha,const char *component) {
+inline bool SourceForkCoatIdentity(const char *sha,const char *component) {
   return sha&&component&&!strcmp(sha,"4f8e69c8fc479d98e3a6df946e5c3d2e88cc6fc296669f6ffc5207ae1a63a314")&&!strcmp(component,"MC_Coat");
+}
+inline bool SourceCoatThighColliders(const ClothBoneProfile &p) {
+  if(!SourceOriginalCoverageCoat(p.prefabSha,p.component)||!p.colliders||p.colliderCount!=5)return false;
+  const char *names[]{"Bip001_L_Thigh","Bip001_R_Thigh"};
+  for(int side=0;side<2;++side){int count=0;for(int n=0;n<p.colliderCount;++n){const auto &c=p.colliders[n];
+    if(c.name&&!strcmp(c.name,names[side])){if(c.parentIsAnimator||!c.parent||strcmp(c.parent,"Bip001_Pelvis"))return false;++count;}}
+    if(count!=1)return false;
+  }return true;
+}
+inline bool SourceCoatThighCollider(const ClothBoneProfile &p,size_t n) {
+  if(n>=size_t(p.colliderCount)||!SourceCoatThighColliders(p))return false;
+  const auto name=p.colliders[n].name;return name&&(!strcmp(name,"Bip001_L_Thigh")||!strcmp(name,"Bip001_R_Thigh"));
 }
 // Validate the untouched authored selection before preparing a separate
 // candidate. Its hanging points move one joint upward; the waist stays free.

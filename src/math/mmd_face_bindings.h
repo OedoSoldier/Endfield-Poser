@@ -8,6 +8,7 @@ using Targets=std::vector<Target>;
 struct Mapping {Targets character,native;};
 
 inline int NativeIndex(const std::string &name,const std::vector<mmd_face_controls::Native> &catalog) {
+  if(blush::Alias(name))for(const auto &c:catalog)if(c.channel==blush::Channel)return c.channel;
   auto spelling=character_face::MorphSpelling(name);
   for(const auto &c:catalog)if(character_face::MorphSpelling(c.name)==spelling)return c.channel;
   return -1;

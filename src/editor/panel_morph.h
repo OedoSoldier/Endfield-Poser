@@ -36,7 +36,7 @@ static void DrawMmdFaceSection() {
   ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(80),ImGui::GetContentRegionAvail().x-poser_ui::Scale(94)));
   float strength=face.strength*100;
   if(ImGui::SliderFloat(u8"整体强度",&strength,0,200,"%.0f%%",ImGuiSliderFlags_AlwaysClamp)) {face.strength=strength*.01f;face.applied=true;}
-  if(ImGui::Button(u8"全部归零"))face.clear();
+  if(ImGui::Button(u8"全部归零")){face.clear();poser_blush::previewEnabled=false;}
   ImGui::SameLine();ImGui::TextDisabled(u8"可叠加多个表情");
   ImGui::EndDisabled();
   const char *groups[]={"",u8"眉毛",u8"眼睛",u8"嘴部",u8"其他"};
@@ -103,6 +103,7 @@ static void DrawSMCSection() {
   ImGui::SameLine();
   if (ImGui::SmallButton(u8"\u5168\u90e8\u5f52\u96f6")) {
     SMCRestoreWeights();
+    poser_blush::previewEnabled=false;
     SMCFaceSetDriving(true);
   }
   ImGui::SameLine();

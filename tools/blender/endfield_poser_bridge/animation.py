@@ -53,22 +53,19 @@ class Baker:
             self.add(self.camera.data, 'dof.focus_distance', 0, frame, focus)
 
     def finish(self):
-        actions = {}
+        leave_tweak(bpy.context.scene)
+        actions, bags = {}, {}
         for (obj, path, index), values in self.channels.items():
             if obj not in actions:
                 action = bpy.data.actions.new('原始动作 · ' + obj.name)
                 action.use_fake_user = True
-                ad = obj.animation_data_create()
-                if ad.action:
-                    ad.action.use_fake_user = True
-                for track in ad.nla_tracks:
-                    track.mute = True
-                    track.is_solo = False
-                ad.action = action
-                ad.action_influence = 1
-                obj.animation_data.action_blend_type = 'REPLACE'
+                action['epb_base'] = True
                 actions[obj] = action
-            fc = actions[obj].fcurve_ensure_for_datablock(obj, path, index=index)
+                slot = action.slots.new(id_type=obj.id_type, name=obj.name)
+                layer = action.layers.new('导入关键帧')
+                strip = layer.strips.new(type='KEYFRAME')
+                bags[obj] = strip.channelbag(slot, ensure=True)
+            fc = bags[obj].fcurves.new(path, index=index)
             if len(values) > 4 and all(v == values[1] for v in values[1::2]):
                 values = array('f', (values[0], values[1], values[-2], values[-1]))
             fc.keyframe_points.add(len(values)//2)
@@ -77,8 +74,88 @@ class Baker:
                 key.interpolation = 'CONSTANT' if path in ('["epb_visible"]', 'type') else 'LINEAR'
             fc.update_autoflags(obj)
             fc.update()
+        # Replace only the imported source, below the user's correction stack.
+        # The active correction and its two camera slots must survive reimport.
+        for obj, action in actions.items():
+            replace_base(obj, action)
         self.channels.clear()
         return actions
+
+
+def is_base(action):
+    return action is not None and (action.get('epb_base', False) or
+        action.name.startswith(('原始动作 · ', '原始镜头 · ', '连接时姿态')))
+
+
+def bottom_track(obj, track):
+    # RNA only inserts *after* another track. The NLA channel operator can
+    # place a new source below an independently created correction stack.
+    if obj.animation_data.nla_tracks[0] == track:
+        return
+    context = bpy.context
+    area = next(a for a in context.screen.areas if a.type in {'NLA_EDITOR', 'DOPESHEET_EDITOR', 'VIEW_3D'})
+    area_type = area.type
+    selected = []
+    owners = dict.fromkeys(list(context.scene.objects) + [o.data for o in context.scene.objects if o.data])
+    for owner in owners:
+        ad = owner.animation_data
+        if ad:
+            for t in ad.nla_tracks:
+                selected.append((t, t.select))
+                t.select = t == track
+    try:
+        area.type = 'NLA_EDITOR'
+        space = area.spaces.active
+        only_selected = space.dopesheet.show_only_selected
+        space.dopesheet.show_only_selected = False
+        try:
+            with context.temp_override(area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
+                bpy.ops.anim.channels_move(direction='BOTTOM')
+        finally:
+            space.dopesheet.show_only_selected = only_selected
+        if obj.animation_data.nla_tracks[0] != track:
+            raise RuntimeError('无法放置底层原动作，请在 NLA 编辑器检查轨道顺序')
+    finally:
+        for t, value in selected:
+            t.select = value
+        area.type = area_type
+
+
+def replace_base(obj, action):
+    ad = obj.animation_data_create()
+    ad.use_nla = True
+    slot = next(s for s in action.slots if s.target_id_type == obj.id_type)
+    if ad.action and is_base(ad.action) and not ad.nla_tracks:
+        ad.action.use_fake_user = True
+        ad.action, ad.action_slot = action, slot
+        ad.action_blend_type, ad.action_influence = 'REPLACE', 1.
+        return
+    if not ad.action and not ad.nla_tracks:
+        ad.action, ad.action_slot = action, slot
+        ad.action_blend_type, ad.action_influence = 'REPLACE', 1.
+        return
+    # A legacy reimport left the new base at the top, masking the lower layers.
+    if is_base(ad.action):
+        ad.action.use_fake_user = True
+        ad.action = None
+    bases = [(track, strip) for track in ad.nla_tracks for strip in track.strips if is_base(strip.action)]
+    if bases:
+        track, strip = bases[0]
+        strip.action.use_fake_user = True
+        strip.action, strip.action_slot = action, slot
+        track.mute = False
+    else:
+        # No previous source, e.g. an independently created correction.
+        track = ad.nla_tracks.new()
+        track.name = '原始动作'
+        strip = track.strips.new(action.name, int(action.frame_range[0]), action)
+        strip.action_slot = slot
+        bottom_track(obj, track)
+    start, end = action.frame_range
+    strip.action_frame_start, strip.action_frame_end = start, max(start+1, end)
+    strip.frame_start, strip.frame_end = start, max(start+1, end)
+    strip.blend_type, strip.extrapolation, strip.influence = 'REPLACE', 'HOLD', 1.
+    obj.update_tag()
 
 
 def leave_tweak(scene):
@@ -161,6 +238,10 @@ def correction_layer(arm, scene):
 
 def is_correction(action):
     return action is not None and (action.get('epb_correction', False) or action.name.startswith('动作修正层'))
+
+
+def is_any_correction(action):
+    return is_correction(action) or (action is not None and action.get('epb_camera_correction', False))
 
 
 def selected_joints(arm):

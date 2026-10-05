@@ -62,7 +62,7 @@ inline void ResolveGeneratedRenderers(Generated &result) {
   result.profiles.erase(std::remove_if(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return orphanLayers.count(&p->view)!=0;}),result.profiles.end());
   result.dense.erase(std::remove_if(result.dense.begin(),result.dense.end(),[&](const auto &d){return std::none_of(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return p->view.generatedLocal==&d->view;});}),result.dense.end());
   for(const auto &p:result.profiles)result.reports.push_back({p->view.component,p->view.generatedLocal?
-      (p->view.generatedLocal->sourceCoatTorso?"source-coat-chest-waist-contact-original-skin-native-BBC-pending":p->view.generatedLocal->NativeBodyOnly()?"source-Line-Point-fitted-thigh-contact-original-skin-native-BBC-pending":p->view.generatedLocal->CoatWaistSkinOnly()?"source-coat-waist-trunk-field-private-skin-native-BBC-pending":p->view.generatedLocal->sourceShortSkin?"source-fixed-short-skirt-native-skin-release-pending":p->view.generatedLocal->NativePanelsOnly()?"runtime-separated-native-panels-original-skin-retained-native-BBC-pending":p->view.generatedLocal->NativeRibbonWidth()?"runtime-native-ribbon-width-skin-native-BBC-pending":p->view.generatedLocal->ribbonSurface?"source-fitted-ribbon-width-sheet-native-contact-pending":p->view.generatedLocal->sourceApronFit?"content-fitted-fixed-apron-native-BBC-and-visual-validation-pending":p->view.generatedLocal->sourcePanelFit?"content-fitted-waist-panels-native-BBC-and-visual-validation-pending":p->view.generatedLocal->partialSurface?"runtime-isolated-source-regions-bones-and-private-skin-generated-native-BBC-pending":
+      (p->view.generatedLocal->sourceForkCoat?"source-coat-hanging-graph-native-colliders-original-skin-native-BBC-pending":p->view.generatedLocal->NativeBodyOnly()?"source-Line-Point-fitted-thigh-contact-original-skin-native-BBC-pending":p->view.generatedLocal->CoatWaistSkinOnly()?"source-coat-waist-trunk-field-private-skin-native-BBC-pending":p->view.generatedLocal->sourceShortSkin?"source-fixed-short-skirt-native-skin-release-pending":p->view.generatedLocal->NativePanelsOnly()?"runtime-separated-native-panels-original-skin-retained-native-BBC-pending":p->view.generatedLocal->NativeRibbonWidth()?"runtime-native-ribbon-width-skin-native-BBC-pending":p->view.generatedLocal->ribbonSurface?"source-fitted-ribbon-width-sheet-native-contact-pending":p->view.generatedLocal->sourceApronFit?"content-fitted-fixed-apron-native-BBC-and-visual-validation-pending":p->view.generatedLocal->sourcePanelFit?"content-fitted-waist-panels-native-BBC-and-visual-validation-pending":p->view.generatedLocal->partialSurface?"runtime-isolated-source-regions-bones-and-private-skin-generated-native-BBC-pending":
       "runtime-simple-surface-bones-and-private-skin-generated-native-BBC-pending"):
       p->view.runtimeUnowned?"runtime-unowned-sheet-new-native-BBC-required-original-skin-retained":
       "runtime-original-bone-connections-generated-density-and-body-coverage-unchanged"});
@@ -407,7 +407,7 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
 #include "cloth_asset_ribbon.h"
 #include "cloth_asset_native_layers.h"
 #include "cloth_asset_coat_calves.h"
-#include "cloth_asset_coat_torso.h"
+#include "cloth_asset_coat_graph.h"
 #include "cloth_asset_body_contact.h"
 #include "cloth_asset_unowned.h"
 namespace eiem_cloth_asset {
@@ -459,10 +459,10 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &c
             const auto r=p->view.generatedLocal;
             Need(r&&r->NativePanelsOnly()&&!r->bodyCoverage&&!r->bodySphereCount&&!r->meshCount,
                 "auto-original-coverage-coat-requires-native-panels-and-original-skin");
-            for(auto &d:result.dense)if(&d->view==r) {ConfigureCoatCalves(package,scene,query,p->view,*d);ConfigureCoatTorso(scene,query,p->view,*d);}
-            Need(r->CoatCalfCoverage()&&r->CoatTorsoCoverage(),"auto-coat-body-coverage-missing");
+            for(auto &d:result.dense)if(&d->view==r) {ConfigureCoatLegs(package,scene,query,p->view,*d);}
+            Need(r->CoatLegCoverage(),"auto-coat-calf-coverage-missing");
           }
-          if(SourceForkCoatFront(p->view)) {auto dense=GenerateForkCoatBody(package,scene,cloths[k],query,*p);
+          if(SourceForkCoatFront(p->view)) {auto dense=GenerateForkCoatGraph(scene,cloths[k],*p);
             p->view.generatedLocal=&dense->view;result.dense.push_back(std::move(dense));}
           if(p->view.generatedLocal)for(const auto &d:result.dense)if(&d->view==p->view.generatedLocal&&!d->densityReport.empty())result.reports.push_back({query.cloths[k].name,d->densityReport});
           if(!surface.densityIssue.empty())result.reports.push_back({query.cloths[k].name,surface.densityIssue});
@@ -472,7 +472,7 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &c
       try{GenerateUnowned(package,scene,query,result);}catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"unowned-waist-discovery",e.what()});}
       result.meshReads+=scene.meshReads;result.meshCacheHits+=scene.meshCacheHits;result.meshCacheBytes+=scene.meshCacheBytes;result.meshDecodeMs+=scene.meshDecodeMs;
       result.sources=package.sources;result.sources[manifest.sourceName]=manifest.sourceHash;
-      std::string key="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-belt-follow-v2-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-v2-fixed-apron-v1-bundle-v2-cell-aspect-v1-leg-coverage-native-lines-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1\n"+manifest.sourceHash;for(const auto &p:package.sources)key+="\n"+p.first+"="+p.second;key+="\nendminm-upper-coat-source-skin-interior-release-point-v7-endmin-torso-chest-waist-v1-upper-hangers-free-upper-v3-no-pelvis-bridge-v1-character-waist-clearance-v1";result.key=Digest(Bytes(key.begin(),key.end()));
+      std::string key="runtime-effective-graph-v3-dense-regions-v2-selection-v2-ownership-v1-waist-v2-bind-domain-v1-panel-fit-v3-long-skin-envelope-calf-surface-v5-ribbon-width-belt-follow-v2-separated-panels-lines-v2-short-native-v1-layer-calf-short-sides-v2-fixed-apron-v1-bundle-v2-cell-aspect-v1-leg-coverage-native-lines-v1-isolated-strip-width-v1-fixed-fork-coat-v7-waist-field-prebuild-closure-v2-body-contact-v1-unowned-waist-v1-Animator-body-scope-v1-separated-panels-six-v1-collider-Animator-parent-v1-separated-coat-inputs-point-flexible-v1\n"+manifest.sourceHash;for(const auto &p:package.sources)key+="\n"+p.first+"="+p.second;key+="\nendmin-upper-hangers-free-upper-v3-native-torso-colliders-symmetric-thighs-calves-v2-male-legs-only-no-pelvis-v3-thigh-equal-ends-v1";result.key=Digest(Bytes(key.begin(),key.end()));
     }
   }Need(matched,bindingIssue.empty()?"auto-source-full-binding-not-confirmed":bindingIssue.c_str());
   ResolveGeneratedRenderers(result);

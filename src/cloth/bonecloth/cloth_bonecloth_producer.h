@@ -155,7 +155,11 @@ static bool ClothBoneContactColliderPolicy() {
 }
 static bool ClothBoneCandidateColliderOmitted(const ClothBoneRuntime &s,size_t n) {
   const auto contains=[n](const std::vector<int> &indices) {return std::find(indices.begin(),indices.end(),int(n))!=indices.end();};
-  return contains(s.local.contactColliderOmissions)||contains(s.partnerColliderOmissions)||contains(s.local.apronLayer.omitted);
+  // Replace the two authored thighs only in this rebuilt BBC. The source list
+  // and collider objects remain untouched for other components and restoration.
+  const bool thigh=s.local.requested&&s.local.recipe&&s.profile&&s.local.recipe==s.profile->generatedLocal&&
+      s.local.recipe->CoatLegCoverage()&&eiem_cloth_asset::SourceCoatThighCollider(*s.profile,n);
+  return thigh||contains(s.local.contactColliderOmissions)||contains(s.partnerColliderOmissions)||contains(s.local.apronLayer.omitted);
 }
 static bool ClothBoneOriginalColliderRequired(size_t n,void *process,bool restoring) {
   const auto &s=ClothBoneState();

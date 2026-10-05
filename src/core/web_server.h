@@ -172,6 +172,10 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"state",int(m.timeline.state)},{"frame",m.timeline.seconds*30.},
       {"last_frame",m.timeline.duration*30},{"speed",m.timeline.speed},{"loop",m.timeline.loop},
       {"camera_keys",MmdCameraKeys().size()},{"camera_file",m.cameraFile},
+      {"first_person",{{"enabled",first_person::settings.enabled},{"mmd_enabled",first_person::settings.mmdEnabled},
+        {"active",first_person::active.load()},{"head_retained",first_person::headHolding.load()},
+        {"member",first_person::settings.member},{"follow_head",first_person::settings.followHead},
+        {"status",std::string(first_person::status.load())}}},
       {"fixed_camera",{{"enabled",mmd_camera::fixedEnabled.load()},{"target_ready",mmd_camera::fixedHolding.load()},
         {"status",mmd_camera::fixedStatus.load()},{"distance",mmd_camera::fixedSettings.distance},
         {"focal_length",mmd_camera::fixedSettings.focalLength},{"ignore_jump",mmd_camera::fixedSettings.ignoreJump},
@@ -282,7 +286,15 @@ static void HandleRequest(SOCKET c, const std::string &path,
     }
     if(s_characterProfile)for(int i=0;i<int(s_characterBinding.slots.size());++i)
       if(s_characterBinding.slots[i]<0)missing.push_back(s_characterProfile->bones[i].name);
+    const auto blushKey=s_characterProfile?s_characterProfile->key:poser_gaze::editor.modelKey;
+    const auto blushInfo=poser_blush::info.find(blushKey);
     HttpJson(c,{{"model",CurrentCharModelKey()},{"generation",s_faceGeneration},{"ready",s_characterBinding.ready},
+      {"blush",{{"model",blushKey},{"profile",blush::Write(poser_blush::ProfileFor(blushKey))},
+        {"status",blushInfo==poser_blush::info.end()?u8"尚未检查材质":blushInfo->second.status},
+        {"materials",blushInfo==poser_blush::info.end()?0:blushInfo->second.materials},
+        {"weight",blushInfo==poser_blush::info.end()?0:blushInfo->second.weight},
+        {"blocks",poser_blush::Diagnostics(blushKey)},
+        {"retained_actors",poser_blush::actors.size()}}},
       {"status",s_characterBinding.status},{"bones",bones},{"missing",missing},
       {"motion",{{"active",SMCMotionActive()},{"evaluated",s_faceBoneEvalOk},
         {"profile",face.profile?face.profile->key:""},{"settings",face_mixing::Write(face.settings)},

@@ -1,6 +1,7 @@
 """Exact matrix conversion; game transform axes need not match Blender bone axes."""
 import json
 import math
+import copy
 import bpy
 from mathutils import Matrix, Quaternion, Vector
 
@@ -140,6 +141,41 @@ def schema(arm):
     return json.loads(arm["epb_scene"])
 
 
+def reconnect_schema(previous, incoming):
+    """Keep saved bone names/basis and map new runtime indices by hierarchy.
+
+    Clothing helpers may appear/disappear after physics preparation. They must
+    not make a saved body rig incompatible merely by changing array indices.
+    """
+    if not previous or previous['model'] != incoming['model']:
+        return None
+    def paths(bones):
+        result = []
+        for b in bones:
+            result.append((result[b['parent']] if b['parent'] >= 0 else ()) + (b['name'],))
+        return result
+    old_paths, new_paths = paths(previous['bones']), paths(incoming['bones'])
+    if len(set(old_paths)) != len(old_paths) or len(set(new_paths)) != len(new_paths):
+        return None
+    indices = {p: i for i, p in enumerate(new_paths)}
+    required = set()
+    for b in incoming['bones']:
+        if b['editable']:
+            i = b['i']
+            while i >= 0 and i not in required:
+                required.add(i)
+                i = incoming['bones'][i]['parent']
+    if any(new_paths[i] not in old_paths for i in required):
+        return None
+    result = copy.deepcopy(previous)
+    for b, path in zip(result['bones'], old_paths):
+        i = indices.get(path, -1)
+        b['game_index'] = i
+        b['editable'] = i >= 0 and incoming['bones'][i]['editable']
+    result['game_bones'] = [{'name': b['name'], 'parent': b['parent']} for b in incoming['bones']]
+    return result
+
+
 def rebase_sample(data, sample):
     """Convert newly sampled world offsets to the saved project's anchor.
 
@@ -168,7 +204,7 @@ def basis_matrices(data, sample):
     updates = {b["i"]: b for b in sample["bones"]}
     worlds, poses, basis = [], [], []
     for b in data["bones"]:
-        local = updates.get(b["i"], b)
+        local = updates.get(b.get('game_index', b['i']), b)
         native_local = trs(local["p"], local["q"], b["scale"])
         if b["parent"] >= 0:
             native_world = worlds[b["parent"]] @ native_local
@@ -217,6 +253,7 @@ def apply_camera(obj, value):
 
 def create_camera(data, scene):
     obj = bpy.data.objects.new("Endfield 镜头", bpy.data.cameras.new("Endfield 镜头"))
+    obj['epb_managed_camera'] = True
     scene.collection.objects.link(obj)
     scene.camera = obj
     obj["epb_managed"] = True
@@ -244,7 +281,7 @@ def packet(arm, camera, scene, session, sequence, data=None, depsgraph=None):
         worlds.append(world)
         if b["editable"]:
             p, q, _ = local.decompose()
-            bones.append({"i": b["i"], "p": list(p), "q": qlist(q)})
+            bones.append({"i": b.get('game_index', b['i']), "p": list(p), "q": qlist(q)})
     view = None
     if camera:
         cam = camera.evaluated_get(deps)

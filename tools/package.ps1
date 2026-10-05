@@ -50,7 +50,7 @@ try {
         }
     }
     # Explicit allowlist: never package the developer's whole plugin/ or docs/.
-    foreach ($relative in @('安全安装.bat', 'tools\deploy.ps1', 'tools\character_face_resources.ps1',
+    foreach ($relative in @('安全安装.bat', 'tools\deploy.ps1', 'tools\update_release.ps1', 'tools\character_face_resources.ps1',
             'README.md', 'LICENSE', 'docs\tutorial.md', 'docs\mmd-player.md', 'docs\user-agreement.md', 'docs\xxmi-bridge.md',
             'resources\character-faces\README.md', 'tools\blender\endfield_poser_bridge\README.md',
             'tools\blender\install.ps1', 'tools\blender\install_addon.py',
@@ -111,7 +111,7 @@ try {
 Endfield Poser $version (Windows x64)
 
 1. 完全退出游戏，将本安装包完整解压到游戏目录之外的文件夹。
-2. 双击安全安装.bat，选择直接包含 Endfield.exe 的游戏目录，再选择安装或更新。
+2. 双击安全安装.bat，选择直接包含 Endfield.exe 的游戏目录，选择“安装本地包”或“在线安装 / 更新”。
 3. 角色表情校准随包自动安装；自定义校准、设置和姿态保留。同名文件被修改时会提示并保留。
 4. 启动游戏，阅读并确认使用协议。按 L 打开面板，按 P 冻结角色。
 5. 卸载时退出游戏，运行同一向导并选择卸载；校准、设置、姿态和备份保留。
@@ -120,7 +120,7 @@ Endfield Poser $version (Windows x64)
 启用 Endfield Poser Bridge。3D 视图按 N，在 Endfield 页签连接游戏角色。更新插件后请保存工程并重开 Blender。
 详细步骤见 tools/blender/endfield_poser_bridge/README.md。只播放 MMD 无需安装 Blender。
 
-更新时使用新版安装包里的向导，无需先卸载。向导不会自动下载更新，会显示当前版本和安装包版本。
+在线更新自动查找 Windows 标准安装包（含预发布版），无需先卸载。默认 GitHub 优先，失败后使用内置 GH-Proxy 镜像；也可选择镜像优先或自定义 HTTPS 镜像。下载通过 SHA-256 校验后安装，不会降级。不能联网时可选择“安装本地包”。
 
 表情面板的 MMD 模式可直接调节眉毛、眼睛和嘴部。使用说明见 README.md 和 docs/tutorial.md。
 MMD 表情参考自茶叶味香皂的终末地 MMD 模型：https://space.bilibili.com/3546783156276148 。相关素材请遵守原作者的使用规则。

@@ -1,10 +1,12 @@
 #pragma once
+#include "math/blush.h"
 #include "math/character_face.h"
 
 namespace mmd_face_controls {
 struct Native {std::string name;int channel=-1,panel=4;};
 struct Control {std::string name;int morph=-1,native=-1,panel=4;};
 inline std::string Label(const std::string &name,int panel,int index) {
+  if(blush::Alias(name))return u8"脸红";
   auto n=character_face::MorphSpelling(name);std::string side;
   for(auto p:{std::pair<const char *,const char *>{u8"左",u8"左侧"},{u8"右",u8"右侧"}}) {
     std::string suffix=p.first;

@@ -31,6 +31,7 @@
 #include "game/secondary_body_runtime.h"
 #include "config.h"
 #include "game/cloth_init.h"
+#include "game/frame_limit.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
 // 面板里的「打开日志」：弹资源管理器并选中 poser_log.txt —— 让非技术用户
@@ -56,7 +57,6 @@ static void ToolCloseMaintenance();
 
 #include "game/blender_bridge.h"
 static void DrawBlenderControls() {
-  if(!ImGui::CollapsingHeader(u8"Blender 联动"))return;
   ImGui::TextWrapped("%s",poser_blender::status.c_str());
   ImGui::TextWrapped(u8"在 Blender 的 Endfield 页签连接编辑。动作和镜头分别导出、分别加载，共用下方播放控制。");
   if(g_blenderEditing&&ImGui::Button(u8"断开 Blender 并恢复"))poser_blender::localCommand=3;
@@ -225,8 +225,36 @@ static void UpdateOverlayCursor() {
       ImGui::GetIO().MouseDrawCursor = g_cursorFreeNow && !osShown;
     }
 }
+static void PublishFirstPersonContext() {
+  first_person::Context context;
+  context.blocked=g_blenderEditing||g_mmd.preview;
+  auto target=[](void *actor,const std::vector<AllBone> &bones,const mmd::RetargetProfile &profile,
+      const std::shared_ptr<GripReferences> &refs) {
+    first_person::Target out;out.actor=actor;out.references=refs;
+    int index=profile.roles[Head];
+    if(index>=0&&index<int(bones.size())) {
+      out.head=bones[index].transform;out.oriented=first_person::HeadBasis(profile,out.headToView);
+    } else if(actor==g_charAnimator) {
+      for(int n=0;n<s_humanBoneCount;++n)if(s_humanBones[n].humanBone==Head){out.head=s_humanBones[n].transform;break;}
+    }
+    return out;
+  };
+  if(g_squad.active) {
+    context.playback=context.squad=true;context.owner=g_squad.cameraOwner;context.session=g_squad.cameraSession;
+    for(int i=0;i<4;++i)if(g_squad.actors[i]) {
+      const auto &a=*g_squad.actors[i];context.targets[i]=target(a.member.animator,a.bones,a.profile,a.saved.references);
+    }
+  } else if(g_mmd.session.active&&!context.blocked) {
+    const auto &s=g_mmd.session;context.playback=true;context.owner=s.animator;context.session=s.cameraSession;
+    context.targets[0]=target(s.animator,s_allBones,g_mmd.profile,s.references);
+  }
+  first_person::PublishContext(context);
+}
 static void GameFrameTickBody() {
   if(poser_close::Closing())return;
+  // Head-scale ownership belongs to the game camera thread. The fallback
+  // worker must neither race it nor sample a temporarily hidden skeleton.
+  if(first_person::headHolding.load()&&(!ClothOnMainThread()||!mmd_camera::RestoreFirstHead(false)))return;
   MmdVisibilityDrain();
   if (!poser_agreement::Allowed()) {
     TakeHotkeyFreeze();
@@ -312,6 +340,7 @@ static void GameFrameTickBody() {
     else if (mmdKeys & 1) MmdPlaybackCommand(0);
     poser_blender::Service();
     MmdTick();
+    PublishFirstPersonContext();
   } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
@@ -330,18 +359,18 @@ static void RefreshCharacterBones() {
 static void DrawPoserGuiBody() {
   ImGuizmo::BeginFrame(); // ImGuizmo 每帧初始化（draw list / 内部窗口），否则轮盘不绘制
   __try {
-    DrawSkeletonOverlay();
+    if(!first_person::active.load())DrawSkeletonOverlay();
   } __except (1) {
     Log("[POSER] DrawSkeletonOverlay exception code=0x%X", GetExceptionCode());
   }
   __try {
-    HandleRigClick();
+    if(!first_person::active.load())HandleRigClick();
   } __except (1) {
     Log("[POSER] HandleRigClick exception code=0x%X", GetExceptionCode());
   }
   __try {
-    if (!MmdOwnsPose()) IkSolveAll();        // 冻结态解算四肢 IK（启用中的控制器）
-    if (!MmdOwnsPose()) DrawIkControllers(); // 目标点渲染 + 选中 + 命中标记
+    if (!first_person::active.load() && !MmdOwnsPose()) IkSolveAll();
+    if (!first_person::active.load() && !MmdOwnsPose()) DrawIkControllers();
   } __except (1) {
     Log("[POSER] IK controllers exception code=0x%X", GetExceptionCode());
   }
@@ -400,6 +429,12 @@ static void DrawPoserGuiBody() {
     }
     ImGui::TextDisabled(u8"按住 Alt 操作面板；拖动标题栏调整布局");
     poser_ui::DrawDisplaySettings();
+    int frameLimit=poser_frame_limit::requested.load();
+    int frameMode=frameLimit==30?1:frameLimit==60?2:0;
+    if(ImGui::Combo(u8"游戏帧率",&frameMode,u8"不锁定（跟随游戏）\0锁定 30 FPS\0锁定 60 FPS\0"))
+      poser_frame_limit::Request(frameMode==1?30:frameMode==2?60:0);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"限制整个游戏画面的目标帧率，单人、多人和 Blender 联动共用；不改变动作速度。关闭后恢复原来的帧率和垂直同步设置。仅本次运行生效。");
+    if(frameMode||poser_frame_limit::held)ImGui::TextDisabled("%s",poser_frame_limit::status);
     ImGui::Separator();
     ImGui::TextDisabled(g_charAnimator?u8"当前角色已就绪":u8"等待进入角色场景");
     ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
@@ -456,6 +491,7 @@ static void DrawPoserGuiBody() {
     }
     ImGui::EndDisabled();
     // 根骨骼位置微调（整体位移；冻结态直接写回）
+    DrawFirstPersonControls(false);
     void *rootT = nullptr;
     for (size_t i = 0; i < s_allBones.size(); i++)
       if (s_allBones[i].parentIdx < 0) {
@@ -514,13 +550,13 @@ static void DrawPoserGuiBody() {
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoInputs)) {
       __try {
-        if (!MmdOwnsPose()) DrawBoneRotationGizmo();
+        if (!first_person::active.load() && !MmdOwnsPose()) DrawBoneRotationGizmo();
       } __except (1) {
         Log("[POSER] DrawBoneRotationGizmo exception code=0x%X",
             GetExceptionCode());
       }
       __try {
-        if (!MmdOwnsPose()) DrawIkGizmo(); // 控制器目标点的平移手柄
+        if (!first_person::active.load() && !MmdOwnsPose()) DrawIkGizmo();
       } __except (1) {
         Log("[POSER] DrawIkGizmo exception code=0x%X", GetExceptionCode());
       }
@@ -624,6 +660,7 @@ static void OnGuiShutdownRestore() {
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
   mmd_camera::SetFixed(false);
+  first_person::Disable();
   MmdStop();
   s_mmdClosing.store(true);
   poser_blender::Shutdown();
@@ -645,7 +682,7 @@ static void OnGuiShutdownRestore() {
   while (GetTickCount64()<deadline) {
     { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
       if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring() &&
-          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && s_mmdVisibilityRetired.empty()) return; }
+          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && !first_person::headHolding.load() && s_mmdVisibilityRetired.empty() && poser_blush::actors.empty()) return; }
     Sleep(10);
   }
   Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
@@ -661,7 +698,8 @@ static void RequestToolClose() {
   Log("[TOOL-CLOSE] requested; game-thread restoration pending; restart-only=1");
 }
 static bool ToolAttachmentsRestored() {
-  if(mmd_camera::restorePending.load()||mmd_camera::fixedHolding.load()||
+  if(poser_frame_limit::held||!poser_blush::actors.empty())return false;
+  if(mmd_camera::restorePending.load()||mmd_camera::fixedHolding.load()||first_person::headHolding.load()||
       !s_mmdVisibilityRetired.empty()||!g_frozenGrips.empty())return false;
   for(unsigned slot=0;slot<ClothActorCount;++slot) {
     if(!s_ClothActorRequest.values[slot]&&!s_clothActors.values[slot])continue;
@@ -698,7 +736,7 @@ static DWORD WINAPI ToolCloseWorker(LPVOID) {
 static void ToolCloseMaintenance() {
   if(!poser_close::Closing()||!ClothOnMainThread()||RuntimeClosing())return;
   if(poser_close::state.beginRestore()) {
-    poser_blender::End();mmd_camera::SetFixed(false);MmdStop();
+    poser_blender::End();mmd_camera::SetFixed(false);first_person::Disable();MmdStop();
     poser_blender::restoreFixed=false;poser_blender::fixedReferences.reset();
     if(g_frozen)UnfreezeCharacter();
     RestoreBlendShapes();ReleaseAllGrips();SMCReleaseFreeze();ResetSMCState();
@@ -886,6 +924,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   Log("[BUILD] %s", POSER_BUILD_FEATURES);
   LoadPoserConfig();
   poser_gaze::LoadProfiles();
+  poser_blush::Load();
 #if POSER_ENABLE_XXMI_BRIDGE
   ModBridgeStartup();
 #endif
@@ -944,7 +983,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   };
   s_clothHostEnabled=[](){return g_pluginEnabled.load();};
   s_clothHostIdle=[](){return !MmdOwnsPose()&&!MmdSquadBusy()&&!g_mmd.preview;};
-  g_gameMaintenance = []() { ClothServiceActors();ToolCloseMaintenance(); };
+  g_gameMaintenance = []() { poser_frame_limit::Tick(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());ClothServiceActors();poser_blush::enabled=g_pluginEnabled&&!poser_close::Closing();if(!poser_blush::enabled)poser_blush::RestoreAll();ToolCloseMaintenance(); };
   InstallFrameHook();
   mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）

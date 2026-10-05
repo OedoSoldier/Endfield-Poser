@@ -12,9 +12,6 @@ static void DrawMmdSquadPanel() {
     ImGui::End();
     return;
   }
-  ImGui::Checkbox(u8"快捷键控制多人播放器", &s.hotkeys);
-  if (s.hotkeys || s.active)
-    DrawMmdHotkeyHints();
   ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
   if (ImGui::Button(s.timeline.state == mmd::PlayState::Playing ? u8"暂停全队" : u8"播放全队")) {
     s.hotkeys = true;
@@ -82,9 +79,6 @@ static void DrawMmdSquadPanel() {
           MmdSquadDuration();
         ImGui::SameLine();
         ImGui::Text(u8"第 %d 位：%s", i + 1, slot.member.empty() ? u8"待读取" : slot.member.c_str());
-        ImGui::TextWrapped("%s", slot.calibration.c_str());
-        if(s.actors[i]&&!s.actors[i]->thumbStatus.empty())
-          ImGui::TextWrapped("%s",s.actors[i]->thumbStatus.c_str());
         if (ImGui::Button(u8"选择动作"))
           MmdSquadLoad(i);
         ImGui::SameLine();
@@ -103,6 +97,12 @@ static void DrawMmdSquadPanel() {
           MmdSquadDuration();
         }
         DrawMmdFile(slot.file);
+        if(ImGui::TreeNode(u8"校准状态")) {
+        ImGui::TextWrapped("%s", slot.calibration.c_str());
+        if(s.actors[i]&&!s.actors[i]->thumbStatus.empty())
+          ImGui::TextWrapped("%s",s.actors[i]->thumbStatus.c_str());
+          ImGui::TreePop();
+        }
         ImGui::PopID();
       }
       ImGui::EndDisabled();
@@ -119,43 +119,6 @@ static void DrawMmdSquadPanel() {
     if (ImGui::BeginTabItem(u8"站位与适配")) {
       if (ImGui::Button(u8"动作校准…")) {s.hotkeys = true; MmdOpenMotionCalibration();}
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
-      int ik = int(s.ikMode);
-      if (ImGui::Combo(u8"动作 IK", &ik, u8"跟随各自动作\0强制开启\0强制关闭\0"))
-        s.ikMode = mmd::IkMode(ik);
-      ImGui::SliderFloat(u8"全队高度修正", &s.height, -1, 1, "%.3f");
-      ImGui::Checkbox(u8"全队地形跟随（各自探测脚下）", &s.terrain.enabled);
-      if (s.terrain.enabled)
-        ImGui::SliderFloat(u8"贴地强度", &s.terrain.strength, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-      bool clothEnabled = s_clothSquadAutoEnabled.load();
-      DrawMmdSecondaryControls();
-      if(poser_secondary::enabled)for(unsigned i=0;i<4;++i)if(s.actors[i])
-        ImGui::TextWrapped(u8"第 %u 位第二骨骼：%s",i+1,s.actors[i]->saved.secondary.status.c_str());
-      if (ImGui::Checkbox(u8"全队衣物物理增强", &clothEnabled))
-        ClothSetSquadEnhancementEnabled(clothEnabled);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(u8"默认开启，与单人开关独立。各队员分别适配，停止后恢复原设置。");
-      for (unsigned i = 0; i < 4; ++i) {
-        if (!s.actors[i] && !ClothActorEngaged(i + 1))
-          continue;
-        ClothActorScope scope(i + 1);
-        if(s_clothTurnEnabled&&s.actors[i])ImGui::TextWrapped(u8"第 %u 位衣物惯性：%s（衣物 %u / 头发 %u / 尾巴 %u / 耳部 %u / 挂件 %u；其中增强 %u）",i+1,s_clothTurn.status,s_clothTurn.clothing,s_clothTurn.hair,s_clothTurn.tail,s_clothTurn.ears,s_clothTurn.accessories,s_clothTurn.enhancedCount);
-        const auto cloth = CollisionGetUi();
-        const int applied = cloth.authoredApplied + cloth.autoConnectionsApplied +
-                            cloth.autoSkinApplied + cloth.autoPartialApplied;
-        const bool failed=g_clothPlaybackGate.State()==eiem_playback::Preparation::Failed;
-        const bool held=g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration);
-        const char *state = failed ? u8"准备失败，请停止重试或关闭增强" : held ? u8"等待全队衣物就绪" : s_cloth.releasing || cloth.boneRestoring ? u8"恢复中" :
-                            !clothEnabled ? u8"使用原有物理" :
-                            applied ? u8"增强已生效" :
-                            s_cloth.failed ? u8"未能启用增强" :
-                            cloth.autoPreparing || cloth.boneBusy ? u8"准备中" : u8"使用原有物理";
-        ImGui::Text(u8"第 %u 位衣物：%s", i + 1, state);
-      }
-      ImGui::BeginDisabled(s.active);
-      ImGui::Checkbox(u8"按各自腿长自动适配位移", &s.autoScale);
-      if (!s.autoScale)
-        ImGui::SliderFloat(u8"基础位移比例", &s.scale, .001f, .3f, "%.4f");
-      ImGui::EndDisabled();
       if (ImGui::CollapsingHeader(u8"队员站位与动作比例", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextWrapped(
             u8"偏移单位为米，方向相对共同原点。全部偏移为 0 时重合在原点，适合动作自带站位的编舞。");
@@ -184,12 +147,26 @@ static void DrawMmdSquadPanel() {
           ImGui::PopID();
         }
       }
+      int ik = int(s.ikMode);
+      if (ImGui::Combo(u8"动作 IK", &ik, u8"跟随各自动作\0强制开启\0强制关闭\0"))
+        s.ikMode = mmd::IkMode(ik);
+      ImGui::SliderFloat(u8"全队高度修正", &s.height, -1, 1, "%.3f");
+      ImGui::Checkbox(u8"全队地形跟随（各自探测脚下）", &s.terrain.enabled);
+      if (s.terrain.enabled)
+        ImGui::SliderFloat(u8"贴地强度", &s.terrain.strength, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      if(ImGui::TreeNode(u8"自动位移适配")) {
+      ImGui::BeginDisabled(s.active);
+      ImGui::Checkbox(u8"按各自腿长自动适配位移", &s.autoScale);
+      if (!s.autoScale)
+        ImGui::SliderFloat(u8"基础位移比例", &s.scale, .001f, .3f, "%.4f");
       ImGui::EndDisabled();
-      ImGui::TextWrapped(u8"眼神锁定在表情面板统一设置。衣物增强按各自角色处理，不包含队员之间的碰撞。");
+        ImGui::TreePop();
+      }
+      ImGui::EndDisabled();
+      ImGui::TextWrapped(u8"全队共用时间轴；动作校准可按队员单独设置。");
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"镜头与音乐")) {
-      DrawFixedCameraControls();
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
       {
         ImGui::TextWrapped(u8"与单人面板共用音乐和镜头文件；由全队时间轴同步播放。");
@@ -221,6 +198,49 @@ static void DrawMmdSquadPanel() {
         }
       }
       ImGui::EndDisabled();
+      ImGui::Separator();
+      DrawFixedCameraControls();
+      DrawFirstPersonControls(true,true);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(u8"表情")) {
+      DrawMmdFaceSettings();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(u8"物理")) {
+      ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
+      bool clothEnabled = s_clothSquadAutoEnabled.load();
+      DrawMmdSecondaryControls();
+      if(poser_secondary::enabled)for(unsigned i=0;i<4;++i)if(s.actors[i])
+        ImGui::TextWrapped(u8"第 %u 位第二骨骼：%s",i+1,s.actors[i]->saved.secondary.status.c_str());
+      if (ImGui::Checkbox(u8"全队衣物物理增强", &clothEnabled))
+        ClothSetSquadEnhancementEnabled(clothEnabled);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"默认开启，与单人开关独立。各队员分别适配，停止后恢复原设置。");
+      for (unsigned i = 0; i < 4; ++i) {
+        if (!s.actors[i] && !ClothActorEngaged(i + 1))
+          continue;
+        ClothActorScope scope(i + 1);
+        if(s_clothTurnEnabled&&s.actors[i])ImGui::TextWrapped(u8"第 %u 位衣物惯性：%s（衣物 %u / 头发 %u / 尾巴 %u / 耳部 %u / 挂件 %u；其中增强 %u）",i+1,s_clothTurn.status,s_clothTurn.clothing,s_clothTurn.hair,s_clothTurn.tail,s_clothTurn.ears,s_clothTurn.accessories,s_clothTurn.enhancedCount);
+        const auto cloth = CollisionGetUi();
+        const int applied = cloth.authoredApplied + cloth.autoConnectionsApplied +
+                            cloth.autoSkinApplied + cloth.autoPartialApplied;
+        const bool failed=g_clothPlaybackGate.State()==eiem_playback::Preparation::Failed;
+        const bool held=g_clothPlaybackGate.Holding(1u,s_clothRequestGeneration);
+        const char *state = failed ? u8"准备失败，请停止重试或关闭增强" : held ? u8"等待全队衣物就绪" : s_cloth.releasing || cloth.boneRestoring ? u8"恢复中" :
+                            !clothEnabled ? u8"使用原有物理" :
+                            applied ? u8"增强已生效" :
+                            s_cloth.failed ? u8"未能启用增强" :
+                            cloth.autoPreparing || cloth.boneBusy ? u8"准备中" : u8"使用原有物理";
+        ImGui::Text(u8"第 %u 位衣物：%s", i + 1, state);
+      }
+      ImGui::TextWrapped(u8"按各自角色处理，不包含队员之间的碰撞。惯性与第二骨骼参数和单人共用。");
+      ImGui::EndDisabled();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(u8"高级")) {
+      ImGui::Checkbox(u8"快捷键控制多人播放器", &s.hotkeys);
+      DrawMmdHotkeyHints();
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();

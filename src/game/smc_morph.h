@@ -28,6 +28,7 @@
 #include "math/mmd_face_controls.h"
 #include "game/smc_automation.h"
 #include "game/eye_gaze.h"
+#include "game/blush.h"
 
 // ---- 常量 ----
 #define SMC_MAX_BIGLIST 8192
@@ -1316,6 +1317,7 @@ static std::vector<mmd_face_controls::Native> SMCManualCatalog() {
     int panel=!strncmp(target,"brow_",5)?1:!strncmp(target,"eye_",4)?2:!strncmp(target,"mouth_",6)?3:4;
     fixed.push_back({s_extraMorphs[i].vmdNameUtf8,5+i,panel});
   }
+  fixed.push_back({u8"照れ",blush::Channel,4});
   return fixed;
 }
 static void SMCManualPrepare() {
@@ -1323,6 +1325,7 @@ static void SMCManualPrepare() {
     s_manualFace.bind(SMCAnimator(),s_faceGeneration,s_characterProfile,SMCManualCatalog());
 }
 static bool SMCNativeChannelReady(int channel) {
+  if(channel==blush::Channel)return true; // Material capability is discovered on the game thread.
   if(channel<0||channel>=SMC_NUM_MOUTH+s_extraMorphCount||!s_boneMapReady)return false;
   if(channel<SMC_NUM_MOUTH)return s_mouthResolved&&s_mouthShapes[channel].resolved&&s_mouthShapes[channel].jobCount>0;
   const auto &m=s_extraMorphs[channel-SMC_NUM_MOUTH];
@@ -1331,6 +1334,7 @@ static bool SMCNativeChannelReady(int channel) {
 }
 // 0 unavailable, 1 character calibration, 2 optional fixed mapping.
 static int SMCManualSource(const mmd_face_controls::Control &control) {
+  if(control.native==blush::Channel)return 2;
   int id=control.morph;
   if(s_manualFace.profile&&s_manualFace.profile==s_characterProfile&&s_characterBinding.ready&&
       s_characterBindingGeneration==s_faceGeneration&&id>=0&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id])return 1;
@@ -1346,7 +1350,10 @@ static SMCMotionFrame SMCManualFrame() {
     const auto &c=s_manualFace.controls[i];float value=s_manualFace.weights[i];
     int source=SMCManualSource(c);
     if(source==1)frame.expressions[c.morph]=value;
-    if(source==2)frame.fallbackWeights[c.native]=face_geometry::Clamp(frame.fallbackWeights[c.native]+value,0,1);
+    if(source==2) {
+      auto &weight=c.native==blush::Channel?frame.weights[c.native]:frame.fallbackWeights[c.native];
+      weight=face_geometry::Clamp(weight+value,0,1);
+    }
   }
   return frame;
 }
@@ -1518,6 +1525,27 @@ static void SMCGazeTick(const SMCMotionFrame *sample=nullptr) {
   poser_gaze::Update(SMCFrozen()&&s_faceBonesCaptured&&!s_captureNeutral&&s_smcOwnershipVerified,
                      s_faceGeneration,haveFallback?fallback:nullptr,gaze,SMCAnimator(),&settings);
 }
+static void SMCBlushTick() {
+  if(poser_close::Closing()||!poser_blush::enabled){poser_blush::RestoreAll();return;}
+  std::vector<poser_blush::Request> requests;
+  auto collect=[&](SMCActorState *actor) {
+    SMCActorScope scope(actor);SMCMotionFrame sample;
+    AcquireSRWLockShared(&s_motionFaceLock);sample=s_motionFaceMailbox;ReleaseSRWLockShared(&s_motionFaceLock);
+    auto valid=[&](const SMCMotionFrame &f){return f.active&&f.animator==SMCAnimator()&&f.generation==s_faceGeneration;};
+    bool playback=valid(sample);if(!playback)sample=SMCManualFrame();
+    if(SMCBindingPreviewCurrent(GetTickCount64()))sample=s_activeSMC->bindingPreview;
+    poser_blush::Request r;r.owner=SMCAnimator();r.root=SMCRoot();
+    r.key=s_characterProfile?s_characterProfile->key:SMCGazeContext().modelKey;
+    r.active=valid(sample);r.value=(std::max)(sample.weights[blush::Channel],sample.fallbackWeights[blush::Channel]);r.master=sample.settings.strength;
+    if(actor==&s_editorSMC&&poser_blush::previewEnabled) {
+      if(poser_blush::previewActor!=r.owner||poser_blush::previewModel!=r.key||!SMCFrozen())poser_blush::previewEnabled=false;
+      else if(!playback){r.active=true;r.value=poser_blush::preview;r.master=1;}
+    }
+    if(r.owner)requests.push_back(r);
+  };
+  collect(&s_editorSMC);for(auto actor:s_squadSMC)if(actor&&actor!=&s_editorSMC)collect(actor);
+  poser_blush::Tick(requests,double(GetTickCount64())*.001);
+}
 static void SMCGazeCameraTick(void *camera) {
   poser_gaze::SetCamera(camera);
   auto apply=[](SMCActorState *actor) {
@@ -1530,6 +1558,7 @@ static void SMCGazeCameraTick(void *camera) {
   };
   apply(&s_editorSMC);
   for(auto actor:s_squadSMC)if(actor&&actor!=&s_editorSMC)apply(actor);
+  SMCBlushTick();
 }
 static void SMCFaceBind() {
   if(!s_faceBonesCaptured||s_captureNeutral||s_faceBoneCount<=0||

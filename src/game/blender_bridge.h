@@ -106,7 +106,7 @@ static Json BuildScene() {
     {"duration",m.timeline.duration},{"fps",30},{"motion_file",m.file},{"has_motion",MmdHasContent()}};
 }
 static Json Begin(bool useMotion=true) {
-  if(g_blenderEditing)return Error("Blender already owns this character; disconnect first");
+  if(g_blenderEditing)return {{"ok",false},{"retryable",true},{"error",u8"上次 Blender 连接尚未释放；关闭旧连接后重试"}};
   if(MmdSquadBusy()||g_mmd.loading||g_mmd.preview)return Error("Stop squad playback/calibration and wait for loading first");
   if(!MmdCharacterReady())return Error("Character skeleton is not ready");
   auto &m=g_mmd;
@@ -200,7 +200,7 @@ static void Apply(const blender_bridge::Frame &f) {
     bool calibrated=c.morph>=0&&s_characterBinding.ready&&s_characterBindingGeneration==s_faceGeneration&&
       c.morph<int(s_characterBinding.usable.size())&&s_characterBinding.usable[c.morph];
     if(calibrated)face.expressions[c.morph]=(std::max)(face.expressions[c.morph],item.second);
-    else if(c.native>=0&&c.native<SMC_NUM_MOUTH+s_extraMorphCount)face.fallbackWeights[c.native]=mmd::Clamp(face.fallbackWeights[c.native]+item.second,0,1);
+    else if(c.native>=0&&c.native<SMC_MAX_SLIDERS)face.fallbackWeights[c.native]=mmd::Clamp(face.fallbackWeights[c.native]+item.second,0,1);
   }
   for(const auto &b:f.bones)for(int e=0;e<2;++e)
     if(g_mmd.profile.roles[21+e]==b.index) {

@@ -739,7 +739,10 @@ static void MmdPollCharacterFaces() {
   if(!m.faceLibraryStarted)MmdReloadCharacterFaces();
   if(m.faceLibraryLoading&&m.faceLoader.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
     auto result=m.faceLoader.get();m.faceLibraryLoading=false;m.faceLibraryError=result.error;
-    if(result.error.empty()){m.faceLibrary=std::move(result.profiles);changed=true;}
+    if(result.error.empty()){
+      m.faceLibrary=std::move(result.profiles);changed=true;
+      poser_blush::labels.clear();for(const auto &p:m.faceLibrary)poser_blush::labels[p->key]=p->label;
+    }
   }
   auto key=character_face::ModelKey(CurrentCharModelKey());
   if(changed||key!=m.faceModel||m.faceSelectionGeneration!=s_faceGeneration||m.faceSelectionReady!=s_faceHierarchy.ready) {
@@ -784,10 +787,12 @@ static void MmdReport() {
 #if POSER_ENABLE_XXMI_BRIDGE
     if(ModBridgeUsesMorph(kv.first)){m.report.push_back(u8"用于 mod 联动: "+kv.first);continue;}
 #endif
+    bool material=false;for(const auto &t:kv.second.native)material|=t.index==blush::Channel;
+    if(material)m.report.push_back(u8"原生脸红材质映射（按角色设置）: "+kv.first);
     bool native=false,character=false;
     for(const auto &t:kv.second.native)native|=t.index>=0;
     for(const auto &t:kv.second.character)character|=t.index>=0;
-    if(!character) {
+    if(!character&&!material) {
       if(!native||!m.faceSettings.fallback)m.report.push_back(u8"未映射表情: "+kv.first);
       else m.report.push_back(u8"专属校准未覆盖，使用固定映射: "+kv.first);
     }
@@ -1235,6 +1240,7 @@ static void MmdCaptureSession(bool preserveCurrent=false) {
 }
 static void MmdStop(void *nextEntity) {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  first_person::ClearPlayback();
   g_blenderEditing=false;
   mmd_camera::observe=false;
   SMCClearBindingPreview();

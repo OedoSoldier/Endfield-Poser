@@ -114,6 +114,7 @@ static void *g_transform_get_localRotation = nullptr;
 static void *g_transform_set_localRotation = nullptr;
 static void *g_transform_get_localPosition = nullptr;
 static void *g_transform_get_localScale = nullptr;
+static void *g_transform_set_localScale = nullptr;
 static void *g_transform_set_localPosition = nullptr;
 static void *g_transform_get_position = nullptr;
 static void *g_transform_set_position = nullptr; // 世界平移（自由相机写）
@@ -184,6 +185,7 @@ static void ResolveGameApi() {
     if (trClass) {
       g_transform_get_localToWorldMatrix = FindMethod(trClass, "get_localToWorldMatrix", 0);
       g_transform_get_localScale = FindMethod(trClass, "get_localScale", 0);
+      g_transform_set_localScale = FindMethod(trClass, "set_localScale", 1);
       g_transform_get_localRotation =
           FindMethod(trClass, "get_localRotation", 0);
       g_transform_set_localRotation =

@@ -3,14 +3,14 @@ static bool ClothBoneOriginalCoverageCoat(const ClothBoneRuntime &s) {
   const auto p=s.profile;const auto r=s.local.recipe;
   return p&&eiem_cloth_asset::SourceUpperCoatFront(*p)&&
       p->boneCount==47&&p->rootCount==7&&!p->loop&&s.local.requested&&r&&p->generatedLocal==r&&
-      r->NativePanelsOnly()&&r->CoatCalfCoverage()&&r->separatedPanels==3&&
+      r->NativePanelsOnly()&&r->CoatLegCoverage()&&r->separatedPanels==3&&
       s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
 }
 static bool ClothBoneForkCoat(const ClothBoneRuntime &s) {
   const auto p=s.profile;
   if(ClothBoneSeparatedCoatRecipe(s))return s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
   if(ClothBoneOriginalCoverageCoat(s))return true;
-  if(p&&s.local.requested&&s.local.recipe&&s.local.recipe==p->generatedLocal&&s.local.recipe->ForkCoatBodyOnly()&&
+  if(p&&s.local.requested&&s.local.recipe&&s.local.recipe==p->generatedLocal&&s.local.recipe->ForkCoatGraphOnly()&&
       eiem_cloth_asset::SourceForkCoatFront(*p))return s.contactConsumer<0&&s.contactPartner<0&&!s.supportCreated;
   return p&&((p->runtimeForkCoat&&p->runtimeGenerated&&p->runtimeFixedForks&&p->nativeGraphOrder)||eiem_cloth_asset::SourceInactiveCoat(*p))&&
       p->nativeGraphCount>0&&!p->loop&&

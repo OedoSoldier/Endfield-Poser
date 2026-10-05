@@ -272,6 +272,7 @@ static void MmdSquadLoadActorCalibration(int slot) {
     poser_secondary::Prepare(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,MmdNow());
 }
 static void MmdSquadStop() {
+  first_person::ClearPlayback();
   auto &s=g_squad;MmdSquadCancelStart();s.stopRequested=false;s.timeline.stop();
   const bool occupied=s.active;s.active=false;
   s.cameraOwner=nullptr;s.cameraReferences.reset();

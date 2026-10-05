@@ -68,10 +68,9 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   if(s.profile->runtimeBodyOnly&&!r.NativeBodyOnly())return false;
   if(s.profile->runtimeSeparatedCoat&&(!r.NativePanelsOnly()||!eiem_cloth_asset::SourceSeparatedCoat(*s.profile)))return false;
   if(eiem_cloth_asset::SourceOriginalCoverageCoat(s.profile->prefabSha,s.profile->component)&&
-      (!r.NativePanelsOnly()||!r.CoatCalfCoverage()))return false;
-  if(r.sourceCoatCalves&&(!r.CoatCalfCoverage()||!eiem_cloth_asset::SourceOriginalCoverageCoat(s.profile->prefabSha,s.profile->component)))return false;
-  if(r.sourceCoatTorso&&(!r.CoatTorsoCoverage()||
-      (r.sourceCoatCalves?!eiem_cloth_asset::SourceUpperCoatFront(*s.profile):(!r.ForkCoatBodyOnly()||!eiem_cloth_asset::SourceForkCoatFront(*s.profile)))))return false;
+      (!r.NativePanelsOnly()||!r.CoatLegCoverage()))return false;
+  if(r.sourceCoatLegs&&(!r.CoatLegCoverage()||!eiem_cloth_asset::SourceCoatThighColliders(*s.profile)))return false;
+  if(r.sourceForkCoat&&(!r.ForkCoatGraphOnly()||!eiem_cloth_asset::SourceForkCoatFront(*s.profile)))return false;
   l.assets.assign(s.profile->bones,s.profile->bones+s.profile->boneCount);
   if(r.sourcePanelFit&&!eiem_cloth_asset::SourcePanelContract(*s.profile))return false;
   if(r.resampledPanel&&(!r.sourcePanelFit||!eiem_cloth_asset::SourceSeraphPanel(*s.profile)||r.addedCount!=ClothLongPanelParticles||r.rootCount!=ClothLongPanelColumns||!r.bodyAsset||r.bodySphereCount!=14))return false;
@@ -88,7 +87,7 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
     if(s.profile->runtimeSeparatedCoat&&s.profile->ReleasedFixed(n))l.assets[n].attribute=2;
     eiem_cloth_asset::SourceUpperCoatSelection(*s.profile,n,l.assets[n]);
     l.assets[n].column=r.columns[n];
-    if(r.ForkCoatBodyOnly())eiem_cloth_asset::SourceForkCoatSelection(*s.profile,n,l.assets[n]);
+    if(r.ForkCoatGraphOnly())eiem_cloth_asset::SourceForkCoatSelection(*s.profile,n,l.assets[n]);
     if((r.sourcePanelFit&&eiem_cloth_asset::SourcePanelRelease(*s.profile,n)) || (r.sourceApronFit&&eiem_cloth_asset::SourceApronRelease(*s.profile,n)))l.assets[n].attribute=2;
     if(r.sourcePanelFit){l.assets[n].depth=eiem_cloth_asset::SourcePanelDepth(*s.profile,n);if(eiem_cloth_asset::SourceChenWaist(*s.profile,n))l.assets[n].attribute=1;}
     if(r.sourceCoatWaist)l.assets[n].attribute=s.profile->CandidateAttribute(n);
@@ -102,7 +101,7 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   l.profile.nativeGraphs=r.graphs;l.profile.nativeGraphCount=r.graphCount;
   if(r.nativeGraphOrder)l.profile.nativeGraphOrder=r.nativeGraphOrder;
   l.profile.boneCount=int(l.assets.size());l.profile.roots=l.roots.data();l.profile.rootCount=int(l.roots.size());
-  if(eiem_cloth_asset::SourceUpperCoatFront(*s.profile)||r.ForkCoatBodyOnly())l.profile.depth=s.profile->depth+1;
+  if(eiem_cloth_asset::SourceUpperCoatFront(*s.profile)||r.ForkCoatGraphOnly())l.profile.depth=s.profile->depth+1;
   if(r.resampledPanel){l.profile.depth=ClothLongPanelRows;l.profile.candidateIgnored=l.ignored.data();l.profile.candidateIgnoredCount=int(l.ignored.size());}
   if(r.sourceShortSkin)l.profile.depth=3;
   return ClothBoneIdentityBudget(l.profile.boneCount,l.profile.EffectiveCount()) && l.profile.boneCount==r.Total() && l.profile.EffectiveCount()==(r.resampledPanel?0:r.sourceShortSkin?s.profile->boneCount:s.profile->EffectiveCount()+eiem_cloth_asset::SourcePanelPromotedCount(*s.profile)+eiem_cloth_asset::SourceUpperCoatPromoted(*s.profile)+eiem_cloth_asset::SourceForkCoatPromoted(*s.profile))+r.addedCount;
@@ -212,7 +211,7 @@ static bool ClothBoneLocalCreate() {
   if(recipe.sourcePanelFit){int released=0,waist=0;for(int n=0;n<s.profile->boneCount;++n){released+=eiem_cloth_asset::SourcePanelRelease(*s.profile,n);waist+=l.assets[n].attribute==1&&l.assets[n].depth==0;}
     Log("[CLOTH-AUTO] stage=source-panel-prepared component=%s internalFixedToMove=%d sourceFixedWaistRoots=%d verifiedSourceWaists=%d commonLayerSkin=1 originalBodyCollidersRetained=1 selectionRestore=original-snapshot nativeReadback=pending visualVerified=0",s.profile->component,released,waist,eiem_cloth_asset::SourcePanelPromotedCount(*s.profile));}
   if(recipe.RetainsBindings())Log("[CLOTH-AUTO] stage=coat-waist-prepared component=%s meshes=%d addedBones=%d waistSkinTransition=1 originalPaletteRetained=1 nativeReadback=pending visualVerified=0",s.profile->component,recipe.meshCount,recipe.addedCount);
-  if(recipe.sourceCoatTorso)Log("[CLOTH-AUTO] stage=coat-torso-prepared component=%s addedChest=1 addedTransverseWaist=1 totalAddedCapsules=%d originalSkinRetained=1 sourceCollidersRetained=1 nativeReadback=pending visualVerified=0",s.profile->component,recipe.bodySphereCount);
+  if(recipe.sourceForkCoat)Log("[CLOTH-AUTO] stage=coat-graph-prepared component=%s addedTorso=0 originalSkinRetained=1 sourceCollidersRetained=1 calfSupplement=pending nativeReadback=pending visualVerified=0",s.profile->component);
   if(recipe.NativeBodyOnly())Log("[CLOTH-AUTO] stage=body-contact-prepared component=%s points=%d sourceLines=%d addedThighCapsules=%d sourceReferenceRetained=1 originalSkinRetained=1 originalCapsuleWrites=0 nativeReadback=pending visualVerified=0",s.profile->component,l.profile.EffectiveCount(),recipe.graphs[0].lineCount,recipe.bodySphereCount);
   if(recipe.sourceShortSkin)Log("[CLOTH-AUTO] stage=short-skin-prepared component=%s waistFixed=%d visibleFixedToMove=4 leasedSideBones=%d nativeControls=%d closedSurface=%d originalSkinRetained=1 sharedRendererWrites=0 originalCapsuleWrites=0 nativeReadback=pending visualVerified=0",s.profile->component,recipe.sourceShortSides?6:4,s.profile->sourceBranchCount,recipe.Total(),recipe.sourceShortSides);
   if(recipe.sourceApronFit)Log("[CLOTH-AUTO] stage=source-apron-prepared originalNativePoints=4 verifiedWaistInputs=2 internalFixedToMove=2 addedBones=%d sourceFixedOnlySkinReleased=1 sideBBCsRetained=1 originalBodyColliders=1 nativeReadback=pending visualVerified=0",recipe.addedCount);
@@ -431,7 +430,7 @@ static bool ClothBoneLocalPublish() {
   if(!ClothBoneBindingIdentity()) {ClothBoneLocalRestore();return false;}
   l.published=true;
   if(l.recipe->CoatWaistSkinOnly())Log("[CLOTH-AUTO] stage=coat-waist-active component=%s Process=%p team=%d meshes=%d nativeOutputFrames=%u originalBBC=1 same24Particles=1 sourceTrunkField=1 MoveWeightsUnchanged=1 sourceBodyCapsulesUnchanged=1 visualVerified=0",s.profile->component,CollisionGc(s.process[1]),s.team[1],l.recipe->meshCount,l.solverFrames);
-  if(l.recipe->sourceCoatTorso)Log("[CLOTH-AUTO] stage=coat-torso-active component=%s team=%d addedChest=1 addedTransverseWaist=1 totalAddedCapsules=%d registered=%d nativeOutputFrames=%u originalSkinRetained=1 visualVerified=0",s.profile->component,s.team[1],l.recipe->bodySphereCount,l.fittedBodyRegistered,l.solverFrames);
+  if(l.recipe->sourceForkCoat)Log("[CLOTH-AUTO] stage=coat-graph-active component=%s team=%d addedTorso=0 calfSupplement=%zu nativeOutputFrames=%u originalSkinRetained=1 visualVerified=0",s.profile->component,s.team[1],s.calfColliders.size(),l.solverFrames);
   if(l.recipe->NativeBodyOnly())Log("[CLOTH-AUTO] stage=body-contact-active component=%s Process=%p team=%d points=%d sourceLines=%d addedThighCapsules=%d nativeOutputFrames=%u originalBBC=1 originalSkinRetained=1 sourceReferenceRetained=1 visualVerified=0",s.profile->component,CollisionGc(s.process[1]),s.team[1],l.profile.EffectiveCount(),l.recipe->graphs[0].lineCount,l.recipe->bodySphereCount,l.solverFrames);
   if(l.recipe->sourceShortSkin)Log("[CLOTH-AUTO] stage=short-skin-active component=%s team=%d points=%d faces=%d outputFrames=%u visibleFixedToMove=4 leasedSideBones=%d closedSurface=%d sharedRendererWrites=0 visualVerified=0",s.profile->component,s.team[1],l.profile.EffectiveCount(),l.profile.FaceCount(),l.solverFrames,s.profile->sourceBranchCount,l.recipe->sourceShortSides);
   if(l.recipe->NativePanelsOnly())Log("[CLOTH-AUTO] stage=separated-panels-active component=%s Process=%p team=%d panels=%d points=%d nativeFaces=%d nativeOutputFrames=%u originalSkinRetained=1 rendererWrites=0 visualVerified=0",
@@ -450,7 +449,7 @@ static bool ClothBoneLocalPublish() {
   if(s.contactPartner>=0&&s.contactPartner<s_clothBoneCount&&s_clothBoneSlots[s.contactPartner].supportCreated)
     Log("[CLOTH-BONE-SURFACE] stage=merged-skin-published recipe=%s partnerTeam=%d supportPoints=%zu singleRendererPublisher=1 originalFixedTermsPreserved=1 innerSkinPreserved=1 naturalShapePreserved=1 visualVerified=0",
         ClothPartnerSurfaceSignature,s_clothBoneSlots[s.contactPartner].team[1],std::size(ClothPartnerSurfaceBones));
-  ClothBoneNote(l.recipe->sourceCoatTorso?"active-original-BBC-coat-chest-waist-contact":l.recipe->NativeBodyOnly()?"active-original-BBC-Line-Point-fitted-thigh-contact":l.recipe->CoatWaistSkinOnly()?"active-original-BBC-coat-waist-skin":l.recipe->sourceShortSkin?"active-original-BBC-short-visible-skin":l.recipe->NativePanelsOnly()?"active-separated-native-panels-original-skin":l.recipe->NativeRibbonWidth()?"active-original-BBC-isolated-ribbon-width-skin":l.recipe->sourceApronFit?"active-content-fitted-fixed-apron-original-BBC":l.recipe->sourcePanelFit?"active-content-fitted-waist-panels-original-BBC":l.recipe->runtimeGenerated?"active-runtime-generated-simple-BoneCloth-surface":l.recipe->rootSkinTransition?"active-original-BBC-open-strip-skin-candidate":"active-original-BBC-joint-chart-two-layer-skin-candidate");return true;
+  ClothBoneNote(l.recipe->sourceForkCoat?"active-original-BBC-coat-graph-native-colliders":l.recipe->NativeBodyOnly()?"active-original-BBC-Line-Point-fitted-thigh-contact":l.recipe->CoatWaistSkinOnly()?"active-original-BBC-coat-waist-skin":l.recipe->sourceShortSkin?"active-original-BBC-short-visible-skin":l.recipe->NativePanelsOnly()?"active-separated-native-panels-original-skin":l.recipe->NativeRibbonWidth()?"active-original-BBC-isolated-ribbon-width-skin":l.recipe->sourceApronFit?"active-content-fitted-fixed-apron-original-BBC":l.recipe->sourcePanelFit?"active-content-fitted-waist-panels-original-BBC":l.recipe->runtimeGenerated?"active-runtime-generated-simple-BoneCloth-surface":l.recipe->rootSkinTransition?"active-original-BBC-open-strip-skin-candidate":"active-original-BBC-joint-chart-two-layer-skin-candidate");return true;
 }
 static bool ClothBoneLocalCleanupWait(const char *reason,int item) {
   auto &s=ClothBoneState();auto &l=s.local;const auto now=GetTickCount64();

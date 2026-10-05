@@ -1,7 +1,7 @@
 """Endfield skeleton, expression, camera and correction-layer editor."""
 bl_info = {
     'name': 'Endfield Poser Bridge', 'author': 'Endfield Poser',
-    'version': (0, 2, 6), 'blender': (5, 2, 0),
+    'version': (0, 2, 8), 'blender': (5, 2, 0),
     'location': '3D View > N > Endfield', 'category': 'Animation',
     'description': '编辑游戏骨架、中文表情、镜头与动作修正层',
 }
@@ -40,6 +40,19 @@ _undoing = False
 _undo_live = False
 _connected_scene_uid = None
 _connected_arm_uid = None
+_connecting = False
+_connect_generation = 0
+_connect_scene_uid = None
+_connect_retry = 0.
+_connect_deadline = 0.
+_pending_session = 0
+
+
+def scene_fps(scene):
+    fps = scene.render.fps / scene.render.fps_base
+    if not math.isfinite(fps) or not 1 <= fps <= 120:
+        raise ValueError('联动支持 1–120 FPS，请调整场景帧率')
+    return fps
 
 
 def keep_alive():
@@ -120,12 +133,9 @@ def connect_current(result):
     _session, _sequence = result['session'], 0
     arm = scene.epb_armature
     previous = rig.schema(arm) if arm and 'epb_scene' in arm else None
-    compatible = previous and previous['model'] == result['model'] and [
-        (b['name'], b['parent']) for b in previous['bones']] == [(b['name'], b['parent']) for b in result['bones']]
-    if compatible:
-        _schema = previous
-        for old, new in zip(_schema['bones'], result['bones']):
-            old['editable'] = new['editable']
+    compatible = rig.reconnect_schema(previous, result)
+    if compatible and all(b['blender_name'] in arm.pose.bones for b in compatible['bones']):
+        _schema = compatible
         # Keep existing property indices so saved face curves remain attached
         # to the same expression. New VMD aliases append instead of reordering.
         available = {f['name']: f for f in result['faces']}
@@ -142,9 +152,11 @@ def connect_current(result):
         _schema['session'] = _session
         arm['epb_scene'] = json.dumps(_schema, ensure_ascii=False)
     else:
+        compatible = None
         # Keep the user's scene untouched; a dedicated scene contains no mesh.
         scene = bpy.data.scenes.new('Endfield 动作编辑')
         bpy.context.window.scene = scene
+        scene.render.fps, scene.render.fps_base = 30, 1.
         scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
         arm = rig.create_rig(result, scene)
         scene.epb_armature = arm
@@ -156,13 +168,14 @@ def connect_current(result):
     _schema['sample_anchor_rotation'] = result.get('anchor_rotation', [0, 0, 0, 1])
     arm['epb_scene'] = json.dumps(_schema, ensure_ascii=False)
     rig.apply_display(arm, scene.epb_show_fingers)
-    scene.render.fps, scene.render.fps_base = 30, 1
-    scene.frame_start = 1
-    scene.frame_end = max(2, math.ceil(result['duration'] * 30) + 1)
-    scene.epb_import_end = scene.frame_end
+    fps = scene_fps(scene)
+    if not compatible:
+        scene.frame_start = 1
+        scene.frame_end = max(2, math.ceil(result['duration'] * fps) + 1)
+        scene.epb_import_end = scene.frame_end
     initial = result.get('initial')
     if initial:
-        frame = 1 + initial['time']*30
+        frame = 1 + initial['time']*fps
         scene.frame_set(int(frame), subframe=frame-int(frame))
         rig.apply_sample(arm, initial, scene.epb_camera)
         animation.capture_base(arm, scene)
@@ -186,6 +199,40 @@ def begin_result(result):
     check(result)
     # One callback later the camera observer has an actual scene camera pose.
     client().request('scene', {'session': result['session']}, connect_result)
+
+
+def attempt_connect():
+    global _connect_retry
+    generation = _connect_generation
+    _connect_retry = float('inf')
+    def reply(result):
+        global _connecting, _connect_retry, _connection_status, _status, _pending_session
+        if generation != _connect_generation or not _connecting:
+            if result.get('ok') and result.get('session'):
+                client().request('end', {'session': result['session']})
+                if _connecting:
+                    _connect_retry = time.monotonic() + .5
+            return
+        if result.get('retryable') and time.monotonic() < _connect_deadline:
+            _connect_retry = time.monotonic() + .5
+            _connection_status = '等待游戏就绪或上次连接释放…'
+            return
+        check(result)
+        _pending_session = result['session']
+        def ready(data):
+            global _connecting, _pending_session
+            if generation != _connect_generation or not _connecting:
+                return
+            scene = next((s for s in bpy.data.scenes if s.session_uid == _connect_scene_uid), None)
+            if not scene:
+                disconnect()
+                return
+            bpy.context.window.scene = scene
+            connect_result(data)
+            _pending_session = 0
+            _connecting = False
+        client().request('scene', {'session': result['session']}, ready)
+    client().request('begin', {}, reply)
 
 
 def send_preview(scene=None, depsgraph=None):
@@ -220,7 +267,7 @@ def evaluated_preview(scene, depsgraph):
     # pose without changing frames. Capture the same graph shown in Blender.
     if (_sampling or _busy or _undoing or not _session or scene != _connected_scene or
             not scene.epb_live or scene.epb_armature != _connected_arm or
-            time.monotonic()-_last < 1/30):
+            time.monotonic()-_last < 1/min(120, max(1, scene.render.fps / scene.render.fps_base))):
         return
     try:
         send_preview(scene, depsgraph)
@@ -267,11 +314,13 @@ def tick():
             _display_pending = False
         if _client:
             _client.poll()
+        if _connecting and time.monotonic() >= _connect_retry:
+            attempt_connect()
         scene = bpy.context.scene
         if _session and scene.epb_armature != _connected_arm:
             disconnect()
         now = time.monotonic()
-        if _session and now-_last > (1/30 if scene.epb_live and not _busy else 1):
+        if _session and now-_last > (1/scene_fps(scene) if scene.epb_live and not _busy else 1):
             _last = now
             if scene.epb_live and not _busy:
                 send_preview()
@@ -283,12 +332,15 @@ def tick():
                     area.tag_redraw()
     except Exception as exc:
         connection_error(exc)
-    return 1/60
+    return 1/120
 
 
 def disconnect():
-    global _session, _busy, _baker, _status
-    session = _session
+    global _session, _busy, _baker, _status, _connecting, _connect_generation, _pending_session
+    _connecting = False
+    _connect_generation += 1
+    session = _session or _pending_session
+    _pending_session = 0
     _session, _busy, _baker = 0, False, None
     _status = '已断开；游戏恢复原状态'
     globals()['_connection_status'] = '未连接游戏'
@@ -351,9 +403,19 @@ def update_display(scene, context):
 def load_post(_):
     # Repair visibility in existing projects without changing their actions.
     for scene in bpy.data.scenes:
+        managed = [o for o in scene.objects if o.type == 'ARMATURE' and o.get('epb_managed')]
+        if not scene.epb_armature and len(managed) == 1:
+            scene.epb_armature = managed[0]
+        if not scene.epb_camera and scene.camera and (scene.camera.get('epb_managed_camera') or
+                scene.camera.name.startswith('Endfield 镜头')):
+            scene.epb_camera = scene.camera
+        if not _session:
+            scene.epb_live = False
         for arm in scene.objects:
             if arm.type == 'ARMATURE' and arm.get('epb_managed'):
                 rig.apply_display(arm, scene.epb_show_fingers)
+    if not bpy.app.timers.is_registered(tick):
+        bpy.app.timers.register(tick, persistent=True)
 
 
 class EPB_OT_connect(bpy.types.Operator):
@@ -361,7 +423,21 @@ class EPB_OT_connect(bpy.types.Operator):
     bl_label = '连接当前游戏角色'
     bl_description = '保留当前姿态和表情进入编辑；播放中的 MMD 暂停在当前帧'
     def execute(self, context):
-        client().request('begin', {}, begin_result)
+        global _connecting, _connect_generation, _connect_scene_uid, _connect_deadline, _connection_status
+        if _session or _connecting:
+            return {'CANCELLED'}
+        try:
+            if context.scene.epb_armature:
+                scene_fps(context.scene)
+        except ValueError as exc:
+            report(self, {'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        _connect_generation += 1
+        _connecting = True
+        _connect_scene_uid = context.scene.session_uid
+        _connect_deadline = time.monotonic()+12
+        _connection_status = '正在连接游戏…'
+        attempt_connect()
         return {'FINISHED'}
 
 
@@ -394,9 +470,9 @@ class EPB_OT_open_vmd(bpy.types.Operator, ImportHelper):
 def export_header(data, camera=False):
     if camera:
         return {'format': 'endfield-blender-camera', 'version': 2}
+    bones = data.get('game_bones', data['bones'])
     return {'format': 'endfield-blender-motion', 'version': 2, 'model': data['model'],
-            'bone_names': [b['name'] for b in data['bones']],
-            'bone_parents': [b['parent'] for b in data['bones']]}
+            'bone_names': [b['name'] for b in bones], 'bone_parents': [b['parent'] for b in bones]}
 
 
 def export_sample(packet, camera=False):
@@ -416,6 +492,11 @@ class ExportClip:
         if not s.epb_armature or _busy or (self.camera_only and not s.epb_camera):
             report(self, {'ERROR'}, '需要编辑骨架，且不能与导入同时进行')
             return {'CANCELLED'}
+        try:
+            self._fps = scene_fps(s)
+        except ValueError as exc:
+            report(self, {"ERROR"}, str(exc))
+            return {"CANCELLED"}
         self._original, self._frame = s.frame_current, s.frame_start
         self._start, self._end = s.frame_start, s.frame_end
         self._data = rig.schema(s.epb_armature)
@@ -455,7 +536,7 @@ class ExportClip:
             return {'PASS_THROUGH'}
         try:
             s = context.scene
-            fps = s.render.fps / s.render.fps_base
+            fps = self._fps
             for _ in range(3):
                 s.frame_set(self._frame)
                 sample = rig.packet(s.epb_armature, s.epb_camera if self.camera_only else None, s, 0, self._frame, self._data)
@@ -505,11 +586,16 @@ class EPB_OT_pull(bpy.types.Operator):
             report(self, {'ERROR'}, '请先连接，并等待当前导入结束')
             return {'CANCELLED'}
         start, end = scene.epb_import_start, scene.epb_import_end
-        if end < start or end-start > 108000:
+        try:
+            fps = scene_fps(scene)
+        except ValueError as exc:
+            report(self, {'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        if end < start or end-start > fps * 3600:
             report(self, {'ERROR'}, '帧范围无效（单次最多一小时）')
             return {'CANCELLED'}
         _busy = True
-        _baker = animation.Baker(scene.epb_armature, scene.epb_camera, _schema, 30)
+        _baker = animation.Baker(scene.epb_armature, scene.epb_camera, _schema, fps)
         active_session = _session
         def pull(frame):
             if not _busy or _session != active_session:
@@ -531,8 +617,8 @@ class EPB_OT_pull(bpy.types.Operator):
                     _baker, _busy = None, False
                     scene.frame_start, scene.frame_end = start, end
                     scene.frame_set(start)
-                    _status = '动作已导入；可新建修正层'
-            client().request('sample', {'session': _session, 'start': (frame-1)/30, 'count': count, 'fps': 30}, receive)
+                    _status = '原动作已更新；已有动作和镜头修正层保留'
+            client().request('sample', {'session': _session, 'start': (frame-1)/fps, 'count': count, 'fps': fps}, receive)
         pull(start)
         return {'FINISHED'}
 
@@ -791,10 +877,45 @@ class EPB_OT_clear_solo(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EPB_OT_enable_corrections(bpy.types.Operator):
+    bl_idname = 'endfield.enable_corrections'
+    bl_label = '重新启用已有修正层'
+    bl_description = '恢复旧版导入后关闭的修正层，保留原关键帧'
+    bl_options = {'REGISTER', 'UNDO'}
+    camera: BoolProperty(default=False)
+
+    def execute(self, context):
+        obj = context.scene.epb_camera if self.camera else context.scene.epb_armature
+        if _busy or not obj:
+            return {'CANCELLED'}
+        with edit_transaction():
+            animation.leave_tweak(context.scene)
+            for owner in ([obj, obj.data] if self.camera else [obj]):
+                ad = owner.animation_data
+                if not ad:
+                    continue
+                if animation.is_base(ad.action) and ad.nla_tracks:
+                    animation.replace_base(owner, ad.action)
+                ad.use_nla = True
+                for track in ad.nla_tracks:
+                    track.is_solo = False
+                    if any(animation.is_any_correction(strip.action) for strip in track.strips):
+                        track.mute = False
+                if animation.is_any_correction(ad.action):
+                    ad.action_influence = 1.
+                owner.update_tag()
+            context.scene.frame_set(context.scene.frame_current, subframe=context.scene.frame_subframe)
+        refresh_preview(context)
+        return {'FINISHED'}
+
+
 def draw_layers(layout, obj, camera=False):
     if not obj or not obj.animation_data:
         return
     ad = obj.animation_data
+    if any(t.mute and any(animation.is_any_correction(s.action) for s in t.strips) for t in ad.nla_tracks):
+        layout.label(text='有修正层已关闭，可按需重新启用', icon='INFO')
+        layout.operator('endfield.enable_corrections').camera = camera
     if not ad.use_nla or any(t.is_solo for t in ad.nla_tracks):
         layout.label(text='下层独显／停用会屏蔽修正效果', icon='ERROR')
         layout.operator('endfield.clear_solo').camera = camera
@@ -883,7 +1004,8 @@ class EPB_PT_main(bpy.types.Panel):
         s, l = context.scene, self.layout
         l.label(text=_connection_status[:72], icon='LINKED' if _session else 'UNLINKED')
         l.label(text=_status[:72])
-        l.operator('endfield.connect' if not _session else 'endfield.disconnect')
+        l.operator('endfield.connect' if not (_session or _connecting) else 'endfield.disconnect',
+                   text='取消连接' if _connecting else '断开并恢复游戏' if _session else '连接当前游戏角色')
         l.operator('endfield.open_vmd', icon='FILE_FOLDER')
         l.prop(s, 'epb_armature')
         l.prop(s, 'epb_live')
@@ -903,6 +1025,12 @@ class EPB_PT_main(bpy.types.Panel):
         row = l.row(align=True)
         row.prop(s, 'frame_current', text='当前帧')
         row.operator('screen.animation_play', text='', icon='PLAY')
+        if s.epb_armature:
+            row = l.row(align=True);row.enabled = not _busy
+            row.prop(s.render, 'fps', text='场景帧率');row.prop(s.render, 'fps_base', text='基数')
+            l.label(text='1–120 FPS；修改后现有关键帧帧号不变')
+        else:
+            l.label(text='新建联动工程默认 30 FPS，连接后可调整')
         box = l.box();box.label(text='从游戏导入（先在游戏选择 VMD）')
         row = box.row(align=True);row.prop(s, 'epb_import_start');row.prop(s, 'epb_import_end')
         row = box.row();row.enabled = bool(_session) and not _busy
@@ -985,7 +1113,7 @@ class EPB_PT_camera(bpy.types.Panel):
 
 classes = (EPB_OT_connect, EPB_OT_disconnect, EPB_OT_open_vmd, EPB_OT_export, EPB_OT_export_camera, EPB_OT_pull, EPB_OT_layer, EPB_OT_key,
            EPB_OT_restore_pose, EPB_OT_face_key, EPB_OT_face_zero, EPB_OT_camera_key, EPB_OT_edit_target, EPB_OT_camera_view,
-           EPB_OT_camera_layer, EPB_OT_camera_restore, EPB_OT_layer_visibility, EPB_OT_show_layers, EPB_OT_show_keys, EPB_OT_clear_solo,
+           EPB_OT_camera_layer, EPB_OT_camera_restore, EPB_OT_layer_visibility, EPB_OT_show_layers, EPB_OT_show_keys, EPB_OT_clear_solo, EPB_OT_enable_corrections,
            EPB_PT_main, EPB_PT_layers, EPB_PT_faces, EPB_PT_camera)
 
 

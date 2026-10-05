@@ -62,7 +62,7 @@ static bool ClothBoneCoatPoseSize(const ClothBoneRuntime &s) {
   if(!s.profile)return false;
   if(s.profile->runtimeSeparatedCoat)return ClothBoneSeparatedCoatRecipe(s)&&s.bones.size()==size_t(s.local.recipe->Total());
   if(eiem_cloth_asset::SourceUpperCoatFront(*s.profile))return s.local.requested&&s.local.recipe&&
-      s.local.recipe==s.profile->generatedLocal&&s.local.recipe->NativePanelsOnly()&&s.local.recipe->CoatCalfCoverage()&&
+      s.local.recipe==s.profile->generatedLocal&&s.local.recipe->NativePanelsOnly()&&s.local.recipe->CoatLegCoverage()&&
       s.local.layers.empty()&&s.bones.size()==size_t(s.local.recipe->Total());
   return s.bones.size()==size_t(s.profile->boneCount);
 }
@@ -73,7 +73,7 @@ static bool ClothBoneSaveInputLease(int slot) {
     if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||!ClothOwns(s.owner)||
         (s.local.requested&&(!s.local.recipe||(!s.local.recipe->CoatWaistSkinOnly()&&!ClothBoneSeparatedCoatRecipe(s)&&
           !eiem_cloth_asset::SourceUpperCoatFront(*s.profile)&&
-          !(s.local.recipe->ForkCoatBodyOnly()&&eiem_cloth_asset::SourceForkCoatFront(*s.profile)))))||!ClothBoneCoatPoseSize(s))return false;
+          !(s.local.recipe->ForkCoatGraphOnly()&&eiem_cloth_asset::SourceForkCoatFront(*s.profile)))))||!ClothBoneCoatPoseSize(s))return false;
     for(int k=0;k<coatCount;++k)if(s.bones[coatInputs[k]].inputCaptured)return false;
     for(int k=0;k<coatCount;++k){auto &b=s.bones[coatInputs[k]];b.inputPosition=b.savedPosition;b.inputRotation=b.savedRotation;b.inputScale=b.savedScale;b.inputCaptured=true;}
     Log("[CLOTH-BONE-COAT-INPUT] stage=captured component=%s frame=%d generation=%llu command=%u sourceInputs=%d hierarchyAndSkinWrites=0 returnPose=boundary-snapshot",
