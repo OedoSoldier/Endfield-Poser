@@ -45,7 +45,12 @@ static bool Live() {
 }
 static void End() {
   if(adoptedMotion&&Live()&&!RuntimeClosing()) {
-    for(const auto &b:connectedPose)MmdRawPose(b.transform,b.pos,b.rot);
+    for(size_t i=0;i<connectedPose.size();++i) {
+      auto b=connectedPose[i];
+      // Only undo scaling if this edit session actually took ownership.
+      b.scaleOwned=i<g_mmd.session.transforms.size()&&g_mmd.session.transforms[i].scaleOwned;
+      MmdRestoreTransform(b);
+    }
     CapturePoseSnapshot();SMCMotionPublish(connectedFace);
     mmd_camera::Publish(connectedCamera);
     g_mmd.timeline=savedTimeline;g_mmd.timeline.lastNow=MmdNow();
@@ -89,8 +94,22 @@ static Json BuildScene() {
   }
   Json camera=nullptr;
   if(auto observed=std::atomic_load(&mmd_camera::observed))camera=CameraJson(*observed,s.anchorWorld.position());
+  Json cameraCuts=Json::array();
+  if(m.editedCamera) {
+    for(const auto &f:m.editedCamera->frames)if(f.camera.cut&&f.time+m.cameraSettings.timeOffset>0)
+      cameraCuts.push_back(f.time+m.cameraSettings.timeOffset);
+  } else {
+    const auto &keys=MmdCameraKeys();
+    for(size_t i=1;i<keys.size();++i) {
+      bool cut=m.cameraSettings.cutMode==mmd::CameraCutMode::Adjacent&&keys[i].frame-keys[i-1].frame==1;
+      if(m.cameraSettings.cutMode==mmd::CameraCutMode::Manual)
+        cut=std::find(m.cameraSettings.cutFrames.begin(),m.cameraSettings.cutFrames.end(),keys[i].frame)!=m.cameraSettings.cutFrames.end();
+      double time=keys[i].frame/30.+m.cameraSettings.timeOffset;
+      if(cut&&time>0)cameraCuts.push_back(time);
+    }
+  }
   Json currentBones=Json::array(),currentFaces=Json::object();
-  for(const auto &b:bones)if(b["editable"].get<bool>())currentBones.push_back({{"i",b["i"]},{"p",b["p"]},{"q",b["q"]}});
+  for(const auto &b:bones)if(b["editable"].get<bool>())currentBones.push_back({{"i",b["i"]},{"p",b["p"]},{"q",b["q"]},{"s",b["scale"]}});
   for(const auto &c:catalog)currentFaces[c.name]=0.f;
   if(adoptedMotion) {
     const auto faces=m.editedBody&&m.editedBody->hasFaces?m.editedBody->sample(savedTimeline.seconds).faces:std::map<std::string,float>{};
@@ -101,6 +120,8 @@ static Json BuildScene() {
   Json initial={{"time",adoptedMotion?savedTimeline.seconds:0},{"root",V(GetBoneWorldPos(s.root)-s.anchorWorld.position())},
     {"bones",currentBones},{"faces",currentFaces},{"camera",camera},{"visible",!s.visibility.lease}};
   return {{"ok",true},{"protocol",blender_bridge::Protocol},{"session",session},{"revision",s_bonesRev},
+    {"bone_scale",bool(g_transform_get_localScale&&g_transform_set_localScale)},
+    {"camera_cuts",cameraCuts},
     {"model",CurrentCharModelKey()},{"bones",bones},{"faces",faces},{"camera",camera},{"initial",initial},
     {"anchor_rotation",Q(mmd::Rotation(s.anchorWorld))},
     {"duration",m.timeline.duration},{"fps",30},{"motion_file",m.file},{"has_motion",MmdHasContent()}};
@@ -123,7 +144,10 @@ static Json Begin(bool useMotion=true) {
     if(m.autoScale)m.scale=m.mapper.suggestedScale;
     m.mapper.sample(0,m.scale,m.inPlace,m.height,m.ikMode,m.amplitude,m.motionCalibration);
   }
-  if(useMotion&&m.editedBody)MmdSampleBody(0);
+  if(useMotion&&m.editedBody) {
+    if(!MmdBindEditedSkeleton())return Error(m.status);
+    MmdSampleBody(0);
+  }
   if(!adoptedMotion) {m.preview=true;MmdCaptureSession(true);m.preview=false;}
   else if(!m.session.bodyOwned) {
     // Camera-only playback also needs a body snapshot once joint editing starts.
@@ -135,7 +159,7 @@ static Json Begin(bool useMotion=true) {
   // Hold exactly the last rendered MMD frame, without advancing or restoring it.
   m.timeline.state=mmd::PlayState::Paused;m.timeline.lastNow=MmdNow();MmdSyncAudio();
   connectedPose.clear();
-  for(const auto &b:s_allBones)connectedPose.push_back({b.transform,GetBoneLocalPos(b.transform),GetBoneLocalRot(b.transform)});
+  for(const auto &b:s_allBones)connectedPose.push_back({b.transform,GetBoneLocalPos(b.transform),GetBoneLocalRot(b.transform),MmdLocalScale(b.transform)});
   connectedPose.push_back({m.session.root,GetBoneLocalPos(m.session.root),GetBoneLocalRot(m.session.root)});
   if(std::none_of(m.session.transforms.begin(),m.session.transforms.end(),[&](const auto &b){return b.transform==m.session.root;}))
     m.session.transforms.push_back({m.session.root,m.session.rootPos,m.session.rootRot});
@@ -156,10 +180,12 @@ static Json Sample(double seconds) {
   }
   for(size_t i=0;i<editable.size();++i)if(editable[i]) {
     Vec3 p=s.transforms[i].pos;Quat q=s.transforms[i].rot;
+    Vec3 scale=connectedPose[i].scale;
     if(MmdHasBody()&&i<m.mapper.output.write.size()&&m.mapper.output.write[i]) {
       p=m.editedBody?m.playbackProfile.bones[i].localPos:m.profile.bones[i].localPos;q=m.mapper.output.localRot[i];
+      if(m.editedBody&&i<m.editedScaleTracks.size()&&m.editedScaleTracks[i])scale=m.playbackProfile.bones[i].localScale;
     }
-    bones.push_back({{"i",i},{"p",V(p)},{"q",Q(q)}});
+    bones.push_back({{"i",i},{"p",V(p)},{"q",Q(q)},{"s",V(scale)}});
   }
   for(auto &c:controls)faces[c.first]=0;
   for(auto &track:m.clip.morphs)if(controls.count(track.first))faces[track.first]=m.editedBody&&m.editedBody->hasFaces&&!m.editedFaceOverrides.count(track.first)?m.editedFaces[track.first]:mmd::SampleMorph(track.second,seconds*30);
@@ -184,6 +210,7 @@ static void Apply(const blender_bridge::Frame &f) {
   for(const auto &b:f.bones) {
     if(!editable[b.index])continue;
     MmdRawPose(s_allBones[b.index].transform,b.position,b.rotation);
+    if(b.hasScale)MmdWriteBoneScale(s,b.index,b.scale);
   }
   CapturePoseSnapshot();
   SMCMotionFrame face;face.active=true;face.animator=s.animator;face.generation=s_faceGeneration;
@@ -252,6 +279,8 @@ static Json Execute(const std::string &path,const Json &j) {
     auto next=blender_bridge::ParseFrame(j,editable.size());
     if(next.sequence<=sequence)return Error("Stale preview frame");
     for(auto &b:next.bones)if(!editable[b.index])return Error("Bone is not an editable body joint");
+    if(std::any_of(next.bones.begin(),next.bones.end(),[](const auto &b){return b.hasScale;})&&
+       (!g_transform_get_localScale||!g_transform_set_localScale))return Error("Bone scale API unavailable; update Poser and reconnect");
     for(auto &f:next.faces)if(!controls.count(f.first))return Error("Unknown face control");
     current=std::move(next);sequence=current.sequence;hasFrame=true;
     return {{"ok",true},{"sequence",sequence}};
@@ -277,6 +306,7 @@ static void Service() {
           // Legacy combined files retain expression tracks. Camera is now a
           // separately selected source and cannot replace the chosen lens here.
           g_mmd.editedBody=clip;g_mmd.editedBodyFile=loadedFile;g_mmd.editedFaceOverrides.clear();
+          g_mmd.editedBoneMap.clear();
           g_mmd.clip.bones.clear();
           if(clip->hasFaces) {
             g_mmd.clip.morphs.clear();

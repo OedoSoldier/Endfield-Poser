@@ -205,7 +205,7 @@ def basis_matrices(data, sample):
     worlds, poses, basis = [], [], []
     for b in data["bones"]:
         local = updates.get(b.get('game_index', b['i']), b)
-        native_local = trs(local["p"], local["q"], b["scale"])
+        native_local = trs(local["p"], local["q"], local.get("s", b["scale"]))
         if b["parent"] >= 0:
             native_world = worlds[b["parent"]] @ native_local
         else:
@@ -280,8 +280,10 @@ def packet(arm, camera, scene, session, sequence, data=None, depsgraph=None):
         local = parent.inverted() @ world
         worlds.append(world)
         if b["editable"]:
-            p, q, _ = local.decompose()
-            bones.append({"i": b.get('game_index', b['i']), "p": list(p), "q": qlist(q)})
+            p, q, scale = local.decompose()
+            if any(not math.isfinite(v) or not .0001 <= v <= 1000 for v in scale):
+                raise ValueError('骨骼缩放需为正数，不能使用零缩放或负数镜像：' + pb.name)
+            bones.append({"i": b.get('game_index', b['i']), "p": list(p), "q": qlist(q), "s": list(scale)})
     view = None
     if camera:
         cam = camera.evaluated_get(deps)

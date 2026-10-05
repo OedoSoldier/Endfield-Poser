@@ -1,5 +1,6 @@
 """Native Blender actions and NLA correction layers, stored in the .blend."""
 from array import array
+from bisect import bisect_right
 import math
 import bpy
 from mathutils import Vector
@@ -10,6 +11,7 @@ class Baker:
     def __init__(self, arm, camera, data, fps):
         self.arm, self.camera, self.data, self.fps = arm, camera, data, fps
         self.channels, self.previous = {}, {}
+        self.cut_frames = sorted(1+float(t)*fps for t in data.get('camera_cuts', []))
 
     def add(self, owner, path, index, frame, value):
         self.channels.setdefault((owner, path, index), array('f')).extend((frame, value))
@@ -27,9 +29,9 @@ class Baker:
             if not b['editable']:
                 continue
             pb = self.arm.pose.bones[b['blender_name']]
-            p, q, _ = value.decompose()
+            p, q, scale = value.decompose()
             q = self.quaternion(b['i'], q)
-            for path, values in [('location', p), ('rotation_quaternion', q)]:
+            for path, values in [('location', p), ('rotation_quaternion', q), ('scale', scale)]:
                 for i, v in enumerate(values):
                     self.add(self.arm, pb.path_from_id(path), i, frame, v)
         for i, v in enumerate(rig.C.to_3x3() @ Vector(sample['root'])):
@@ -72,6 +74,11 @@ class Baker:
             fc.keyframe_points.foreach_set('co', values)
             for key in fc.keyframe_points:
                 key.interpolation = 'CONSTANT' if path in ('["epb_visible"]', 'type') else 'LINEAR'
+            if self.camera and obj in (self.camera, self.camera.data):
+                actions[obj]['epb_camera_cuts'] = self.cut_frames
+                for a, b in zip(fc.keyframe_points, list(fc.keyframe_points)[1:]):
+                    if bisect_right(self.cut_frames, a.co.x) < bisect_right(self.cut_frames, b.co.x+1e-4):
+                        a.interpolation = 'CONSTANT'
             fc.update_autoflags(obj)
             fc.update()
         # Replace only the imported source, below the user's correction stack.
@@ -203,6 +210,7 @@ def capture_base(arm, scene):
         for pb in arm.pose.bones:
             pb.keyframe_insert('location', frame=scene.frame_start, group=pb.name)
             pb.keyframe_insert('rotation_quaternion', frame=scene.frame_start, group=pb.name)
+            pb.keyframe_insert('scale', frame=scene.frame_start, group=pb.name)
         arm.keyframe_insert('location', frame=scene.frame_start)
         for i, _ in enumerate(rig.schema(arm)['faces']):
             arm.keyframe_insert(f'["{rig.bone_key(i)}"]', frame=scene.frame_start)
@@ -293,14 +301,15 @@ def key_pose(arm, frame, selected=True, scene=None):
     for pb in joints:
         pb.keyframe_insert('location', frame=frame, group=pb.name)
         pb.keyframe_insert('rotation_quaternion', frame=frame, group=pb.name)
-        for path, channels in [('location', 3), ('rotation_quaternion', 4)]:
+        pb.keyframe_insert('scale', frame=frame, group=pb.name)
+        for path, channels in [('location', 3), ('rotation_quaternion', 4), ('scale', 3)]:
             for i in range(channels):
                 fc = action.fcurve_ensure_for_datablock(arm, pb.path_from_id(path), index=i)
                 # A new joint correction starts from zero at the motion start.
                 # Blender keyframe_insert performs the NLA inverse mapping, so
                 # stored keys are offsets rather than a second copy of the pose.
                 if len(fc.keyframe_points) == 1 and frame > scene.frame_start:
-                    neutral = 1.0 if path == 'rotation_quaternion' and i == 0 else 0.0
+                    neutral = 1.0 if path == 'scale' or (path == 'rotation_quaternion' and i == 0) else 0.0
                     fc.keyframe_points.insert(scene.frame_start, neutral)
                 for key in fc.keyframe_points:
                     if key.co.x in (frame, scene.frame_start):
@@ -472,8 +481,77 @@ def key_camera(camera, scene):
                         point.handle_left_type = point.handle_right_type = 'AUTO_CLAMPED'
                 curve.update()
         owner.update_tag()
+    align_camera_quaternions(action)
     action.update_tag()
     bpy.context.view_layer.update()
+
+
+def align_camera_quaternions(action):
+    # q and -q describe the same view. Component FCurves must never interpolate
+    # through zero between equivalent signs (a one-frame 180-degree flip).
+    changed = False
+    for layer in action.layers:
+        for strip in layer.strips:
+            for bag in strip.channelbags:
+                curves = sorted((fc for fc in bag.fcurves if fc.data_path == 'rotation_quaternion'), key=lambda fc: fc.array_index)
+                if len(curves) != 4 or [fc.array_index for fc in curves] != list(range(4)):
+                    continue
+                points = [{p.co.x: p for p in fc.keyframe_points} for fc in curves]
+                previous = None
+                for frame in sorted(set.intersection(*(set(p) for p in points))):
+                    current = [p[frame].co.y for p in points]
+                    if previous is not None and sum(a*b for a,b in zip(previous,current)) < 0:
+                        for p in points:
+                            key=p[frame]
+                            key.co.y *= -1; key.handle_left.y *= -1; key.handle_right.y *= -1
+                        current = [-v for v in current]
+                        changed = True
+                    previous = current
+                for fc in curves: fc.update()
+    if changed: action.update_tag()
+    return changed
+
+
+def camera_cut_frames(camera):
+    """Authored cuts, including constant user keys, mapped through NLA time."""
+    cuts = set()
+    def action_cuts(action, slot):
+        values = set(float(f) for f in action.get('epb_camera_cuts', []))
+        for layer in action.layers:
+            for strip in layer.strips:
+                bag = strip.channelbag(slot) if slot else None
+                if not bag: continue
+                for fc in bag.fcurves:
+                    for a,b in zip(fc.keyframe_points, list(fc.keyframe_points)[1:]):
+                        if a.interpolation == 'CONSTANT' and abs(a.co.y-b.co.y) > 1e-6:
+                            values.add(float(b.co.x))
+        return values
+    for owner in (camera, camera.data):
+        ad = owner.animation_data
+        if not ad: continue
+        if ad.action and ad.action_influence > 0:
+            cuts.update(action_cuts(ad.action, ad.action_slot))
+        solo = any(t.is_solo for t in ad.nla_tracks)
+        for track in ad.nla_tracks:
+            if track.mute or (solo and not track.is_solo): continue
+            for strip in track.strips:
+                if strip.mute or not strip.action or strip.use_animated_time: continue
+                span=strip.action_frame_end-strip.action_frame_start
+                for f in action_cuts(strip.action, strip.action_slot):
+                    if not strip.action_frame_start < f <= strip.action_frame_end: continue
+                    for repeat in range(min(1000, math.ceil(strip.repeat))):
+                        at=strip.frame_start+(f-strip.action_frame_start+repeat*span)*strip.scale
+                        if strip.frame_start < at <= strip.frame_end+1e-4: cuts.add(at)
+    return sorted(cuts)
+
+
+def repair_camera_quaternions(camera):
+    if not camera or not camera.animation_data: return
+    ad = camera.animation_data
+    actions = {s.action for t in ad.nla_tracks for s in t.strips if s.action}
+    if ad.action: actions.add(ad.action)
+    for action in actions:
+        if action.get('epb_camera_correction'): align_camera_quaternions(action)
 
 
 def restore_camera(camera, scene):

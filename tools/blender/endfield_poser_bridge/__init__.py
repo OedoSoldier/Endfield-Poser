@@ -1,7 +1,7 @@
 """Endfield skeleton, expression, camera and correction-layer editor."""
 bl_info = {
     'name': 'Endfield Poser Bridge', 'author': 'Endfield Poser',
-    'version': (0, 2, 8), 'blender': (5, 2, 0),
+    'version': (0, 2, 9), 'blender': (5, 2, 0),
     'location': '3D View > N > Endfield', 'category': 'Animation',
     'description': '编辑游戏骨架、中文表情、镜头与动作修正层',
 }
@@ -11,6 +11,7 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
+from bisect import bisect_right
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, IntProperty, StringProperty, PointerProperty
@@ -166,7 +167,10 @@ def connect_current(result):
     # incoming world-space camera/root samples. Updating only the output anchor
     # would instead rotate already saved animation and camera curves.
     _schema['sample_anchor_rotation'] = result.get('anchor_rotation', [0, 0, 0, 1])
+    _schema['bone_scale'] = result.get('bone_scale', False)
+    _schema['camera_cuts'] = result.get('camera_cuts', [])
     arm['epb_scene'] = json.dumps(_schema, ensure_ascii=False)
+    animation.repair_camera_quaternions(scene.epb_camera)
     rig.apply_display(arm, scene.epb_show_fingers)
     fps = scene_fps(scene)
     if not compatible:
@@ -245,6 +249,10 @@ def send_preview(scene=None, depsgraph=None):
         _sequence += 1
         data = rig.packet(scene.epb_armature, scene.epb_camera if scene.epb_camera_sync else None,
                           scene, _session, _sequence, _schema, depsgraph)
+        if not _schema.get('bone_scale', False):
+            rest = {b.get('game_index', b['i']): b for b in _schema['bones']}
+            if any(any(abs(v-r) > 1e-4 * max(1, abs(r)) for v, r in zip(b['s'], rest[b['i']]['scale'])) for b in data['bones']):
+                raise ValueError('游戏端尚不支持骨骼缩放，请更新到 Poser 0.5.42 或以上版本')
         unchanged_face = _connection_packet and data['faces'] == _connection_packet['faces']
         _face_untouched = _face_untouched and bool(unchanged_face)
         if (_face_untouched and not _preview_started and _connection_packet and all(data[k] == _connection_packet[k]
@@ -254,6 +262,8 @@ def send_preview(scene=None, depsgraph=None):
             keep_alive()
         else:
             data['preserve_face'] = _face_untouched
+            if not _schema.get('bone_scale', False):
+                for bone in data['bones']: bone.pop('s', None)
             client().preview(data, reply_for(_session, scene.frame_current_final))
             _preview_started = True
         _last = time.monotonic()
@@ -401,7 +411,7 @@ def update_display(scene, context):
 
 @persistent
 def load_post(_):
-    # Repair visibility in existing projects without changing their actions.
+    # Keep existing actions and fix equivalent quaternion signs in old layers.
     for scene in bpy.data.scenes:
         managed = [o for o in scene.objects if o.type == 'ARMATURE' and o.get('epb_managed')]
         if not scene.epb_armature and len(managed) == 1:
@@ -409,6 +419,7 @@ def load_post(_):
         if not scene.epb_camera and scene.camera and (scene.camera.get('epb_managed_camera') or
                 scene.camera.name.startswith('Endfield 镜头')):
             scene.epb_camera = scene.camera
+        animation.repair_camera_quaternions(scene.epb_camera)
         if not _session:
             scene.epb_live = False
         for arm in scene.objects:
@@ -469,9 +480,9 @@ class EPB_OT_open_vmd(bpy.types.Operator, ImportHelper):
 
 def export_header(data, camera=False):
     if camera:
-        return {'format': 'endfield-blender-camera', 'version': 2}
+        return {'format': 'endfield-blender-camera', 'version': 3}
     bones = data.get('game_bones', data['bones'])
-    return {'format': 'endfield-blender-motion', 'version': 2, 'model': data['model'],
+    return {'format': 'endfield-blender-motion', 'version': 3, 'model': data['model'],
             'bone_names': [b['name'] for b in bones], 'bone_parents': [b['parent'] for b in bones]}
 
 
@@ -500,6 +511,7 @@ class ExportClip:
         self._original, self._frame = s.frame_current, s.frame_start
         self._start, self._end = s.frame_start, s.frame_end
         self._data = rig.schema(s.epb_armature)
+        self._camera_cuts = animation.camera_cut_frames(s.epb_camera) if self.camera_only else []
         self._file = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False,
             dir=os.path.dirname(os.path.abspath(self.filepath)), prefix='.epmotion-', suffix='.tmp')
         header = export_header(self._data, self.camera_only)
@@ -541,6 +553,9 @@ class ExportClip:
                 s.frame_set(self._frame)
                 sample = rig.packet(s.epb_armature, s.epb_camera if self.camera_only else None, s, 0, self._frame, self._data)
                 sample = export_sample(sample, self.camera_only)
+                if self.camera_only:
+                    sample['camera']['cut'] = self._frame > self._start and (
+                        bisect_right(self._camera_cuts,self._frame-1) < bisect_right(self._camera_cuts,self._frame+1e-4))
                 sample['time'] = (self._frame-self._start)/fps
                 if not self._first:
                     self._file.write(',')

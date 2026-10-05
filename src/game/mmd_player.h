@@ -265,7 +265,14 @@ struct MmdSavedTransform {
   void *transform;
   Vec3 pos;
   Quat rot;
+  Vec3 scale{1,1,1};
+  bool scaleOwned=false;
 };
+static void MmdRestoreTransform(const MmdSavedTransform &b) {
+  if(!UnityObjAlive(b.transform))return;
+  MmdRawPose(b.transform,b.pos,b.rot);
+  if(b.scaleOwned)mmd_camera::Write(g_transform_set_localScale,b.transform,b.scale);
+}
 struct MmdSavedComponent {
   void *component;
   bool enabled;
@@ -335,6 +342,16 @@ struct MmdSession {
   std::vector<AccessoryBone> accessories;
   std::vector<AccessoryChain> chains;
 };
+static void MmdWriteBoneScale(MmdSession &session,size_t index,Vec3 scale) {
+  if(index>=session.transforms.size()||index>=s_allBones.size())return;
+  auto &saved=session.transforms[index];
+  if(saved.transform!=s_allBones[index].transform||!UnityObjAlive(saved.transform)||
+     !g_transform_get_localScale||!g_transform_set_localScale)return;
+  // Acquire only scales actually authored by Blender, leaving ordinary VMD
+  // playback and original non-unit character scales untouched.
+  if(!saved.scaleOwned) {saved.scale=MmdLocalScale(saved.transform);saved.scaleOwned=true;}
+  mmd_camera::Write(g_transform_set_localScale,saved.transform,scale);
+}
 static std::vector<mmd_visibility::State> s_mmdVisibilityRetired;
 static bool MmdVisibilityRestore(mmd_visibility::State &state) {
   const bool owned=bool(state.lease);
@@ -394,6 +411,8 @@ struct MmdMotionOverride {
 };
 struct MmdPlayer {
   std::shared_ptr<const blender_bridge::Clip> editedBody,editedCamera;
+  std::vector<bool> editedScaleTracks;
+  std::vector<int> editedBoneMap;
   std::string editedBodyFile,editedCameraFile;
   std::map<std::string,float> editedFaces;
   std::set<std::string> editedFaceOverrides;
@@ -525,6 +544,16 @@ static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
 }
 static bool MmdHasBody() {return g_mmd.editedBody || !g_mmd.clip.bones.empty();}
 static bool MmdHasContent() { return g_mmd.editedBody || g_mmd.editedCamera || !g_mmd.clip.empty() || !MmdCameraKeys().empty(); }
+static bool MmdBindEditedSkeleton() {
+  auto &m=g_mmd;m.editedBoneMap.clear();
+  if(!m.editedBody)return true;
+  try {
+    std::vector<std::string> names;std::vector<int> parents;
+    for(const auto &b:s_allBones){names.push_back(b.name);parents.push_back(b.parentIdx);}
+    m.editedBoneMap=m.editedBody->bindSkeleton(CurrentCharModelKey(),names,parents);
+    return true;
+  } catch(const std::exception &e) {m.status=std::string(u8"Blender 动作骨架无法匹配：")+e.what();return false;}
+}
 static void MmdUpdateDuration() {
   auto &m=g_mmd;const auto &keys=MmdCameraKeys();
   m.timeline.duration=(std::max)(m.clip.modelDuration(),mmd::CameraDuration(keys,m.cameraSettings));
@@ -1271,7 +1300,7 @@ static void MmdStop(void *nextEntity) {
   // Handles belong to the recorded actor, never implicitly to the new actor.
   if (ownerAlive)
     for (auto &b : s.transforms)
-      MmdRawPose(b.transform, b.pos, b.rot);
+      MmdRestoreTransform(b);
   // Keep the external writer suppressed until the saved transforms are back.
   poser_secondary::Stop(s.secondary,ownerAlive,false);
   if (!s.wasFrozen) {
@@ -1326,6 +1355,7 @@ static void MmdCharacterChanging(void *nextEntity=nullptr) {
   m.profile = mmd::RetargetProfile{};
   m.playbackProfile = mmd::RetargetProfile{};
   m.thumbStatus.clear();
+  m.editedBoneMap.clear();
   m.calibrationStatus = u8"角色已切换，等待新角色骨架；原角色校准仍保存在文件中";
   m.status = u8"切换角色已停止动作，等待新角色骨架";
 }
@@ -1336,11 +1366,14 @@ static void MmdSampleBody(double seconds) {
   const auto frame=m.editedBody->sample(seconds);
   m.editedFaces=frame.faces;
   m.playbackProfile=m.profile;
+  m.editedScaleTracks.assign(m.profile.bones.size(),false);
   std::vector<Quat> rotations;std::vector<bool> writes(m.profile.bones.size(),false);
   for(const auto &b:m.profile.bones)rotations.push_back(b.localRot);
   for(const auto &b:frame.bones) {
-    if(b.index<0||size_t(b.index)>=rotations.size())continue;
-    rotations[b.index]=b.rotation;writes[b.index]=true;m.playbackProfile.bones[b.index].localPos=b.position;
+    if(b.index<0||size_t(b.index)>=m.editedBoneMap.size())continue;
+    int index=m.editedBoneMap[b.index];if(index<0||size_t(index)>=rotations.size())continue;
+    rotations[index]=b.rotation;writes[index]=true;m.playbackProfile.bones[index].localPos=b.position;
+    if(b.hasScale) {m.playbackProfile.bones[index].localScale=b.scale;m.editedScaleTracks[index]=true;}
   }
   Quat basis{};
   if(m.profile.valid()) {
@@ -1392,6 +1425,8 @@ static void MmdApplyFrame() {
     void *t = s_allBones[i].transform;
     const auto position=m.editedBody?m.playbackProfile.bones[i].localPos:m.profile.bones[i].localPos;
     MmdRawPose(t, position, p.localRot[i]);
+    if(m.editedBody&&i<m.editedScaleTracks.size()&&m.editedScaleTracks[i])
+      MmdWriteBoneScale(s,i,m.playbackProfile.bones[i].localScale);
     for (int h = 0; h < s_humanBoneCount; h++)
       if (s_humanBones[h].transform == t) {
         s_humanBones[h].localPos = position;
@@ -1481,8 +1516,9 @@ static bool MmdStart() {
     return false;
   if(m.editedBody) {
     const auto &clip=*m.editedBody;
-    if(clip.model!=CurrentCharModelKey()||clip.names.size()!=s_allBones.size()) {m.status=u8"Blender 动作的角色或骨架不匹配，请连接对应角色重新导出";return false;}
-    for(size_t i=0;i<s_allBones.size();++i)if(clip.names[i]!=s_allBones[i].name||clip.parents[i]!=s_allBones[i].parentIdx) {m.status=u8"Blender 动作骨架已改变，请重新导出";return false;}
+    if(!clip.frames.empty()&&std::any_of(clip.frames.front().bones.begin(),clip.frames.front().bones.end(),[](const auto &b){return b.hasScale;})&&
+       (!g_transform_get_localScale||!g_transform_set_localScale)) {m.status=u8"当前游戏骨骼缩放接口不可用，无法播放含缩放的 Blender 动作";return false;}
+    if(!MmdBindEditedSkeleton())return false;
   }
   m.playbackProfile=m.profile;
   m.thumbStatus=(m.editedBody||m.clip.bones.empty())?std::string{}:MmdPrepareThumbs(m.playbackProfile,m.adaptation.characterThumbs);
