@@ -56,6 +56,16 @@ static void RequestToolClose();
 static void ToolCloseMaintenance();
 
 #include "game/blender_bridge.h"
+static void DrawBlenderSquadControls() {
+  ImGui::TextWrapped("%s",poser_blender::status.c_str());
+  ImGui::TextWrapped(u8"在 Blender 选择“小队（最多 4 人）”并连接；参与成员由本面板勾选，共用时间轴与镜头。每人动作、表情与修正层独立。");
+  if(g_blenderEditing&&ImGui::Button(u8"断开 Blender 并恢复全队"))poser_blender::localCommand=3;
+  ImGui::TextWrapped(u8"导出后，在“队员与动作 → 选择动作”分别加载各角色的 .epmotion；文件已包含站位，加载时将该位置的额外偏移归零。可混合使用 VMD 与 Blender 动作。");
+  ImGui::BeginDisabled(poser_blender::loading||g_mmd.loading||g_mmd.session.active||MmdSquadBusy());
+  if(ImGui::Button(u8"加载 Blender 镜头"))poser_blender::OpenEditedMotion(true);
+  ImGui::EndDisabled();
+  if(g_mmd.editedCamera)ImGui::TextWrapped("%s",g_mmd.editedCameraFile.c_str());
+}
 static void DrawBlenderControls() {
   ImGui::TextWrapped("%s",poser_blender::status.c_str());
   ImGui::TextWrapped(u8"在 Blender 的 Endfield 页签连接编辑。动作和镜头分别导出、分别加载，共用下方播放控制。");

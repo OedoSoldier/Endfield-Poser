@@ -1,7 +1,7 @@
 """Endfield skeleton, expression, camera and correction-layer editor."""
 bl_info = {
     'name': 'Endfield Poser Bridge', 'author': 'Endfield Poser',
-    'version': (0, 2, 9), 'blender': (5, 2, 0),
+    'version': (0, 3, 0), 'blender': (5, 2, 0),
     'location': '3D View > N > Endfield', 'category': 'Animation',
     'description': '编辑游戏骨架、中文表情、镜头与动作修正层',
 }
@@ -10,13 +10,14 @@ import json
 import os
 import tempfile
 import time
+import sys
 from contextlib import contextmanager
 from bisect import bisect_right
 import bpy
 from bpy.app.handlers import persistent
-from bpy.props import BoolProperty, IntProperty, StringProperty, PointerProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty, PointerProperty, EnumProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
-from . import rig, animation, transport, console
+from . import rig, animation, transport, console, squad
 
 _client = None
 _session = 0
@@ -122,10 +123,14 @@ def reply_for(session, frame=None):
 
 def connect_result(result):
     with edit_transaction():
-        connect_current(result)
+        check(result)
+        if result.get('mode') == 'squad': squad.connect(sys.modules[__name__], result)
+        else:
+            squad.clear()
+            connect_current(result)
 
 
-def connect_current(result):
+def connect_current(result, group_scene=None, shared_camera=None):
     global _session, _sequence, _schema, _status, _connected_arm, _connected_scene, _ack_frame
     global _connection_packet, _face_untouched, _preview_started
     global _connected_scene_uid, _connected_arm_uid
@@ -155,14 +160,15 @@ def connect_current(result):
     else:
         compatible = None
         # Keep the user's scene untouched; a dedicated scene contains no mesh.
-        scene = bpy.data.scenes.new('Endfield 动作编辑')
+        scene = group_scene or bpy.data.scenes.new('Endfield 动作编辑')
         bpy.context.window.scene = scene
-        scene.render.fps, scene.render.fps_base = 30, 1.
+        if not group_scene: scene.render.fps, scene.render.fps_base = 30, 1.
         scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
         arm = rig.create_rig(result, scene)
         scene.epb_armature = arm
         _schema = rig.schema(arm)
-        scene.epb_camera = rig.create_camera(result, scene)
+        scene.epb_camera = shared_camera or rig.create_camera(result, scene)
+    if shared_camera: scene.epb_camera = shared_camera
     # Keep the saved rig/action basis, but record the new game heading for
     # incoming world-space camera/root samples. Updating only the output anchor
     # would instead rotate already saved animation and camera curves.
@@ -173,7 +179,7 @@ def connect_current(result):
     animation.repair_camera_quaternions(scene.epb_camera)
     rig.apply_display(arm, scene.epb_show_fingers)
     fps = scene_fps(scene)
-    if not compatible:
+    if not compatible and not group_scene:
         scene.frame_start = 1
         scene.frame_end = max(2, math.ceil(result['duration'] * fps) + 1)
         scene.epb_import_end = scene.frame_end
@@ -236,7 +242,8 @@ def attempt_connect():
             _pending_session = 0
             _connecting = False
         client().request('scene', {'session': result['session']}, ready)
-    client().request('begin', {}, reply)
+    target = next((s for s in bpy.data.scenes if s.session_uid == _connect_scene_uid), None)
+    client().request('begin', {'mode': target.epb_mode if target else 'single'}, reply)
 
 
 def send_preview(scene=None, depsgraph=None):
@@ -246,6 +253,10 @@ def send_preview(scene=None, depsgraph=None):
         return
     _sampling = True
     try:
+        if squad.active:
+            squad.preview(sys.modules[__name__], scene, depsgraph)
+            _last = time.monotonic()
+            return
         _sequence += 1
         data = rig.packet(scene.epb_armature, scene.epb_camera if scene.epb_camera_sync else None,
                           scene, _session, _sequence, _schema, depsgraph)
@@ -276,7 +287,7 @@ def evaluated_preview(scene, depsgraph):
     # Pose drags, Graph Editor edits and NLA mixing can change the evaluated
     # pose without changing frames. Capture the same graph shown in Blender.
     if (_sampling or _busy or _undoing or not _session or scene != _connected_scene or
-            not scene.epb_live or scene.epb_armature != _connected_arm or
+            not scene.epb_live or not connected_target(scene) or
             time.monotonic()-_last < 1/min(120, max(1, scene.render.fps / scene.render.fps_base))):
         return
     try:
@@ -288,7 +299,7 @@ def evaluated_preview(scene, depsgraph):
 @persistent
 def frame_preview(scene, depsgraph=None):
     if (_busy or _sampling or _undoing or not _session or scene != _connected_scene or
-            not scene.epb_live or scene.epb_armature != _connected_arm):
+            not scene.epb_live or not connected_target(scene)):
         return
     try:
         send_preview(scene, depsgraph)
@@ -314,6 +325,10 @@ def edit_transaction():
         _busy = previous
 
 
+def connected_target(scene):
+    return scene == _connected_scene and (squad.valid(scene) if squad.active else scene.epb_armature == _connected_arm)
+
+
 def tick():
     global _last, _status, _busy, _display_pending
     try:
@@ -327,7 +342,7 @@ def tick():
         if _connecting and time.monotonic() >= _connect_retry:
             attempt_connect()
         scene = bpy.context.scene
-        if _session and scene.epb_armature != _connected_arm:
+        if _session and not connected_target(scene):
             disconnect()
         now = time.monotonic()
         if _session and now-_last > (1/scene_fps(scene) if scene.epb_live and not _busy else 1):
@@ -352,6 +367,7 @@ def disconnect():
     session = _session or _pending_session
     _pending_session = 0
     _session, _busy, _baker = 0, False, None
+    squad.clear()
     _status = '已断开；游戏恢复原状态'
     globals()['_connection_status'] = '未连接游戏'
     if session and _client:
@@ -387,7 +403,7 @@ def undo_post(_):
         # session_uid survives undo and renames; names and cached pointers don't.
         scene = next((s for s in bpy.data.scenes if s.session_uid == _connected_scene_uid), None)
         arm = scene.epb_armature if scene else None
-        if not arm or arm.session_uid != _connected_arm_uid:
+        if not arm or (not squad.undo(scene) if squad.active else arm.session_uid != _connected_arm_uid):
             disconnect()
             _status = '撤销已移除联动骨架；恢复骨架后可重新连接'
             return
@@ -406,7 +422,8 @@ def undo_post(_):
 
 
 def update_display(scene, context):
-    rig.apply_display(scene.epb_armature, scene.epb_show_fingers)
+    for arm in (squad.members(scene).values() if scene.get('epb_squad') else [scene.epb_armature]):
+        rig.apply_display(arm, scene.epb_show_fingers)
 
 
 @persistent
@@ -482,12 +499,12 @@ def export_header(data, camera=False):
     if camera:
         return {'format': 'endfield-blender-camera', 'version': 3}
     bones = data.get('game_bones', data['bones'])
-    return {'format': 'endfield-blender-motion', 'version': 3, 'model': data['model'],
+    return {'format': 'endfield-blender-motion', 'version': 4 if 'root_rotation' in data else 3, 'model': data['model'],
             'bone_names': [b['name'] for b in bones], 'bone_parents': [b['parent'] for b in bones]}
 
 
 def export_sample(packet, camera=False):
-    keys = ('time', 'anchor_rotation', 'camera') if camera else ('time', 'anchor_rotation', 'root', 'bones', 'faces')
+    keys = ('time', 'anchor_rotation', 'camera') if camera else ('time', 'anchor_rotation', 'root', 'root_rotation', 'bones', 'faces')
     if camera and not packet.get('camera'):
         raise ValueError('需要可用的镜头')
     return {key: packet[key] for key in keys if key in packet}
@@ -511,6 +528,7 @@ class ExportClip:
         self._original, self._frame = s.frame_current, s.frame_start
         self._start, self._end = s.frame_start, s.frame_end
         self._data = rig.schema(s.epb_armature)
+        self._arm = s.epb_armature
         self._camera_cuts = animation.camera_cut_frames(s.epb_camera) if self.camera_only else []
         self._file = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False,
             dir=os.path.dirname(os.path.abspath(self.filepath)), prefix='.epmotion-', suffix='.tmp')
@@ -551,7 +569,7 @@ class ExportClip:
             fps = self._fps
             for _ in range(3):
                 s.frame_set(self._frame)
-                sample = rig.packet(s.epb_armature, s.epb_camera if self.camera_only else None, s, 0, self._frame, self._data)
+                sample = rig.packet(self._arm, s.epb_camera if self.camera_only else None, s, 0, self._frame, self._data)
                 sample = export_sample(sample, self.camera_only)
                 if self.camera_only:
                     sample['camera']['cut'] = self._frame > self._start and (
@@ -610,7 +628,7 @@ class EPB_OT_pull(bpy.types.Operator):
             report(self, {'ERROR'}, '帧范围无效（单次最多一小时）')
             return {'CANCELLED'}
         _busy = True
-        _baker = animation.Baker(scene.epb_armature, scene.epb_camera, _schema, fps)
+        _baker = squad.Baker(scene, fps) if squad.active else animation.Baker(scene.epb_armature, scene.epb_camera, _schema, fps)
         active_session = _session
         def pull(frame):
             if not _busy or _session != active_session:
@@ -709,6 +727,7 @@ class EPB_OT_face_key(bpy.types.Operator):
         arm = context.scene.epb_armature
         if arm:
             arm.keyframe_insert(f'["{rig.bone_key(self.index)}"]', frame=context.scene.frame_current, group='表情')
+            squad.touch_face(context.scene)
             refresh_preview(context)
         return {'FINISHED'}
 
@@ -720,6 +739,7 @@ class EPB_OT_face_zero(bpy.types.Operator):
     def execute(self, context):
         global _face_untouched
         _face_untouched = False
+        squad.touch_face(context.scene)
         arm = context.scene.epb_armature
         if arm:
             for i, _ in enumerate(rig.schema(arm)['faces']):
@@ -1009,6 +1029,19 @@ class EPB_OT_camera_view(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EPB_OT_select_member(bpy.types.Operator):
+    bl_idname = 'endfield.select_member'
+    bl_label = '选择编辑队员'
+    slot: IntProperty(default=0, min=0, max=3)
+    def execute(self, context):
+        if _busy: return {'CANCELLED'}
+        arm = squad.members(context.scene).get(self.slot)
+        if not arm: return {'CANCELLED'}
+        with edit_transaction():
+            squad.select(context.scene, self.slot)
+        return {'FINISHED'}
+
+
 class EPB_PT_main(bpy.types.Panel):
     bl_label = 'Endfield · 动作编辑'
     bl_idname = 'EPB_PT_main'
@@ -1019,10 +1052,19 @@ class EPB_PT_main(bpy.types.Panel):
         s, l = context.scene, self.layout
         l.label(text=_connection_status[:72], icon='LINKED' if _session else 'UNLINKED')
         l.label(text=_status[:72])
+        row = l.row(); row.enabled = not (_session or _connecting or _busy)
+        row.prop(s, 'epb_mode', text='连接对象')
         l.operator('endfield.connect' if not (_session or _connecting) else 'endfield.disconnect',
-                   text='取消连接' if _connecting else '断开并恢复游戏' if _session else '连接当前游戏角色')
-        l.operator('endfield.open_vmd', icon='FILE_FOLDER')
-        l.prop(s, 'epb_armature')
+                   text='取消连接' if _connecting else '断开并恢复游戏' if _session else '连接当前小队' if s.epb_mode == 'squad' else '连接当前游戏角色')
+        if s.epb_mode == 'squad':
+            l.label(text='在游戏多人面板按第 1–4 位选择参与成员和动作')
+        else: l.operator('endfield.open_vmd', icon='FILE_FOLDER')
+        if s.epb_mode == 'squad' and s.get('epb_squad'):
+            row = l.column(align=True); row.enabled = not _busy
+            for slot, arm in squad.members(s).items():
+                op = row.operator('endfield.select_member', text=f'第 {slot+1} 位 · {arm.name}', depress=s.epb_armature == arm)
+                op.slot = slot
+        else: l.prop(s, 'epb_armature')
         l.prop(s, 'epb_live')
         if _session:
             if _busy:
@@ -1051,7 +1093,7 @@ class EPB_PT_main(bpy.types.Panel):
         row = box.row();row.enabled = bool(_session) and not _busy
         row.operator('endfield.pull_motion')
         row = l.row(align=True)
-        row.operator('endfield.export_motion', icon='EXPORT')
+        row.operator('endfield.export_motion', text='导出当前队员动作与表情' if s.get('epb_squad') else '导出动作与表情', icon='EXPORT')
         row.operator('endfield.export_camera', icon='CAMERA_DATA')
         l.label(text='Ctrl+S 保存工程；时间轴 / 曲线编辑器调整节奏')
 
@@ -1126,7 +1168,7 @@ class EPB_PT_camera(bpy.types.Panel):
             l.label(text='选中镜头：G / R 移动旋转；小键盘 0 取景')
 
 
-classes = (EPB_OT_connect, EPB_OT_disconnect, EPB_OT_open_vmd, EPB_OT_export, EPB_OT_export_camera, EPB_OT_pull, EPB_OT_layer, EPB_OT_key,
+classes = (EPB_OT_connect, EPB_OT_disconnect, EPB_OT_open_vmd, EPB_OT_export, EPB_OT_export_camera, EPB_OT_pull, EPB_OT_layer, EPB_OT_key, EPB_OT_select_member,
            EPB_OT_restore_pose, EPB_OT_face_key, EPB_OT_face_zero, EPB_OT_camera_key, EPB_OT_edit_target, EPB_OT_camera_view,
            EPB_OT_camera_layer, EPB_OT_camera_restore, EPB_OT_layer_visibility, EPB_OT_show_layers, EPB_OT_show_keys, EPB_OT_clear_solo, EPB_OT_enable_corrections,
            EPB_PT_main, EPB_PT_layers, EPB_PT_faces, EPB_PT_camera)
@@ -1138,6 +1180,7 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     props = {
+        'epb_mode': EnumProperty(name='连接对象', items=[('single', '当前角色', ''), ('squad', '小队（最多 4 人）', '')], default='single'),
         'epb_armature': PointerProperty(type=bpy.types.Object, name='编辑骨架', poll=lambda _, obj: obj.type == 'ARMATURE'),
         'epb_camera': PointerProperty(type=bpy.types.Object, name='预览镜头', poll=lambda _, obj: obj.type == 'CAMERA'),
         'epb_live': BoolProperty(name='实时同步到游戏', default=False),
@@ -1147,6 +1190,7 @@ def register():
         'epb_import_end': IntProperty(name='结束帧', default=300, min=1),
         'epb_face_search': StringProperty(name='搜索表情'),
     }
+    for slot in range(4): props[f'epb_member_{slot}'] = PointerProperty(type=bpy.types.Object, name=f'第 {slot+1} 位骨架', poll=lambda _, obj: obj.type == 'ARMATURE')
     for name, prop in props.items():
         setattr(bpy.types.Scene, name, prop)
     bpy.app.timers.register(tick, persistent=True)

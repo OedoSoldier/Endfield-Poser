@@ -56,6 +56,7 @@ try {
             'tools\blender\install.ps1', 'tools\blender\install_addon.py',
             'tools\blender\endfield_poser_bridge\__init__.py',
             'tools\blender\endfield_poser_bridge\rig.py',
+            'tools\blender\endfield_poser_bridge\squad.py',
             'tools\blender\endfield_poser_bridge\animation.py',
             'tools\blender\endfield_poser_bridge\console.py',
             'tools\blender\endfield_poser_bridge\transport.py')) {

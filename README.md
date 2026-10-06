@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.5.42**。Blender 支持**骨骼缩放关键帧**，修复导出镜头的转场闪帧，以及重新加载动作时的“骨骼已改变”误报。
+**当前预发布版：0.5.43**。Blender 支持**最多四名小队成员同时编辑**：各自调整动作、表情和修正层，共用时间轴与镜头，导出后可在游戏多人播放器中使用。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.42/Endfield-Poser-v0.5.42-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.43/Endfield-Poser-v0.5.43-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 下载 **Endfield-Poser-v0.5.42-win64.zip** 安装包。
+1. 下载 **Endfield-Poser-v0.5.43-win64.zip** 安装包。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装本地包** 或 **在线安装 / 更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -44,14 +44,14 @@
 | 调整衣物物理 | 在播放器 **物理** 开关碰撞增强；飘带抖动时可在停止后调整 **飘带减振** |
 | 增强衣物惯性 | 在播放器 **物理** 调整 **衣物惯性物理增强**；衣物与头发强度可分别设置 |
 | 第二骨骼物理增强 | 在播放器 **物理** 开启，仅用于单人、多人 MMD，可调整方向响应和回弹 |
-| 在 Blender 中修正动作 | 安装包内的 **Blender联动插件.zip** 从 Blender 插件管理中安装；在 **N → Endfield** 连接角色，详见[编辑指南](tools/blender/endfield_poser_bridge/README.md) |
+| 在 Blender 中修正动作 | 安装包内的 **Blender联动插件.zip** 从 Blender 插件管理中安装；在 **N → Endfield** 连接当前角色或小队，逐人编辑动作和表情、共用镜头，详见[编辑指南](tools/blender/endfield_poser_bridge/README.md) |
 | 隐藏面板拍摄 | 按 **L**；动作和音乐继续播放 |
 
 播放快捷键、窗口拖动和姿态保存见[快速教程](docs/tutorial.md)。动作幅度、IK、衣物物理和特殊骨骼适配见[MMD 播放指南](docs/mmd-player.md)。[Blender 联动](tools/blender/endfield_poser_bridge/README.md)支持骨架、表情、镜头，以及动作和镜头修正层，动作与镜头分别导出，在 MMD 播放器加载并共用物理增强、动作校准等设置。
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
-多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.42 更新说明](docs/releases/v0.5.42.md)。
+多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.43 更新说明](docs/releases/v0.5.43.md)。
 
 ## 常见问题
 

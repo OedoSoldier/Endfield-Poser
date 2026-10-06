@@ -48,6 +48,7 @@ if(WIN32)
     src/core/user_agreement.h src/editor/panel_agreement.h
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
+    src/game/blender_squad.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/game/mmd_secondary_motion.h src/math/mmd_secondary_motion.h src/integrations/sbm_mmd_api.h
     src/math/secondary_body_motion.h src/game/secondary_body_runtime.h src/game/secondary_body_settings.h src/integrations/secondary_bone_profiles.h

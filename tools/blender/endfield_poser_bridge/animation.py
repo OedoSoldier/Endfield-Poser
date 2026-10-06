@@ -36,6 +36,9 @@ class Baker:
                     self.add(self.arm, pb.path_from_id(path), i, frame, v)
         for i, v in enumerate(rig.C.to_3x3() @ Vector(sample['root'])):
             self.add(self.arm, 'location', i, frame, v)
+        if 'root_rotation' in sample:
+            q = self.quaternion('root', rig.root_rotation(self.data, sample))
+            for i, v in enumerate(q): self.add(self.arm, 'rotation_quaternion', i, frame, v)
         for i, face in enumerate(self.data['faces']):
             self.add(self.arm, f'["{rig.bone_key(i)}"]', 0, frame, sample['faces'].get(face['name'], 0))
         self.add(self.arm, '["epb_visible"]', 0, frame, float(sample.get('visible', True)))
@@ -212,6 +215,8 @@ def capture_base(arm, scene):
             pb.keyframe_insert('rotation_quaternion', frame=scene.frame_start, group=pb.name)
             pb.keyframe_insert('scale', frame=scene.frame_start, group=pb.name)
         arm.keyframe_insert('location', frame=scene.frame_start)
+        if 'root_rotation' in rig.schema(arm):
+            arm.keyframe_insert('rotation_quaternion', frame=scene.frame_start)
         for i, _ in enumerate(rig.schema(arm)['faces']):
             arm.keyframe_insert(f'["{rig.bone_key(i)}"]', frame=scene.frame_start)
         arm.keyframe_insert('["epb_visible"]', frame=scene.frame_start)

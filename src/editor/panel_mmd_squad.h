@@ -2,6 +2,7 @@
 #include "editor/panel_scale.h"
 #include "game/mmd_squad.h"
 #include "editor/panel_mmd.h"
+static void DrawBlenderSquadControls();
 
 static void DrawMmdSquadPanel() {
   auto &s = g_squad;
@@ -12,7 +13,7 @@ static void DrawMmdSquadPanel() {
     ImGui::End();
     return;
   }
-  ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
+  ImGui::BeginDisabled(g_blenderEditing || s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
   if (ImGui::Button(s.timeline.state == mmd::PlayState::Playing ? u8"暂停全队" : u8"播放全队")) {
     s.hotkeys = true;
     MmdSquadCommand(s.timeline.state == mmd::PlayState::Playing ? 1 : 0);
@@ -58,10 +59,11 @@ static void DrawMmdSquadPanel() {
       if (ImGui::Button(u8"重新读取小队"))
         s.refresh = true;
       ImGui::SameLine();
-      ImGui::BeginDisabled(g_mmd.clip.empty());
+      ImGui::BeginDisabled(g_mmd.clip.empty() || bool(g_mmd.editedBody));
       if (ImGui::Button(u8"单人面板当前动作 → 四人") && !g_mmd.clip.empty()) {
         for (auto &slot : s.slots) {
           slot.clip = g_mmd.clip;
+          slot.edited.reset();slot.faceOverrides.clear();
           slot.clip.cameras.clear();
           mmd::Recount(slot.clip);
           slot.file = g_mmd.file;
@@ -85,13 +87,14 @@ static void DrawMmdSquadPanel() {
         if (ImGui::Button(u8"追加表情 / 眼神"))
           MmdSquadLoad(i, true);
         ImGui::SameLine();
-        ImGui::BeginDisabled(slot.clip.empty());
+        ImGui::BeginDisabled(!slot.content() || bool(slot.edited));
         if (ImGui::Button(u8"此动作应用到四人"))
           MmdSquadCopyToAll(i);
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::SmallButton(u8"清除")) {
           slot.clip = {};
+          slot.edited.reset();slot.faceOverrides.clear();
           slot.file.clear();
           slot.status.clear();
           MmdSquadDuration();
@@ -117,6 +120,7 @@ static void DrawMmdSquadPanel() {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"站位与适配")) {
+      ImGui::BeginDisabled(g_blenderEditing);
       if (ImGui::Button(u8"动作校准…")) {s.hotkeys = true; MmdOpenMotionCalibration();}
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
       if (ImGui::CollapsingHeader(u8"队员站位与动作比例", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -164,9 +168,11 @@ static void DrawMmdSquadPanel() {
       }
       ImGui::EndDisabled();
       ImGui::TextWrapped(u8"全队共用时间轴；动作校准可按队员单独设置。");
+      ImGui::EndDisabled();
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"镜头与音乐")) {
+      ImGui::BeginDisabled(g_blenderEditing);
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
       {
         ImGui::TextWrapped(u8"与单人面板共用音乐和镜头文件；由全队时间轴同步播放。");
@@ -183,8 +189,8 @@ static void DrawMmdSquadPanel() {
           ImGui::SliderFloat(u8"音乐音量", &g_mmd.musicVolume, 0, 1, "%.2f");
           ImGui::SliderFloat(u8"音乐偏移（秒）", &g_mmd.musicOffset, -120, 120, "%.2f");
         }
-        if (!MmdCameraKeys().empty()) {
-          DrawMmdFile(g_mmd.cameraFile.empty() ? g_mmd.file : g_mmd.cameraFile);
+        if (!MmdCameraKeys().empty() || g_mmd.editedCamera) {
+          DrawMmdFile(g_mmd.editedCamera?g_mmd.editedCameraFile:g_mmd.cameraFile.empty() ? g_mmd.file : g_mmd.cameraFile);
           if (ImGui::Checkbox(u8"播放 MMD 镜头", &g_mmd.cameraSettings.enabled))
             MmdSquadDuration();
           if (g_mmd.cameraSettings.origin == mmd::CameraOrigin::Follow)
@@ -201,7 +207,11 @@ static void DrawMmdSquadPanel() {
       ImGui::Separator();
       DrawFixedCameraControls();
       DrawFirstPersonControls(true,true);
+      ImGui::EndDisabled();
       ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(u8"Blender")) {
+      DrawBlenderSquadControls();ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"表情")) {
       DrawMmdFaceSettings();

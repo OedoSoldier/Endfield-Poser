@@ -395,6 +395,7 @@ struct MmdLoadResult {
   bool cancelled = false;
   std::string file, error;
   mmd::MotionClip clip;
+  std::shared_ptr<const blender_bridge::Clip> edited;
   mmd::RigDefinition rig;
   nlohmann::json adaptation;
   std::shared_ptr<const mmd::AudioClip> music;
@@ -413,6 +414,8 @@ struct MmdPlayer {
   std::shared_ptr<const blender_bridge::Clip> editedBody,editedCamera;
   std::vector<bool> editedScaleTracks;
   std::vector<int> editedBoneMap;
+  Quat editedRootRotation;
+  bool editedHasRootRotation=false;
   std::string editedBodyFile,editedCameraFile;
   std::map<std::string,float> editedFaces;
   std::set<std::string> editedFaceOverrides;
@@ -1364,6 +1367,8 @@ static void MmdSampleBody(double seconds) {
   auto &m=g_mmd;
   if(!m.editedBody) {m.mapper.sample(seconds*30,m.scale,m.inPlace,m.height,m.ikMode,m.amplitude,m.motionCalibration);return;}
   const auto frame=m.editedBody->sample(seconds);
+  m.editedHasRootRotation=frame.hasRootRotation;
+  m.editedRootRotation=NormQ(Conj(frame.hasAnchor?frame.anchor:Quat{})*frame.rootRotation);
   m.editedFaces=frame.faces;
   m.playbackProfile=m.profile;
   m.editedScaleTracks.assign(m.profile.bones.size(),false);
@@ -1405,10 +1410,12 @@ static void MmdApplyFrame() {
   MmdSampleBody(m.timeline.seconds);
   auto &p = m.mapper.output;
   auto world=s.anchorWorld*mmd::TRS(p.rootOffset,{});
+  if(m.editedBody&&m.editedHasRootRotation)world=mmd::TRS(world.position(),NormQ(mmd::Rotation(s.anchorWorld)*m.editedRootRotation));
   float ground=!MmdHasBody()?0:mmd_terrain::Apply(s.terrain,m.terrain,m.profile,p,world,s.anchorWorld,MmdNow(),m.timeline.seconds);
   mmd::Matrix anchorInverse;Vec3 groundLocal{};
   if(mmd::Inverse(s.anchorWorld,anchorInverse))groundLocal=mmd::terrain::Vector(anchorInverse,{0,ground,0});
   MmdRawPose(s.root, s.rootPos + s.rootRot * (p.rootOffset+groundLocal), s.rootRot);
+  if(m.editedBody&&m.editedHasRootRotation)mmd_camera::Write(g_transform_set_rotation,s.root,mmd::Rotation(world));
   for (size_t i = 0; i < p.write.size(); i++) {
     if (!p.write[i] || i >= s_allBones.size())
       continue;

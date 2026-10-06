@@ -6,6 +6,10 @@
 struct MmdSquadSlot {
   bool enabled=true;
   mmd::MotionClip clip;
+  std::shared_ptr<const blender_bridge::Clip> edited;
+  std::set<std::string> faceOverrides;
+  bool content() const {return edited||!clip.empty();}
+  bool body() const {return edited||!clip.bones.empty();}
   std::string file,member,status;
   std::string calibration=u8"待读取校准";
   void *calibrationAnimator=nullptr;
@@ -20,6 +24,10 @@ struct MmdSquadActor {
   MmdSession saved;
   std::vector<AllBone> bones;
   mmd::RetargetProfile profile;
+  mmd::RetargetProfile playbackProfile;
+  std::vector<int> editedBoneMap;
+  blender_bridge::Frame sample;
+  bool nativeSample=false;
   mmd::Retargeter mapper;
   std::string thumbStatus;
   std::shared_ptr<SMCActorState> face;
@@ -35,6 +43,8 @@ struct MmdSquadPlayer {
   bool show=false,hotkeys=false,active=false,refresh=true,loading=false;
   bool inPlace=false,stopRequested=false;
   bool autoScale=true;
+  bool editing=false,previewReady=false,previewPlaying=false;
+  std::array<blender_bridge::Frame,4> previewFrames;
   mmd_terrain::Settings terrain;
   float scale=.08f,height=0;
   mmd::IkMode ikMode=mmd::IkMode::FollowMotion;
@@ -137,7 +147,8 @@ static mmd::SquadIdentity MmdSquadIdentity(const poser_squad::Snapshot &roster) 
   for(int i=0;i<4;++i) {
     id.entities[i]=reinterpret_cast<uintptr_t>(roster.members[i].entity);
     id.animators[i]=reinterpret_cast<uintptr_t>(roster.members[i].animator);
-    id.enabled[i]=g_squad.slots[i].enabled&&!g_squad.slots[i].clip.empty();
+    id.enabled[i]=g_squad.slots[i].enabled&&(g_squad.editing?
+        (g_squad.active?bool(g_squad.actors[i]):roster.members[i].entity!=nullptr):g_squad.slots[i].content());
   }
   return id;
 }
@@ -242,13 +253,20 @@ static void MmdSquadLoadActorCalibration(int slot) {
   {
     MmdSquadRigScope view(a.member);s_allBones=a.bones;RebuildHumanBones();
     a.profile=MmdCurrentProfile();
-    bool automatic=s.slots[slot].clip.bones.empty()||MmdBindCalibration(a.profile);
+    bool automatic=!s.slots[slot].body()||MmdBindCalibration(a.profile);
     if(!automatic&&!MmdLoadCalibration(a.profile)) {
       s.slots[slot].calibrated=false;s.slots[slot].calibration=u8"Avatar 不完整且缺少备用校准";
       throw std::runtime_error(u8"第 "+std::to_string(slot+1)+u8" 位无法自动适配；请切到该角色，在单人面板完成备用 T 姿校准。");
     }
   }
-  if(!s.slots[slot].clip.bones.empty())a.thumbStatus=MmdPrepareThumbs(a.profile,g_mmd.adaptation.characterThumbs);
+  if(!s.slots[slot].edited&&!s.slots[slot].clip.bones.empty())a.thumbStatus=MmdPrepareThumbs(a.profile,g_mmd.adaptation.characterThumbs);
+  if(s.slots[slot].edited) {
+    std::vector<std::string> names;std::vector<int> parents;
+    for(const auto &b:a.bones){names.push_back(b.name);parents.push_back(b.parentIdx);}
+    a.editedBoneMap=s.slots[slot].edited->bindSkeleton(a.profile.model,names,parents);
+    if(std::any_of(s.slots[slot].edited->frames.front().bones.begin(),s.slots[slot].edited->frames.front().bones.end(),[](const auto &b){return b.hasScale;})&&
+       (!g_transform_get_localScale||!g_transform_set_localScale))throw std::runtime_error(u8"骨骼缩放接口不可用");
+  }
   a.mapper.bind(s.rig,s.slots[slot].clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
   if(!a.thumbStatus.empty())Log("[MMD-THUMB] slot=%d %s",slot+1,a.thumbStatus.c_str());
   Log("[MMD-SQUAD] slot=%d arm_twist_channels=%zu/4 native_fingers=%zu/30",slot+1,a.mapper.armTwistChannels(),a.mapper.nativeFingerCount());
@@ -264,17 +282,19 @@ static void MmdSquadLoadActorCalibration(int slot) {
     a.face->revision=slot+1;
   }
   MmdSquadFaceMap(a,s.slots[slot].clip);
-  {SMCActorScope face(a.face.get());SMCFaceSelectProfile(a.faceProfile,a.profile.model);SMCMotionNeutral(a.member.animator);}
+  {SMCActorScope face(a.face.get());SMCFaceSelectProfile(a.faceProfile,a.profile.model);if(!s.editing)SMCMotionNeutral(a.member.animator);}
   s.slots[slot].calibrated=true;s.slots[slot].calibration=s.slots[slot].clip.bones.empty()?u8"此动作无需身体校准":
       a.profile.fingerprint.find("avatar1-")==0?u8"Avatar 自动适配完成":u8"已读取保存的备用校准";
   s.slots[slot].status=u8"骨架与校准就绪";
-  if(poser_secondary::enabled&&!s.slots[slot].clip.bones.empty())
+  if(poser_secondary::enabled&&s.slots[slot].body())
     poser_secondary::Prepare(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,MmdNow());
 }
 static void MmdSquadStop() {
   first_person::ClearPlayback();
   auto &s=g_squad;MmdSquadCancelStart();s.stopRequested=false;s.timeline.stop();
   const bool occupied=s.active;s.active=false;
+  if(s.editing)g_blenderEditing=false;
+  s.editing=false;s.previewReady=false;
   s.cameraOwner=nullptr;s.cameraReferences.reset();
   // Unregister first: no future callback may select a retiring face context.
   s_squadSMC.fill(nullptr);
@@ -297,7 +317,7 @@ static void MmdSquadStop() {
       }
     }
     if(alive&&!RuntimeClosing()&&a.saved.active) {
-      for(const auto &bone:a.saved.transforms)MmdRawPose(bone.transform,bone.pos,bone.rot);
+      for(const auto &bone:a.saved.transforms)MmdRestoreTransform(bone);
       MmdRawPose(a.saved.root,a.saved.rootPos,a.saved.rootRot);
       if(a.member.animator==g_charAnimator)CapturePoseSnapshot();
       poser_secondary::Stop(a.saved.secondary,true,false);
@@ -369,18 +389,20 @@ static void MmdSquadDuration() {
   for(int i=0;i<4;++i) {
     enabled[i]=g_squad.slots[i].enabled;
     // Camera tracks belong to the shared camera, not an individual dancer.
-    seconds[i]=g_squad.slots[i].clip.modelDuration();
+    seconds[i]=g_squad.slots[i].edited?(std::max)(g_squad.slots[i].edited->duration(),g_squad.slots[i].clip.modelDuration()):g_squad.slots[i].clip.modelDuration();
   }
   auto &keys=MmdCameraKeys();g_squad.timeline.duration=mmd::SquadDuration(seconds,enabled,
     g_mmd.cameraSettings.enabled?mmd::CameraDuration(keys,g_mmd.cameraSettings):0);
+  if(g_mmd.cameraSettings.enabled&&g_mmd.editedCamera)g_squad.timeline.duration=(std::max)(g_squad.timeline.duration,g_mmd.editedCamera->duration()+g_mmd.cameraSettings.timeOffset);
 }
-static bool MmdSquadStart() {
+static bool MmdSquadStart(bool editing=false) {
   SMCClearBindingPreview();
   auto &s=g_squad;
   if(s.loading||g_mmd.loading||g_mmd.preview||g_mmd.session.active) {MmdSquadCancelStart();s.status=u8"请先完成导入或停止单人播放 / 校准";return false;}
   MmdSquadQueueStart();if(!MmdSquadPendingValid())return false;
   if(!ClothOnMainThread()) {s.status=u8"等待游戏线程开始多人播放";return false;}
   if(s.active) {s.timeline.play(MmdNow());return true;}
+  s.editing=editing;
   if(s_cloth.active||s_cloth.releasing) {ClothRequestPlayback(false);s.status=u8"等待单人衣物增强恢复";return false;}
   if(ClothSquadRestoring()) {s.status=u8"等待队员衣物恢复完成";return false;}
   MmdSquadRefresh();
@@ -440,7 +462,46 @@ static void MmdSquadSampleActor(int index, double frame) {
   if (index < 0 || index >= 4 || !s.actors[index]) return;
   auto &a = *s.actors[index];
   const auto settings = MmdMotionSettings(index + 1);
-  a.mapper.sample(frame, a.scale, false, 0, s.ikMode, settings.amplitude, settings.motion);
+  const auto &slot=s.slots[index];
+  const bool preview=s.editing&&s.previewReady;
+  if(!slot.edited&&!preview) {
+    if(a.nativeSample)a.mapper.bind(s.rig,slot.clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
+    a.nativeSample=false;a.mapper.sample(frame,a.scale,false,0,s.ikMode,settings.amplitude,settings.motion);return;
+  }
+  a.nativeSample=true;
+  a.sample=preview?s.previewFrames[index]:slot.edited->sample(frame/30.);
+  a.playbackProfile=a.profile;
+  std::vector<Quat> rotations;std::vector<bool> writes(a.bones.size(),false);
+  for(const auto &b:a.profile.bones)rotations.push_back(b.localRot);
+  for(const auto &b:a.sample.bones) {
+    int i=preview?b.index:(b.index<int(a.editedBoneMap.size())?a.editedBoneMap[b.index]:-1);
+    if(i<0||i>=int(writes.size()))continue;
+    writes[i]=true;rotations[i]=b.rotation;a.playbackProfile.bones[i].localPos=b.position;
+    if(b.hasScale)a.playbackProfile.bones[i].localScale=b.scale;
+  }
+  Quat basis=a.mapper.sourceBasis();
+  Vec3 root=Conj(a.sample.hasAnchor?a.sample.anchor:Quat{})*a.sample.root;
+  if(!preview)root=root*slot.scale;
+  a.mapper.sampleNative(a.playbackProfile,rotations,writes,root,basis,
+      preview?mmd::MotionAmplitude{}:settings.amplitude,preview?mmd::MotionCalibration{}:settings.motion);
+  a.mapper.output.rootOffset=basis*a.mapper.output.rootOffset;
+}
+static mmd::SquadAnchor::Placement MmdSquadPlacement(int index) {
+  auto &s=g_squad;auto &a=*s.actors[index];const auto &slot=s.slots[index];
+  if(s.editing&&s.previewReady) {
+    const auto &f=s.previewFrames[index];Quat basis=NormQ(s.anchor.basis*Conj(f.hasAnchor?f.anchor:Quat{}));
+    return {s.anchor.origin+basis*f.root,f.hasRootRotation?NormQ(basis*f.rootRotation):GetBoneWorldRot(a.saved.root)};
+  }
+  auto placement=s.anchor.place(a.mapper.sourceBasis(),a.mapper.output.rootOffset,slot.offset,slot.yaw,s.inPlace,s.height+slot.height);
+  if(slot.edited&&a.sample.hasRootRotation)placement.rotation=NormQ(s.anchor.basis*Quat::FromEulerDeg({0,slot.yaw,0})*Conj(a.sample.hasAnchor?a.sample.anchor:Quat{})*a.sample.rootRotation);
+  return placement;
+}
+static void MmdSquadScale(MmdSquadActor &a,int index,Vec3 scale) {
+  if(index<0||index>=int(a.saved.transforms.size())||index>=int(a.bones.size()))return;
+  auto &b=a.saved.transforms[index];
+  if(b.transform!=a.bones[index].transform||!UnityObjAlive(b.transform)||!g_transform_get_localScale||!g_transform_set_localScale)return;
+  if(!b.scaleOwned){b.scale=MmdLocalScale(b.transform);b.scaleOwned=true;}
+  mmd_camera::Write(g_transform_set_localScale,b.transform,scale);
 }
 static void MmdSquadApply() {
   auto &s=g_squad;if(!s.active)return;
@@ -458,25 +519,28 @@ static void MmdSquadApply() {
   }
   s.timeline.holdClock(MmdSquadClothHolding(),MmdNow());
   if(blocked) {
-    for(auto &a:s.actors)if(a&&a->face) {SMCActorScope scope(a->face.get());SMCMotionNeutral(a->member.animator);}
+    if(!s.editing)for(auto &a:s.actors)if(a&&a->face) {SMCActorScope scope(a->face.get());SMCMotionNeutral(a->member.animator);}
     MmdSquadSyncAudio();return;
   }
   for(int n=0;n<4;++n)if(s.actors[n]) {
     auto &a=*s.actors[n];auto &slot=s.slots[n];
     if(!UnityObjAlive(a.saved.animator)||!UnityObjAlive(a.saved.root)) {MmdSquadStop();s.status=u8"队员实例已失效，已停止全部动作";return;}
     for(const auto &bone:a.bones)if(!UnityObjAlive(bone.transform)) {MmdSquadStop();s.status=u8"队员骨架已变化，已停止全部动作";return;}
-    MmdApplyVisibility(a.saved,slot.clip,frame);
+    if(s.editing) {mmd::MotionClip v;v.visibility.push_back({0,s.previewFrames[n].visible});MmdApplyVisibility(a.saved,v,0);}
+    else MmdApplyVisibility(a.saved,slot.clip,frame);
     for(const auto &component:a.saved.components)MmdEnable(component.component,false);
     MmdSquadSampleActor(n,frame);
     auto &pose=a.mapper.output;
-    auto placement=s.anchor.place(a.mapper.sourceBasis(),pose.rootOffset,slot.offset,slot.yaw,s.inPlace,s.height+slot.height);
+    auto placement=MmdSquadPlacement(n);
     auto base=s.anchor.place(a.mapper.sourceBasis(),{},slot.offset,slot.yaw,false,0);
-    float ground=slot.clip.bones.empty()?0:mmd_terrain::Apply(a.saved.terrain,s.terrain,a.profile,pose,
+    float ground=s.editing||!slot.body()?0:mmd_terrain::Apply(a.saved.terrain,s.terrain,slot.edited?a.playbackProfile:a.profile,pose,
       mmd::TRS(placement.position,placement.rotation),mmd::TRS(base.position,base.rotation),MmdNow(),s.timeline.seconds);
     placement.position.y+=ground;
     if(!MmdSquadWorldPose(a.saved.root,placement.position,placement.rotation)) {MmdSquadStop();s.status=u8"无法设置队员位置，已停止";return;}
     for(size_t j=1;j<pose.write.size()&&j<a.bones.size();++j)if(pose.write[j])
-      MmdRawPose(a.bones[j].transform,a.profile.bones[j].localPos,pose.localRot[j]);
+      MmdRawPose(a.bones[j].transform,(slot.edited||s.editing?a.playbackProfile:a.profile).bones[j].localPos,pose.localRot[j]);
+    if(slot.edited||s.editing)for(const auto &b:a.sample.bones)if(b.hasScale)
+      MmdSquadScale(a,s.editing?b.index:a.editedBoneMap[b.index],b.scale);
     // Preserve the editor's snapshot for saving a paused squad pose.
     if(a.member.animator==g_charAnimator)CapturePoseSnapshot();
     {SMCActorScope scope(a.face.get());
@@ -496,8 +560,13 @@ static void MmdSquadApply() {
       SMCFaceSelectProfile(a.faceProfile,a.profile.model);
       SMCMotionFrame face;face.gazeCamera=poser_gaze::motionLock;face.gazeStrength=poser_gaze::motionStrength;face.active=true;face.animator=a.member.animator;face.generation=s_faceGeneration;
       face.profile=a.faceProfile;face.settings=g_mmd.faceSettings;
+      if(s.editing)for(const auto &f:a.sample.faces)if(!a.morphs.count(f.first))a.morphs[f.first]=mmd_face_bindings::Resolve(f.first,a.faceProfile.get(),SMCManualCatalog(),g_mmd.faceSavedMappings,g_mmd.faceSavedNativeMappings);
       for(const auto &track:a.morphs) {
-        const auto &map=track.second;float value=mmd::SampleMorph(slot.clip.morphs.at(track.first),frame);
+        const auto &map=track.second;
+        float value=0;
+        if(s.editing||(slot.edited&&slot.edited->hasFaces&&!slot.faceOverrides.count(track.first))) {
+          auto f=a.sample.faces.find(track.first);if(f!=a.sample.faces.end())value=f->second;
+        } else {auto f=slot.clip.morphs.find(track.first);if(f!=slot.clip.morphs.end())value=mmd::SampleMorph(f->second,frame);}
         mmd_face_bindings::Apply(map,value,face,[&](int id) {
           return a.faceProfile&&s_characterProfile==a.faceProfile&&s_characterBinding.ready&&
             s_characterBindingGeneration==s_faceGeneration&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id];
@@ -506,8 +575,7 @@ static void MmdSquadApply() {
       for(int e=0;e<2;++e) {int j=a.profile.roles[21+e];if(j>=0&&j<int(pose.write.size())&&pose.write[j]) {
         face.eyeDriven[e]=true;face.eyes[e]=a.bones[j].transform;face.eyeRotation[e]=pose.localRot[j];
       }}
-      SMCMotionPublish(face);
-      SMCGazeTick(&face);
+      if(!s.editing||!a.sample.preserveFace){SMCMotionPublish(face);SMCGazeTick(&face);}
       slot.status=SMCSectionReady()?u8"身体 / 表情已就绪":u8"身体已就绪，等待表情系统";
       if(a.saved.visibility.failed)slot.status+=u8"；模型显示开关未能应用，详情见日志";
     }
@@ -516,13 +584,13 @@ static void MmdSquadApply() {
       ClothActorScope scope(unsigned(n)+1);
       ClothService(true,MmdSquadClothMayAdjustAnchor,frame);
       ClothTurnSubmit(a.profile,a.bones,s.timeline.seconds,a.saved.terrain.epoch,
-          s.timeline.state==mmd::PlayState::Playing&&!s.timeline.clockHeld,!slot.clip.bones.empty());
+          (s.editing?s.previewPlaying:s.timeline.state==mmd::PlayState::Playing)&&!s.timeline.clockHeld,slot.body()||s.editing);
     }
     poser_secondary::Tick(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,
-        MmdNow(),s.timeline.seconds,a.saved.terrain.epoch,s.timeline.state==mmd::PlayState::Playing&&!s.timeline.clockHeld,!slot.clip.bones.empty());
+        MmdNow(),s.timeline.seconds,a.saved.terrain.epoch,(s.editing?s.previewPlaying:s.timeline.state==mmd::PlayState::Playing)&&!s.timeline.clockHeld,slot.body()||s.editing);
   }
   const auto &keys=MmdCameraKeys();
-  if(g_mmd.cameraSettings.enabled&&!keys.empty()&&mmd_camera::ready) {
+  if(!s.editing&&g_mmd.cameraSettings.enabled&&(!keys.empty()||g_mmd.editedCamera)&&mmd_camera::ready) {
     const auto &settings=g_mmd.cameraSettings;
     Vec3 delta{},correction{0,s.height,0};void *follow=nullptr;float height=s.cameraHeight;
     const auto *target=s.cameraFollow>=0&&s.cameraFollow<4?s.actors[s.cameraFollow].get():nullptr;
@@ -535,11 +603,11 @@ static void MmdSquadApply() {
         follow=target->member.animator;delta=GetBoneWorldPos(target->saved.root)-s.anchor.origin;
         height=mmd::CameraTargetHeight(target->profile);correction.y+=s.slots[s.cameraFollow].height;
       }
-      mmd_camera::Publish({true,s.cameraSession,s.cameraOwner,
-        mmd::PlaceCamera(mmd::SampleCamera(keys,mmd::CameraFrame(s.timeline.seconds,settings),settings),
-          settings,s.anchor.origin,s.anchor.basis,delta,s.scale,height,mmd::CameraSourceHeight(s.rig),correction),follow,0,frame});
+      auto camera=g_mmd.editedCamera?blender_bridge::PlaceCamera(g_mmd.editedCamera->sample(s.timeline.seconds-settings.timeOffset),settings,s.anchor.origin,s.anchor.basis,delta,correction):
+        mmd::PlaceCamera(mmd::SampleCamera(keys,mmd::CameraFrame(s.timeline.seconds,settings),settings),settings,s.anchor.origin,s.anchor.basis,delta,s.scale,height,mmd::CameraSourceHeight(s.rig),correction);
+      mmd_camera::Publish({true,s.cameraSession,s.cameraOwner,camera,follow,0,frame});
     }
-  } else mmd_camera::Stop();
+  } else if(!s.editing)mmd_camera::Stop();
   s.timeline.holdClock(MmdSquadClothHolding(),MmdNow());
   MmdSquadSyncAudio();
 }
@@ -551,12 +619,22 @@ static void MmdSquadLoad(int slot,bool append=false,std::filesystem::path path={
     try {
       auto chosen=path;if(chosen.empty()) {
         wchar_t name[32768]{};OPENFILENAMEW file{};file.lStructSize=sizeof(file);file.hwndOwner=owner;
-        file.lpstrFilter=L"VMD motion\0*.vmd\0\0";file.lpstrFile=name;file.nMaxFile=32768;
+        file.lpstrFilter=append?L"VMD expressions\0*.vmd\0\0":L"Motion (VMD / Blender)\0*.vmd;*.epmotion\0\0";file.lpstrFile=name;file.nMaxFile=32768;
         file.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER|OFN_ENABLEHOOK;file.lpfnHook=MmdDialogHook;
         if(!GetOpenFileNameW(&file)) {s_mmdDialog.store(nullptr);if(CommDlgExtendedError())throw std::runtime_error("File dialog failed");result.cancelled=true;return result;}
         s_mmdDialog.store(nullptr);chosen=name;
       }
-      result.file=mmd::Utf8(chosen.wstring());result.clip=mmd::ReadVmdFile(chosen);
+      result.file=mmd::Utf8(chosen.wstring());
+      if(!append&&_wcsicmp(chosen.extension().c_str(),L".epmotion")==0) {
+        if(std::filesystem::file_size(chosen)>256*1024*1024)throw std::runtime_error("Edited motion file is too large");
+        std::ifstream stream(chosen);nlohmann::json data;stream>>data;
+        auto clip=std::make_shared<blender_bridge::Clip>(blender_bridge::Clip::Parse(data));
+        if(clip->cameraOnly)throw std::runtime_error(u8"请为队员选择动作文件，镜头请单独加载");
+        result.edited=clip;
+        for(const auto &f:clip->frames.front().faces)result.clip.morphs[f.first]={{0,0}};
+        return result;
+      }
+      result.clip=mmd::ReadVmdFile(chosen);
       if(result.clip.bones.empty()&&result.clip.morphs.empty()&&result.clip.visibility.empty())throw std::runtime_error(u8"此文件没有身体 / 表情 / 模型显示轨道，镜头请单独选择");
       if(append) {bool eyes=false;for(const auto &track:result.clip.bones)eyes|=mmd::EyeBone(track.first);
         if(result.clip.morphs.empty()&&!eyes)throw std::runtime_error(u8"没有可追加的表情或眼神轨道");}
@@ -573,7 +651,11 @@ static bool MmdSquadTick() {
       auto r=s.loader.get();s.loading=false;
       if(!r.cancelled) {
         if(!r.error.empty()) {s.status=r.error;Log("[MMD-SQUAD] load error slot=%d file=%s: %s",r.kind%4+1,r.file.c_str(),r.error.c_str());}
-        else {auto &slot=s.slots[r.kind%4];if(r.kind>=4)mmd::AppendFace(slot.clip,r.clip);else {slot.clip=std::move(r.clip);slot.file=r.file;}
+        else {auto &slot=s.slots[r.kind%4];if(r.kind>=4) {
+            for(const auto &f:r.clip.morphs)slot.faceOverrides.insert(f.first);
+            mmd::AppendFace(slot.clip,r.clip);
+          } else {slot.clip=std::move(r.clip);slot.file=r.file;slot.edited=r.edited;slot.faceOverrides.clear();
+            if(slot.edited){slot.offset={};slot.yaw=0;slot.scale=1;slot.height=0;}}
           slot.status=u8"动作已导入";s.status=u8"按小队位置分配完成，可播放或应用到四人";MmdSquadDuration();}
       }
     }
@@ -595,6 +677,7 @@ static bool MmdSquadTick() {
   }catch(const std::exception &e){MmdSquadStop();s.status=e.what();return false;}
 }
 static void MmdSquadSeek(double seconds) {
+  if(g_blenderEditing)return;
   auto &s=g_squad;
   if(!s.active) {MmdSquadQueueStart();s.pending.seek(seconds);s.hotkeys=true;return;}
   for(auto &actor:s.actors)if(actor)++actor->saved.terrain.epoch;
@@ -602,9 +685,9 @@ static void MmdSquadSeek(double seconds) {
 }
 static bool MmdSquadCommand(int command) {
   auto &s=g_squad;
-  if(g_mmd.session.active||g_mmd.preview||s_mmdStartRequest.active)return false;
+  if(g_blenderEditing||g_mmd.session.active||g_mmd.preview||s_mmdStartRequest.active)return false;
   if(!s.hotkeys&&!s.active&&!s.pending.active)return false;
-  bool content=false;for(const auto &slot:s.slots)content|=slot.enabled&&!slot.clip.empty();
+  bool content=false;for(const auto &slot:s.slots)content|=slot.enabled&&slot.content();
   if(!s.active&&!s.pending.active&&!content) {s.hotkeys=false;return false;}
   if(command==2) {MmdSquadCancelStart();s.stopRequested=true;}
   else if(command==0) {s.hotkeys=true;MmdSquadQueueStart();s.pending.play();}
@@ -614,8 +697,9 @@ static bool MmdSquadCommand(int command) {
 }
 static void MmdSquadCopyToAll(int source) {
   if(g_squad.active||g_squad.pending.active||g_squad.loading||source<0||source>=4)return;
+  if(g_squad.slots[source].edited){g_squad.status=u8"Blender 动作对应特定角色，请按队员分别加载";return;}
   const auto clip=g_squad.slots[source].clip;const auto file=g_squad.slots[source].file;
-  for(int n=0;n<4;++n) {g_squad.slots[n].clip=clip;g_squad.slots[n].file=file;}
+  for(int n=0;n<4;++n) {g_squad.slots[n].clip=clip;g_squad.slots[n].file=file;g_squad.slots[n].edited.reset();g_squad.slots[n].faceOverrides.clear();}
   MmdSquadDuration();g_squad.status=u8"同一动作已应用到小队第 1–4 位";
 }
 static void MmdSquadInstall() {

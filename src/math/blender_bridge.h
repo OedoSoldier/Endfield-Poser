@@ -20,6 +20,7 @@ struct Frame {
   uint64_t session=0,sequence=0;double time=0;
   Vec3 root;bool visible=true,preserveFace=false;
   Quat anchor;bool hasAnchor=false;
+  Quat rootRotation;bool hasRootRotation=false;
   std::vector<Bone> bones;std::map<std::string,float> faces;Camera camera;
 };
 inline mmd::CameraPose PlaceCamera(const Frame &frame,const mmd::CameraSettings &settings,
@@ -61,6 +62,7 @@ inline Frame ParseFrame(const Json &j,size_t count) {
   f.time=Number(j.at("time"),0,86400);f.root=Vector(j.at("root"));f.visible=j.value("visible",true);
   f.preserveFace=j.value("preserve_face",false);
   if(j.contains("anchor_rotation")){f.anchor=Rotation(j["anchor_rotation"]);f.hasAnchor=true;}
+  if(j.contains("root_rotation")){f.rootRotation=Rotation(j["root_rotation"]);f.hasRootRotation=true;}
   auto &bones=j.at("bones");
   if(!bones.is_array()||bones.size()>count||count>4096)throw std::runtime_error("Invalid bone count");
   std::vector<bool> seen(count);
@@ -127,7 +129,7 @@ struct Clip {
   }
   static Clip Parse(const Json &j) {
     const auto format=j.value("format","");const int version=j.value("version",0);
-    if((format!="endfield-blender-motion"&&format!="endfield-blender-camera")||(version!=1&&version!=2&&version!=3))throw std::runtime_error("Unsupported Blender motion format");
+    if((format!="endfield-blender-motion"&&format!="endfield-blender-camera")||(version<1||version>4))throw std::runtime_error("Unsupported Blender motion format");
     if(format=="endfield-blender-camera") {
       if(version!=2&&version!=3)throw std::runtime_error("Unsupported Blender camera format");
       Clip result;result.cameraOnly=true;
@@ -158,7 +160,7 @@ struct Clip {
       if(values>12000000)throw std::runtime_error("Motion exceeds decoded budget");
       if(!clip.frames.empty()) {
         auto &prev=clip.frames.back();
-        if(frame.time<=prev.time||frame.bones.size()!=prev.bones.size()||frame.faces.size()!=prev.faces.size())throw std::runtime_error("Inconsistent frame tracks");
+        if(frame.time<=prev.time||frame.bones.size()!=prev.bones.size()||frame.faces.size()!=prev.faces.size()||frame.hasRootRotation!=prev.hasRootRotation)throw std::runtime_error("Inconsistent frame tracks");
         for(size_t k=0;k<frame.bones.size();++k)
           if(frame.bones[k].index!=prev.bones[k].index||frame.bones[k].hasScale!=prev.bones[k].hasScale)throw std::runtime_error("Bone tracks changed");
         for(auto &f:frame.faces)if(!prev.faces.count(f.first))throw std::runtime_error("Face tracks changed");
@@ -175,6 +177,7 @@ struct Clip {
     const auto &a=*(it-1),&b=*it;float t=float((time-a.time)/(b.time-a.time));Frame f=a;f.time=time;
     auto lerp=[&](Vec3 p,Vec3 q){return p+(q-p)*t;};
     f.root=lerp(a.root,b.root);
+    if(f.hasRootRotation)f.rootRotation=Quat::Slerp(a.rootRotation,b.rootRotation,t);
     for(size_t i=0;i<f.bones.size();++i) {
       f.bones[i].position=lerp(a.bones[i].position,b.bones[i].position);
       f.bones[i].rotation=Quat::Slerp(a.bones[i].rotation,b.bones[i].rotation,t);

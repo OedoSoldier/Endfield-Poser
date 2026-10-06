@@ -189,6 +189,9 @@ def rebase_sample(data, sample):
     basis = edit_q @ source_q.conjugated()
     result = dict(sample)
     result['root'] = list(basis @ Vector(sample['root']))
+    if 'root_rotation' in sample:
+        q = sample['root_rotation']
+        result['root_rotation'] = qlist(basis @ Quaternion((q[3], *q[:3])))
     c = sample.get('camera')
     if c:
         camera = dict(c)
@@ -232,11 +235,20 @@ def apply_sample(arm, sample, camera=None):
     for b, value in zip(data["bones"], basis_matrices(data, sample)):
         arm.pose.bones[b["blender_name"]].matrix_basis = value
     arm.location = C.to_3x3() @ Vector(sample["root"])
+    if 'root_rotation' in sample:
+        arm.rotation_mode = 'QUATERNION'
+        arm.rotation_quaternion = root_rotation(data, sample)
     for i, face in enumerate(data["faces"]):
         arm[bone_key(i)] = sample["faces"].get(face["name"], 0.)
     arm["epb_visible"] = float(sample.get("visible", True))
     if camera and sample.get("camera"):
         apply_camera(camera, sample["camera"])
+
+
+def root_rotation(data, sample):
+    base, q = data.get('root_rotation', [0, 0, 0, 1]), sample['root_rotation']
+    delta = Quaternion((q[3], *q[:3])) @ Quaternion((base[3], *base[:3])).conjugated()
+    return (C.to_3x3() @ delta.to_matrix() @ C.to_3x3()).to_quaternion()
 
 
 def apply_camera(obj, value):
@@ -298,7 +310,12 @@ def packet(arm, camera, scene, session, sequence, data=None, depsgraph=None):
                 "fov": math.degrees(2 * math.atan(sensor_y / (2 * cam.data.lens))),
                 "size": cam.data.ortho_scale / 2, "perspective": cam.data.type != "ORTHO"}
     fps = scene.render.fps / scene.render.fps_base
-    return {"session": session, "sequence": sequence, "time": max(0, (scene.frame_current_final - 1) / fps),
+    result = {"session": session, "sequence": sequence, "time": max(0, (scene.frame_current_final - 1) / fps),
             "root": list(root), "bones": bones, "faces": {f["name"]: max(0., min(1., evaluated.get(bone_key(i), 0.))) for i, f in enumerate(data["faces"]) if f.get('available', True)},
             "camera": view, "anchor_rotation": data.get('anchor_rotation', [0, 0, 0, 1]),
             "visible": evaluated.get("epb_visible", 1) >= .5}
+    if 'root_rotation' in data:
+        base = data['root_rotation']
+        delta = (C.to_3x3() @ evaluated.matrix_world.to_quaternion().to_matrix() @ C.to_3x3()).to_quaternion()
+        result['root_rotation'] = qlist(delta @ Quaternion((base[3], *base[:3])))
+    return result

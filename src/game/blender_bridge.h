@@ -38,12 +38,17 @@ static Json V(Vec3 v){return Json::array({v.x,v.y,v.z});}
 static Json Q(Quat q){return Json::array({q.x,q.y,q.z,q.w});}
 static Json Matrix(const mmd::Matrix &m){return std::vector<float>(m.m,m.m+16);}
 static Json Error(const std::string &message){return {{"ok",false},{"error",message}};}
+static bool SquadLive();
+static void SquadEnd();
+static bool squadSession=false;
 static bool Live() {
+  if(squadSession)return SquadLive();
   auto &s=g_mmd.session;
   return g_blenderEditing&&s.active&&s.cameraSession==session&&s.animator==g_charAnimator&&
     s.revision==s_bonesRev&&UnityObjAlive(s.animator)&&UnityObjAlive(s.root);
 }
 static void End() {
+  if(squadSession){SquadEnd();return;}
   if(adoptedMotion&&Live()&&!RuntimeClosing()) {
     for(size_t i=0;i<connectedPose.size();++i) {
       auto b=connectedPose[i];
@@ -64,6 +69,7 @@ static Json CameraJson(const mmd::CameraPose &c,Vec3 origin) {
   return {{"p",V(c.position-origin)},{"q",Q(c.rotation)},{"target",V(c.target-origin)},
     {"fov",c.fov},{"size",c.orthoSize},{"perspective",c.perspective}};
 }
+#include "game/blender_squad.h"
 static Json BuildScene() {
   auto &m=g_mmd;auto &s=m.session;Json bones=Json::array(),faces=Json::array();
   mmd::Matrix shift=mmd::TRS(GetBoneWorldPos(s.root)*-1.f,{});
@@ -242,6 +248,9 @@ static void Apply(const blender_bridge::Frame &f) {
   } else mmd_camera::Stop();
 }
 static bool Tick() {
+  if(squadSession) {
+    try {return SquadTick();}catch(const std::exception &e){SquadEnd();status=e.what();return false;}
+  }
   if(!g_blenderEditing)return false;
   if(!Live()||MmdNow()-touched>8) {End();return false;}
   if(hasFrame)ClothRequestPlayback(!g_mmd.freezeCloth);
@@ -262,20 +271,21 @@ static Json Execute(const std::string &path,const Json &j) {
     if(file.extension()!=L".vmd")return Error("Choose a .vmd file");
     MmdBeginLoad(j.value("camera",false)?6:0,file);return {{"ok",true}};
   }
-  if(path=="begin")return Begin();
+  if(path=="begin")return j.value("mode",std::string{})=="squad"?SquadBegin():Begin();
   if(!Live()||blender_bridge::Id(j.at("session"))!=session)return Error("Session expired or character changed; reconnect");
   touched=MmdNow();
   if(path=="end"){End();return {{"ok",true}};}
-  if(path=="scene"){scene=BuildScene();return scene;}
+  if(path=="scene"){scene=squadSession?SquadScene():BuildScene();return scene;}
   if(path=="ping")return {{"ok",true},{"sequence",sequence}};
   if(path=="sample") {
     double start=blender_bridge::Number(j.at("start"),0,86400);
     int count=int(blender_bridge::Number(j.at("count"),1,8));
     double fps=blender_bridge::Number(j.value("fps",30.),1,120);
-    Json frames=Json::array();for(int i=0;i<count;++i)frames.push_back(Sample(start+i/fps));
+    Json frames=Json::array();for(int i=0;i<count;++i)frames.push_back(squadSession?SquadSample(start+i/fps):Sample(start+i/fps));
     return {{"ok",true},{"frames",frames}};
   }
   if(path=="frame") {
+    if(squadSession)return SquadFrame(j);
     auto next=blender_bridge::ParseFrame(j,editable.size());
     if(next.sequence<=sequence)return Error("Stale preview frame");
     for(auto &b:next.bones)if(!editable[b.index])return Error("Bone is not an editable body joint");
@@ -289,6 +299,7 @@ static Json Execute(const std::string &path,const Json &j) {
 }
 static void Service() {
   g_blenderTick=Tick;
+  if(squadSession&&!g_squad.editing)SquadEnd();
   if(restoreFixed&&!g_blenderEditing) {
     if(!closing&&!MmdOwnsPose()&&g_charAnimator==fixedActor&&s_bonesRev==fixedRevision&&UnityObjAlive(fixedActor))mmd_camera::SetFixed(true,fixedActor);
     restoreFixed=false;fixedReferences.reset();
