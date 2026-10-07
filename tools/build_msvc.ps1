@@ -1,4 +1,4 @@
-﻿param([switch]$RunTests, [switch]$EnableXxmiBridge)
+﻿param([switch]$RunTests, [switch]$EnableXxmiBridge, [switch]$CameraRepairOnly)
 
 $ErrorActionPreference = 'Stop'
 
@@ -101,6 +101,15 @@ function Invoke-Cl([string]$CompileArgs) {
   if ($LASTEXITCODE -ne 0) { throw "cl failed: $CompileArgs" }
 }
 
+# Standalone offline utility; static runtime so no Blender/Python/game is needed.
+& (Join-Path $sdkBin 'rc.exe') /nologo /fo build\obj\camera_repair.res tools\camera_repair.rc
+if ($LASTEXITCODE -ne 0) { throw 'Camera repair resource compilation failed.' }
+Invoke-Cl "/nologo /std:c++17 /O2 /MT /EHsc /utf-8 /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /I src /I deps\json /Fo:build\obj\camera_repair.obj tools\camera_repair.cpp build\obj\camera_repair.res /Fe:$pluginDir\CameraRepair.exe /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib comdlg32.lib comctl32.lib shell32.lib"
+if ($CameraRepairOnly) {
+  Write-Host "Camera repair tool built: $pluginDir\CameraRepair.exe"
+  return
+}
+
 Write-Host '=== Preparing embedded clothing resources ==='
 Invoke-Cl "$common $inc src\build\cloth_resources.cpp /Fe:build\cloth_resources.exe /link $sdkLibFlags"
 & '.\build\cloth_resources.exe' --repo $root --pack
@@ -162,6 +171,7 @@ Write-Host ''
 if ($RunTests) {
 Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(
+  @{ Name = 'test_camera_repair'; Src = 'tests\test_camera_repair.cpp' }
   @{ Name = 'test_blender_protocol'; Src = 'tests\test_blender_protocol.cpp' }
   @{ Name = 'test_tool_close'; Src = 'tests\test_tool_close.cpp' }
   @{ Name = 'test_user_agreement'; Src = 'tests\test_user_agreement.cpp' },

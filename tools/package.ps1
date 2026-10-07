@@ -49,9 +49,16 @@ try {
             $files[$name] = $source
         }
     }
+    $repairTool = Join-Path $root 'plugin\CameraRepair.exe'
+    Assert-PoserResourcePath $repairTool
+    if (-not (Test-Path -LiteralPath $repairTool -PathType Leaf) -or
+        (Get-Item -LiteralPath $repairTool).VersionInfo.ProductName -ne 'Endfield Camera Repair') {
+        throw 'Camera repair tool is missing or invalid. Run build.bat -CameraRepairOnly.'
+    }
+    $files['镜头修复工具.exe'] = $repairTool
     # Explicit allowlist: never package the developer's whole plugin/ or docs/.
     foreach ($relative in @('安全安装.bat', 'tools\deploy.ps1', 'tools\update_release.ps1', 'tools\character_face_resources.ps1',
-            'README.md', 'LICENSE', 'docs\tutorial.md', 'docs\mmd-player.md', 'docs\user-agreement.md', 'docs\xxmi-bridge.md',
+            'README.md', 'LICENSE', 'docs\tutorial.md', 'docs\mmd-player.md', 'docs\user-agreement.md', 'docs\xxmi-bridge.md', 'docs\camera-repair.md',
             'resources\character-faces\README.md', 'tools\blender\endfield_poser_bridge\README.md',
             'tools\blender\install.ps1', 'tools\blender\install_addon.py',
             'tools\blender\endfield_poser_bridge\__init__.py',
@@ -121,6 +128,9 @@ Endfield Poser $version (Windows x64)
 可选 Blender 编辑：在 Blender 5.2 或以上版本的插件管理中，从磁盘安装包内的 Blender联动插件.zip，
 启用 Endfield Poser Bridge。3D 视图按 N，在 Endfield 页签连接游戏角色。更新插件后请保存工程并重开 Blender。
 详细步骤见 tools/blender/endfield_poser_bridge/README.md。只播放 MMD 无需安装 Blender。
+
+旧 Blender 镜头转场闪跳：运行包内“镜头修复工具.exe”，选择对应原始 VMD 和旧 .epcamera，
+分析、核对切镜点后另存修复文件。独立运行，无需游戏、Blender 或 Python。详见 docs/camera-repair.md。
 
 在线更新自动查找 Windows 标准安装包（含预发布版），无需先卸载。默认 GitHub 优先，失败后使用内置 GH-Proxy 镜像；也可选择镜像优先或自定义 HTTPS 镜像。下载通过 SHA-256 校验后安装，不会降级。不能联网时可选择“安装本地包”。
 

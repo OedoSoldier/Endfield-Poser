@@ -110,6 +110,15 @@ if(WIN32)
     set(POSER_PLUGIN_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/plugin")
   endif()
   target_compile_definitions(poser PRIVATE POSER_ENABLE_XXMI_BRIDGE=$<BOOL:${POSER_ENABLE_XXMI_BRIDGE}>)
+  add_executable(camera_repair WIN32 tools/camera_repair.cpp tools/camera_repair.rc src/math/camera_repair.h)
+  target_include_directories(camera_repair PRIVATE src deps/json)
+  target_compile_definitions(camera_repair PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+  set_property(TARGET camera_repair PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  target_link_libraries(camera_repair PRIVATE user32 gdi32 comdlg32 comctl32 shell32)
+  set_target_properties(camera_repair PROPERTIES OUTPUT_NAME "CameraRepair")
+  add_custom_command(TARGET camera_repair POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${POSER_PLUGIN_OUTPUT}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:camera_repair> "${POSER_PLUGIN_OUTPUT}/CameraRepair.exe")
   target_include_directories(poser PRIVATE
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(poser PRIVATE
@@ -182,6 +191,7 @@ add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
 add_poser_test(test_mmd_avatar tests/test_mmd_avatar.cpp)
 add_poser_test(test_mmd_terrain tests/test_mmd_terrain.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
+add_poser_test(test_camera_repair tests/test_camera_repair.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
 add_poser_test(test_mod_bridge tests/test_mod_bridge.cpp)
 add_poser_test(test_character_faces tests/test_character_faces.cpp)
