@@ -25,23 +25,24 @@ class Baker:
     def sample(self, sample):
         sample = rig.rebase_sample(self.data, sample)
         frame = 1 + sample['time'] * self.fps
-        for b, value in zip(self.data['bones'], rig.basis_matrices(self.data, sample)):
-            if not b['editable']:
-                continue
-            pb = self.arm.pose.bones[b['blender_name']]
-            p, q, scale = value.decompose()
-            q = self.quaternion(b['i'], q)
-            for path, values in [('location', p), ('rotation_quaternion', q), ('scale', scale)]:
-                for i, v in enumerate(values):
-                    self.add(self.arm, pb.path_from_id(path), i, frame, v)
-        for i, v in enumerate(rig.C.to_3x3() @ Vector(sample['root'])):
-            self.add(self.arm, 'location', i, frame, v)
-        if 'root_rotation' in sample:
-            q = self.quaternion('root', rig.root_rotation(self.data, sample))
-            for i, v in enumerate(q): self.add(self.arm, 'rotation_quaternion', i, frame, v)
-        for i, face in enumerate(self.data['faces']):
-            self.add(self.arm, f'["{rig.bone_key(i)}"]', 0, frame, sample['faces'].get(face['name'], 0))
-        self.add(self.arm, '["epb_visible"]', 0, frame, float(sample.get('visible', True)))
+        if self.arm:
+            for b, value in zip(self.data['bones'], rig.basis_matrices(self.data, sample)):
+                if not b['editable']:
+                    continue
+                pb = self.arm.pose.bones[b['blender_name']]
+                p, q, scale = value.decompose()
+                q = self.quaternion(b['i'], q)
+                for path, values in [('location', p), ('rotation_quaternion', q), ('scale', scale)]:
+                    for i, v in enumerate(values):
+                        self.add(self.arm, pb.path_from_id(path), i, frame, v)
+            for i, v in enumerate(rig.C.to_3x3() @ Vector(sample['root'])):
+                self.add(self.arm, 'location', i, frame, v)
+            if 'root_rotation' in sample:
+                q = self.quaternion('root', rig.root_rotation(self.data, sample))
+                for i, v in enumerate(q): self.add(self.arm, 'rotation_quaternion', i, frame, v)
+            for i, face in enumerate(self.data['faces']):
+                self.add(self.arm, f'["{rig.bone_key(i)}"]', 0, frame, sample['faces'].get(face['name'], 0))
+            self.add(self.arm, '["epb_visible"]', 0, frame, float(sample.get('visible', True)))
         c = sample.get('camera')
         if self.camera and c:
             world = rig.C @ rig.trs(c['p'], c['q']) @ rig.CAM

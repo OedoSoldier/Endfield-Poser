@@ -141,6 +141,19 @@ def schema(arm):
     return json.loads(arm["epb_scene"])
 
 
+def stable_bone_name(model, name, parent):
+    """Ignore only the character root's runtime clone/instance suffix."""
+    if parent >= 0 or not model or not name.startswith(model):
+        return name
+    suffix = name[len(model):]
+    if suffix.startswith('(Clone)'):
+        suffix = suffix[7:]
+    if not suffix or (suffix.startswith('#') and len(suffix) > 1
+                      and all('0' <= c <= '9' for c in suffix[1:])):
+        return model
+    return name
+
+
 def reconnect_schema(previous, incoming):
     """Keep saved bone names/basis and map new runtime indices by hierarchy.
 
@@ -152,7 +165,8 @@ def reconnect_schema(previous, incoming):
     def paths(bones):
         result = []
         for b in bones:
-            result.append((result[b['parent']] if b['parent'] >= 0 else ()) + (b['name'],))
+            name = stable_bone_name(previous['model'], b['name'], b['parent'])
+            result.append((result[b['parent']] if b['parent'] >= 0 else ()) + (name,))
         return result
     old_paths, new_paths = paths(previous['bones']), paths(incoming['bones'])
     if len(set(old_paths)) != len(old_paths) or len(set(new_paths)) != len(new_paths):
@@ -275,12 +289,12 @@ def create_camera(data, scene):
 
 
 def packet(arm, camera, scene, session, sequence, data=None, depsgraph=None):
-    data = data or schema(arm)
+    data = data or (schema(arm) if arm else {'bones': [], 'faces': []})
     # The update handler already owns a fully evaluated graph. Re-entering its
     # evaluation here can miss modal edits or recursively trigger the handler.
     deps = depsgraph if depsgraph is not None else bpy.context.evaluated_depsgraph_get()
-    evaluated = arm.evaluated_get(deps)
-    root = C.to_3x3() @ evaluated.matrix_world.translation
+    evaluated = arm.evaluated_get(deps) if arm else None
+    root = C.to_3x3() @ evaluated.matrix_world.translation if evaluated else Vector((0, 0, 0))
     worlds, bones = [], []
     for b in data["bones"]:
         pb = evaluated.pose.bones[b["blender_name"]]
@@ -313,7 +327,7 @@ def packet(arm, camera, scene, session, sequence, data=None, depsgraph=None):
     result = {"session": session, "sequence": sequence, "time": max(0, (scene.frame_current_final - 1) / fps),
             "root": list(root), "bones": bones, "faces": {f["name"]: max(0., min(1., evaluated.get(bone_key(i), 0.))) for i, f in enumerate(data["faces"]) if f.get('available', True)},
             "camera": view, "anchor_rotation": data.get('anchor_rotation', [0, 0, 0, 1]),
-            "visible": evaluated.get("epb_visible", 1) >= .5}
+            "visible": evaluated.get("epb_visible", 1) >= .5 if evaluated else True}
     if 'root_rotation' in data:
         base = data['root_rotation']
         delta = (C.to_3x3() @ evaluated.matrix_world.to_quaternion().to_matrix() @ C.to_3x3()).to_quaternion()

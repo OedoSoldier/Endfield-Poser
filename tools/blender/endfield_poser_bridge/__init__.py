@@ -1,7 +1,7 @@
 """Endfield skeleton, expression, camera and correction-layer editor."""
 bl_info = {
     'name': 'Endfield Poser Bridge', 'author': 'Endfield Poser',
-    'version': (0, 3, 0), 'blender': (5, 2, 0),
+    'version': (0, 3, 1), 'blender': (5, 2, 0),
     'location': '3D View > N > Endfield', 'category': 'Animation',
     'description': '编辑游戏骨架、中文表情、镜头与动作修正层',
 }
@@ -13,11 +13,12 @@ import time
 import sys
 from contextlib import contextmanager
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, IntProperty, StringProperty, PointerProperty, EnumProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
-from . import rig, animation, transport, console, squad
+from . import rig, animation, transport, console, squad, clip_io
 
 _client = None
 _session = 0
@@ -25,6 +26,7 @@ _sequence = 0
 _status = '未连接'
 _connection_status = '未连接游戏'
 _schema = None
+_file_import = None
 _last = 0.
 _busy = False
 _baker = None
@@ -383,6 +385,7 @@ def disconnect():
 
 @persistent
 def load_pre(_):
+    if _file_import: _file_import.cancel(bpy.context)
     disconnect()
 
 
@@ -500,7 +503,8 @@ def export_header(data, camera=False):
         return {'format': 'endfield-blender-camera', 'version': 3}
     bones = data.get('game_bones', data['bones'])
     return {'format': 'endfield-blender-motion', 'version': 4 if 'root_rotation' in data else 3, 'model': data['model'],
-            'bone_names': [b['name'] for b in bones], 'bone_parents': [b['parent'] for b in bones]}
+            'bone_names': [rig.stable_bone_name(data['model'], b['name'], b['parent']) for b in bones],
+            'bone_parents': [b['parent'] for b in bones], 'editor_reference': clip_io.editor_reference(data)}
 
 
 def export_sample(packet, camera=False):
@@ -517,7 +521,7 @@ class ExportClip:
     def execute(self, context):
         global _busy
         s = context.scene
-        if not s.epb_armature or _busy or (self.camera_only and not s.epb_camera):
+        if _busy or (not s.epb_camera if self.camera_only else not s.epb_armature):
             report(self, {'ERROR'}, '需要编辑骨架，且不能与导入同时进行')
             return {'CANCELLED'}
         try:
@@ -527,12 +531,14 @@ class ExportClip:
             return {"CANCELLED"}
         self._original, self._frame = s.frame_current, s.frame_start
         self._start, self._end = s.frame_start, s.frame_end
-        self._data = rig.schema(s.epb_armature)
+        self._data = rig.schema(s.epb_armature) if s.epb_armature else {
+            'bones': [], 'faces': [], 'anchor_rotation': list(s.get('epb_camera_anchor', [0, 0, 0, 1]))}
         self._arm = s.epb_armature
         self._camera_cuts = animation.camera_cut_frames(s.epb_camera) if self.camera_only else []
         self._file = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False,
             dir=os.path.dirname(os.path.abspath(self.filepath)), prefix='.epmotion-', suffix='.tmp')
         header = export_header(self._data, self.camera_only)
+        header['fps'] = self._fps
         self._file.write(json.dumps(header, ensure_ascii=False)[:-1] + ',"frames":[')
         self._first = True
         _busy = True
@@ -603,6 +609,146 @@ class EPB_OT_export(ExportClip, bpy.types.Operator, ExportHelper):
 class EPB_OT_export_camera(ExportClip, bpy.types.Operator, ExportHelper):
     bl_idname = 'endfield.export_camera'
     bl_label = '导出镜头'
+    camera_only = True
+    filename_ext = '.epcamera'
+    filter_glob: StringProperty(default='*.epcamera', options={'HIDDEN'})
+
+
+class ImportClip:
+    camera_only = False
+
+    @classmethod
+    def poll(cls, context):
+        return not (_session or _connecting or _busy)
+
+    def execute(self, context):
+        global _busy, _file_import, _status
+        if not self.poll(context):
+            report(self, {'ERROR'}, '请先断开游戏连接，并等待当前导入／导出结束')
+            return {'CANCELLED'}
+        self._window = context.window
+        self._original_scene = context.scene
+        self._original_camera = context.scene.camera
+        self._original_bridge_camera = context.scene.epb_camera
+        self._original_range = (context.scene.frame_start, context.scene.frame_end, context.scene.epb_import_end)
+        self._original_frame = (context.scene.frame_current, context.scene.frame_subframe)
+        self._target = None; self._new_scene = False
+        self._objects = []; self._baker = None; self._doc = None
+        self._fallback = rig.schema(context.scene.epb_armature) if context.scene.epb_armature else None
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future = self._executor.submit(clip_io.read, self.filepath, self.camera_only)
+        self._timer = context.window_manager.event_timer_add(.01, window=context.window)
+        _busy = True; _file_import = self
+        _status = '正在读取文件；Esc 可取消'
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def prepare(self, context):
+        doc = self._doc
+        if self.camera_only:
+            self._target = self._original_scene
+            if not self._target.epb_armature and not self._target.epb_camera:
+                self._target = bpy.data.scenes.new('Endfield 镜头编辑'); self._new_scene = True
+            data = rig.schema(self._target.epb_armature) if self._target.epb_armature else {
+                'bones': [], 'faces': [], 'anchor_rotation': doc['frames'][0].get('anchor_rotation', [0, 0, 0, 1])}
+            data = dict(data, camera_cuts=[f['time'] for f in doc['frames'] if f['camera'].get('cut', False)])
+            self._arm = None
+        else:
+            data = clip_io.reference(doc, self._fallback)
+            # Fully composed exports become a fresh base; original correction
+            # layers remain intact in their original scene, never applied twice.
+            self._target = bpy.data.scenes.new('Endfield 导入 · '+doc['model']); self._new_scene = True
+        self._window.scene = self._target
+        if self._new_scene:
+            fps = doc.get('fps', 30.)
+            self._target.render.fps = max(1, round(fps))
+            self._target.render.fps_base = self._target.render.fps/fps
+            self._target.render.resolution_x, self._target.render.resolution_y = 1920, 1080
+        fps = scene_fps(self._target)
+        self._end = max(2, math.ceil(doc['frames'][-1]['time']*fps)+1)
+        if self._end > 1000000: raise ValueError('导入后的时间轴超过支持的长度')
+        if not self.camera_only:
+            self._arm = rig.create_rig(data, self._target); self._objects.append(self._arm)
+            self._target.epb_armature = self._arm
+            data = rig.schema(self._arm)
+        self._camera = rig.create_camera({}, self._target); self._objects.append(self._camera)
+        if self.camera_only and not self._new_scene:
+            self._target.camera = self._original_camera
+        self._data = data
+        self._baker = animation.Baker(self._arm, self._camera if self.camera_only else None, data, fps)
+        self._cursor = 0
+
+    def cleanup(self, context, success):
+        global _busy, _file_import
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer); self._timer = None
+        self._future.cancel(); self._executor.shutdown(wait=False, cancel_futures=True)
+        if not success:
+            if self._baker: self._baker.channels.clear()
+            self._window.scene = self._original_scene
+            self._original_scene.camera = self._original_camera
+            self._original_scene.epb_camera = self._original_bridge_camera
+            self._original_scene.frame_start, self._original_scene.frame_end, self._original_scene.epb_import_end = self._original_range
+            for obj in reversed(self._objects):
+                data = obj.data; bpy.data.objects.remove(obj, do_unlink=True)
+                if data.users == 0:
+                    if isinstance(data, bpy.types.Armature): bpy.data.armatures.remove(data)
+                    elif isinstance(data, bpy.types.Camera): bpy.data.cameras.remove(data)
+            if self._new_scene and self._target: bpy.data.scenes.remove(self._target)
+            self._original_scene.frame_set(self._original_frame[0], subframe=self._original_frame[1])
+        self._doc = None; self._baker = None
+        _busy = False; _file_import = None
+
+    def cancel(self, context):
+        global _status
+        self.cleanup(context, False)
+        _status = '已取消文件导入，原工程保留'
+
+    def modal(self, context, event):
+        global _status
+        if event.type == 'ESC':
+            self.cancel(context); return {'CANCELLED'}
+        if event.type == 'Z' and event.ctrl: return {'RUNNING_MODAL'}
+        if event.type != 'TIMER': return {'PASS_THROUGH'}
+        try:
+            if self._doc is None:
+                if not self._future.done(): return {'RUNNING_MODAL'}
+                self._doc = self._future.result(); self.prepare(context)
+            if self._window.scene != self._target:
+                raise ValueError('场景已切换，已取消本次导入')
+            deadline = time.monotonic()+.03
+            while self._cursor < len(self._doc['frames']) and time.monotonic() < deadline:
+                self._baker.sample(clip_io.sample(self._doc['frames'][self._cursor], self.camera_only))
+                self._cursor += 1
+            _status = f"正在导入 {'镜头' if self.camera_only else '动作与表情'} {self._cursor}/{len(self._doc['frames'])}"
+            if self._cursor < len(self._doc['frames']): return {'RUNNING_MODAL'}
+            self._baker.finish()
+            scene = self._target
+            scene.epb_camera = self._camera; scene.camera = self._camera
+            scene['epb_camera_anchor'] = self._data.get('anchor_rotation', [0, 0, 0, 1])
+            scene.frame_start = 1
+            scene.frame_end = self._end if self._new_scene else max(scene.frame_end, self._end)
+            scene.epb_import_end = scene.frame_end
+            scene.frame_set(1)
+            self.cleanup(context, True)
+            report(self, {'INFO'}, '已导入最终结果为新基础层；可继续添加修正层，原工程与旧镜头保留')
+            return {'FINISHED'}
+        except Exception as exc:
+            self.cleanup(context, False)
+            report(self, {'ERROR'}, '文件导入失败：'+str(exc))
+            return {'CANCELLED'}
+
+
+class EPB_OT_import_motion(ImportClip, bpy.types.Operator, ImportHelper):
+    bl_idname = 'endfield.import_motion_file'
+    bl_label = '导入已导出动作与表情'
+    filename_ext = '.epmotion'
+    filter_glob: StringProperty(default='*.epmotion', options={'HIDDEN'})
+
+
+class EPB_OT_import_camera(ImportClip, bpy.types.Operator, ImportHelper):
+    bl_idname = 'endfield.import_camera_file'
+    bl_label = '导入已导出镜头'
     camera_only = True
     filename_ext = '.epcamera'
     filter_glob: StringProperty(default='*.epcamera', options={'HIDDEN'})
@@ -1082,7 +1228,7 @@ class EPB_PT_main(bpy.types.Panel):
         row = l.row(align=True)
         row.prop(s, 'frame_current', text='当前帧')
         row.operator('screen.animation_play', text='', icon='PLAY')
-        if s.epb_armature:
+        if s.epb_armature or s.epb_camera:
             row = l.row(align=True);row.enabled = not _busy
             row.prop(s.render, 'fps', text='场景帧率');row.prop(s.render, 'fps_base', text='基数')
             l.label(text='1–120 FPS；修改后现有关键帧帧号不变')
@@ -1092,6 +1238,11 @@ class EPB_PT_main(bpy.types.Panel):
         row = box.row(align=True);row.prop(s, 'epb_import_start');row.prop(s, 'epb_import_end')
         row = box.row();row.enabled = bool(_session) and not _busy
         row.operator('endfield.pull_motion')
+        box = l.box();box.label(text='从已导出文件继续编辑')
+        row = box.row(align=True);row.enabled = not (_session or _connecting or _busy)
+        row.operator('endfield.import_motion_file', text='导入 .epmotion', icon='IMPORT')
+        row.operator('endfield.import_camera_file', text='导入 .epcamera', icon='CAMERA_DATA')
+        box.label(text='先断开连接；文件是最终结果，不含原修正层')
         row = l.row(align=True)
         row.operator('endfield.export_motion', text='导出当前队员动作与表情' if s.get('epb_squad') else '导出动作与表情', icon='EXPORT')
         row.operator('endfield.export_camera', icon='CAMERA_DATA')
@@ -1168,7 +1319,7 @@ class EPB_PT_camera(bpy.types.Panel):
             l.label(text='选中镜头：G / R 移动旋转；小键盘 0 取景')
 
 
-classes = (EPB_OT_connect, EPB_OT_disconnect, EPB_OT_open_vmd, EPB_OT_export, EPB_OT_export_camera, EPB_OT_pull, EPB_OT_layer, EPB_OT_key, EPB_OT_select_member,
+classes = (EPB_OT_connect, EPB_OT_disconnect, EPB_OT_open_vmd, EPB_OT_export, EPB_OT_export_camera, EPB_OT_import_motion, EPB_OT_import_camera, EPB_OT_pull, EPB_OT_layer, EPB_OT_key, EPB_OT_select_member,
            EPB_OT_restore_pose, EPB_OT_face_key, EPB_OT_face_zero, EPB_OT_camera_key, EPB_OT_edit_target, EPB_OT_camera_view,
            EPB_OT_camera_layer, EPB_OT_camera_restore, EPB_OT_layer_visibility, EPB_OT_show_layers, EPB_OT_show_keys, EPB_OT_clear_solo, EPB_OT_enable_corrections,
            EPB_PT_main, EPB_PT_layers, EPB_PT_faces, EPB_PT_camera)
@@ -1209,6 +1360,7 @@ def register():
 
 def unregister():
     global _client
+    if _file_import: _file_import.cancel(bpy.context)
     disconnect()
     if bpy.app.timers.is_registered(tick):
         bpy.app.timers.unregister(tick)

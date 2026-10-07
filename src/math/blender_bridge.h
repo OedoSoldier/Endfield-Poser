@@ -14,6 +14,18 @@ namespace blender_bridge {
 using Json=nlohmann::json;
 constexpr int Protocol=1;
 constexpr size_t MaxPacket=4*1024*1024;
+// Model instances are renamed after spawning: model(Clone)#49 is not a new
+// skeleton. Normalize only the model's top-level transform, never a bone or
+// a different root. Descendant names and every parent edge stay significant.
+inline std::string StableBoneName(const std::string &model,const std::string &name,int parent) {
+  if(parent>=0||model.empty()||name.compare(0,model.size(),model)!=0)return name;
+  size_t offset=model.size();
+  if(name.compare(offset,7,"(Clone)")==0)offset+=7;
+  if(offset==name.size())return model;
+  if(name[offset]!='#'||offset+1==name.size())return name;
+  for(size_t i=offset+1;i<name.size();++i)if(name[i]<'0'||name[i]>'9')return name;
+  return model;
+}
 struct Bone {int index=-1;Vec3 position;Quat rotation;Vec3 scale{1,1,1};bool hasScale=false;};
 struct Camera {bool active=false,perspective=true;Vec3 position,target;Quat rotation;float fov=45,size=5;bool cut=false;};
 struct Frame {
@@ -107,7 +119,7 @@ struct Clip {
       std::vector<int> result;
       for(size_t i=0;i<n.size();++i) {
         if(p[i]<-1||p[i]>=int(i))throw std::runtime_error("Invalid bone parent: "+n[i]);
-        auto key=std::make_pair(p[i]<0?0:result[p[i]],n[i]);
+        auto key=std::make_pair(p[i]<0?0:result[p[i]],StableBoneName(model,n[i],p[i]));
         auto entry=paths.emplace(key,int(paths.size())+1);
         result.push_back(entry.first->second);
       }

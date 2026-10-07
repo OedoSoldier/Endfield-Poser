@@ -58,6 +58,7 @@ try {
             'tools\blender\endfield_poser_bridge\rig.py',
             'tools\blender\endfield_poser_bridge\squad.py',
             'tools\blender\endfield_poser_bridge\animation.py',
+            'tools\blender\endfield_poser_bridge\clip_io.py',
             'tools\blender\endfield_poser_bridge\console.py',
             'tools\blender\endfield_poser_bridge\transport.py')) {
         $files[$relative] = Join-Path $root $relative
