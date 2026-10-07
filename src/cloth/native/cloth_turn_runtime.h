@@ -37,6 +37,10 @@ static ClothActorBank<ClothTurnState> s_clothTurnActors;
 static double ClothTurnNow() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+// Only motion derivatives/mailbox expiry follow the recording clock. Resource
+// discovery and restore deadlines continue to use real time.
+static double (*s_clothTurnMotionClock)()=nullptr;
+static double ClothTurnMotionNow(){return s_clothTurnMotionClock?s_clothTurnMotionClock():ClothTurnNow();}
 static void ClothTurnDropShape(ClothTurnState::ShapeEntry &entry) {
   for(auto &mount:entry.mounts)ClothFree(mount);
   entry={};
@@ -297,7 +301,7 @@ static void ClothTurnBoundary() {
   if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||!ClothTurnNeeded())return;
   if(!ClothOwns(s_cloth.owner)) {ClothTurnClear();return;}
   auto &s=s_clothTurn;s.clothing=s.hair=s.tail=s.ears=s.accessories=s.shaped=s.enhancedCount=0;s.status=u8"当前没有可驱动的衣物、头发等部件";
-  const double now=ClothTurnNow();
+  const double now=ClothTurnMotionNow();
   void *seen[ClothCapacity+eiem_cloth_rebuild::BatchCapacity]{};unsigned count=0,budget=1;
   auto submit=[&](const ClothRef &ref,const char *name,const ClothInstance *source,const ClothBoneRuntime *enhanced) {
     if(s.fault)return;
@@ -357,7 +361,7 @@ static void ClothTurnSubmit(const Profile &profile,const Bones &bones,double cur
   }
   if(!read({0,7,8},hips))hips=body;
   if(playing&&s.body.ready&&s.body.playing&&s.body.epoch==epoch&&s.body.cursor==cursor)return;
-  double now=ClothTurnNow();
+  double now=ClothTurnMotionNow();
   s.mailbox.push(s.body.step(body,now,cursor,epoch,playing),s.head.step(head,now,cursor,epoch,playing),now,
       s.hips.step(hips,now,cursor,epoch,playing));
   for(unsigned n=0;n<s.shapeCount;++n) {

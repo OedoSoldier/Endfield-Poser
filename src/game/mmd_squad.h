@@ -118,6 +118,7 @@ static bool MmdSquadClothHolding() {
   return false;
 }
 static void MmdSquadSyncAudio() {
+  if(g_mmdOfflineRecording)return;
   try {g_mmd.audio.sync(g_squad.timeline,g_squad.active,g_mmd.musicEnabled,g_mmd.musicOffset,g_mmd.musicVolume);}
   catch(const std::exception &e) {g_mmd.musicError=e.what();g_mmd.musicEnabled=false;}
 }
@@ -534,7 +535,7 @@ static void MmdSquadApply() {
     auto placement=MmdSquadPlacement(n);
     auto base=s.anchor.place(a.mapper.sourceBasis(),{},slot.offset,slot.yaw,false,0);
     float ground=s.editing||!slot.body()?0:mmd_terrain::Apply(a.saved.terrain,s.terrain,slot.edited?a.playbackProfile:a.profile,pose,
-      mmd::TRS(placement.position,placement.rotation),mmd::TRS(base.position,base.rotation),MmdNow(),s.timeline.seconds);
+      mmd::TRS(placement.position,placement.rotation),mmd::TRS(base.position,base.rotation),MmdSimulationNow(),s.timeline.seconds);
     placement.position.y+=ground;
     if(!MmdSquadWorldPose(a.saved.root,placement.position,placement.rotation)) {MmdSquadStop();s.status=u8"无法设置队员位置，已停止";return;}
     for(size_t j=1;j<pose.write.size()&&j<a.bones.size();++j)if(pose.write[j])
@@ -587,7 +588,7 @@ static void MmdSquadApply() {
           (s.editing?s.previewPlaying:s.timeline.state==mmd::PlayState::Playing)&&!s.timeline.clockHeld,slot.body()||s.editing);
     }
     poser_secondary::Tick(a.saved.secondary,a.saved.animator,poser_secondary::ModelKey(a.profile.model),a.bones,a.saved.transforms,
-        MmdNow(),s.timeline.seconds,a.saved.terrain.epoch,(s.editing?s.previewPlaying:s.timeline.state==mmd::PlayState::Playing)&&!s.timeline.clockHeld,slot.body()||s.editing);
+        MmdSimulationNow(),s.timeline.seconds,a.saved.terrain.epoch,(s.editing?s.previewPlaying:s.timeline.state==mmd::PlayState::Playing)&&!s.timeline.clockHeld,slot.body()||s.editing);
   }
   const auto &keys=MmdCameraKeys();
   if(!s.editing&&g_mmd.cameraSettings.enabled&&(!keys.empty()||g_mmd.editedCamera)&&mmd_camera::ready) {

@@ -19,6 +19,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # ---- 插件 DLL + 代理 DLL（仅 Windows/MSVC；沙箱 Linux 跳过）----
 if(WIN32)
   enable_language(C)
+  add_library(recording_deflate STATIC
+    deps/libdeflate/lib/deflate_compress.c deps/libdeflate/lib/zlib_compress.c
+    deps/libdeflate/lib/adler32.c deps/libdeflate/lib/utils.c
+    deps/libdeflate/lib/x86/cpu_features.c deps/libdeflate/lib/arm/cpu_features.c)
+  set_property(TARGET recording_deflate PROPERTY C_STANDARD 99)
   file(GLOB CLOTH_DECODER_SOURCES CONFIGURE_DEPENDS
     deps/brotli/c/common/*.c deps/brotli/c/dec/*.c)
   add_library(cloth_decoder STATIC ${CLOTH_DECODER_SOURCES})
@@ -49,6 +54,10 @@ if(WIN32)
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
     src/game/blender_squad.h
+    src/game/transparent_capture.h src/math/transparent_capture.h src/editor/panel_capture.h
+    src/game/mmd_recording.h src/math/mmd_recording.h src/editor/panel_recording.h
+    src/game/recording_readback.h src/game/recording_mask_probe.h src/math/recording_png.h src/math/recording_queue.h
+    src/core/recording_display.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/game/mmd_secondary_motion.h src/math/mmd_secondary_motion.h src/integrations/sbm_mmd_api.h
     src/math/secondary_body_motion.h src/game/secondary_body_runtime.h src/game/secondary_body_settings.h src/integrations/secondary_bone_profiles.h
@@ -111,7 +120,7 @@ if(WIN32)
   target_compile_options(poser PRIVATE /EHa)
   target_link_options(poser PRIVATE /NODEFAULTLIB:LIBCMT)
   target_link_libraries(poser PRIVATE
-    cloth_decoder d3d11 dxgi d3dcompiler dwmapi ole32
+    cloth_decoder recording_deflate d3d11 dxgi d3dcompiler dwmapi ole32
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
 
   # 代理 DLL：本地编译 src/core/proxy_d3dcompiler.cpp，不再依赖 EIEM 编译产物
@@ -166,6 +175,7 @@ add_poser_test(test_ik tests/test_ik.cpp)
 add_poser_test(test_native_cloth tests/test_native_cloth.cpp)
 add_poser_test(test_pose_file tests/test_pose_file.cpp)
 add_poser_test(test_mmd tests/test_mmd.cpp)
+add_poser_test(test_mmd_recording tests/test_mmd_recording.cpp)
 add_poser_test(test_mmd_secondary tests/test_mmd_secondary.cpp)
 add_poser_test(test_cloth_turn tests/test_cloth_turn.cpp)
 add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
@@ -180,6 +190,10 @@ add_poser_test(test_eye_gaze tests/test_eye_gaze.cpp)
 set_tests_properties(test_character_faces PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
   add_poser_test(test_tool_close tests/test_tool_close.cpp)
+  add_poser_test(test_mmd_recording_runtime tests/test_mmd_recording_runtime.cpp)
+  target_include_directories(test_mmd_recording_runtime PRIVATE deps deps/minhook_lib/include)
+  target_compile_options(test_mmd_recording_runtime PRIVATE /EHa)
+  target_link_libraries(test_mmd_recording_runtime PRIVATE recording_deflate ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_sources(test_tool_close PRIVATE
     deps/imgui/imgui.cpp deps/imgui/imgui_draw.cpp deps/imgui/imgui_tables.cpp deps/imgui/imgui_widgets.cpp
     deps/imgui/imgui_impl_dx11.cpp deps/imgui/imgui_impl_win32.cpp deps/imguizmo/ImGuizmo.cpp)
@@ -240,6 +254,10 @@ if(MSVC)
   add_poser_test(test_mmd_runtime tests/test_mmd_runtime.cpp)
   add_poser_test(test_mmd_environment_runtime tests/test_mmd_environment_runtime.cpp)
   add_poser_test(test_frame_limit tests/test_frame_limit.cpp)
+  add_poser_test(test_transparent_capture tests/test_transparent_capture.cpp)
+  target_include_directories(test_transparent_capture PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_transparent_capture PRIVATE /EHa)
+  target_link_libraries(test_transparent_capture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_include_directories(test_frame_limit PRIVATE deps/minhook_lib/include)
   target_compile_options(test_frame_limit PRIVATE /EHa)
   target_link_libraries(test_frame_limit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)

@@ -273,6 +273,11 @@ static void MmdRestoreTransform(const MmdSavedTransform &b) {
   MmdRawPose(b.transform,b.pos,b.rot);
   if(b.scaleOwned)mmd_camera::Write(g_transform_set_localScale,b.transform,b.scale);
 }
+// The image-sequence recorder owns transport while it renders all layers of a
+// fixed sample. Ordinary playback and audio must not advance behind its back.
+static std::atomic<bool> g_mmdOfflineRecording{false};
+static std::atomic<double> g_mmdOfflineNow{0};
+static double MmdSimulationNow(){return g_mmdOfflineRecording?g_mmdOfflineNow.load():MmdNow();}
 struct MmdSavedComponent {
   void *component;
   bool enabled;
@@ -599,6 +604,7 @@ static void MmdPublishCamera() {
 }
 
 static void MmdSyncAudio() {
+  if(g_mmdOfflineRecording)return;
   auto &m = g_mmd;
   try {
     m.audio.sync(m.timeline, m.session.active && !m.preview,
@@ -1411,7 +1417,7 @@ static void MmdApplyFrame() {
   auto &p = m.mapper.output;
   auto world=s.anchorWorld*mmd::TRS(p.rootOffset,{});
   if(m.editedBody&&m.editedHasRootRotation)world=mmd::TRS(world.position(),NormQ(mmd::Rotation(s.anchorWorld)*m.editedRootRotation));
-  float ground=!MmdHasBody()?0:mmd_terrain::Apply(s.terrain,m.terrain,m.profile,p,world,s.anchorWorld,MmdNow(),m.timeline.seconds);
+  float ground=!MmdHasBody()?0:mmd_terrain::Apply(s.terrain,m.terrain,m.profile,p,world,s.anchorWorld,MmdSimulationNow(),m.timeline.seconds);
   mmd::Matrix anchorInverse;Vec3 groundLocal{};
   if(mmd::Inverse(s.anchorWorld,anchorInverse))groundLocal=mmd::terrain::Vector(anchorInverse,{0,ground,0});
   MmdRawPose(s.root, s.rootPos + s.rootRot * (p.rootOffset+groundLocal), s.rootRot);
@@ -1475,7 +1481,7 @@ static void MmdApplyFrame() {
   ClothTurnSubmit(m.profile,s_allBones,m.timeline.seconds,s.terrain.epoch,
       m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,MmdHasBody());
   poser_secondary::Tick(s.secondary,s.animator,poser_secondary::ModelKey(m.profile.model),s_allBones,s.transforms,
-      MmdNow(),m.timeline.seconds,s.terrain.epoch,m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,MmdHasBody());
+      MmdSimulationNow(),m.timeline.seconds,s.terrain.epoch,m.timeline.state==mmd::PlayState::Playing&&!m.timeline.clockHeld,MmdHasBody());
   MmdPublishCamera();
 }
 static bool MmdClothMayAdjustAnchor(void *transform) {
@@ -1554,6 +1560,7 @@ static void MmdSeekOrStart(double seconds) {
   MmdSeek(seconds);MmdApplyFrame();
 }
 static void MmdTick() {
+  if(g_mmdOfflineRecording)return;
   try {
     MmdVisibilityDrain();
     auto &m = g_mmd;
@@ -1606,6 +1613,7 @@ static void MmdTick() {
 // Reset keeps the playback anchor and holds frame zero; Stop restores the pose
 // captured before playback. Pausing never captures or replaces that session.
 static void MmdPlaybackCommand(int command, bool allowSquad = true) {
+  if(g_mmdOfflineRecording){g_mmd.status=u8"正在录制，请先停止录制再操作播放器";return;}
   if(g_blenderEditing && command!=2) {g_mmd.status=u8"Blender 编辑中，请在 Blender 时间轴控制预览或先断开";return;}
   // A live single session/calibration always owns transport. An idle squad
   // selection must never swallow pause/stop for the character on screen.

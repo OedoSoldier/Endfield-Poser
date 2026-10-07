@@ -7,7 +7,8 @@
 #include <string>
 #include <memory>
 
-// Camera objects are only read/written in CameraManager's verified game callback.
+// Camera objects are read/written on the verified game callbacks (camera tail,
+// and SRP recording reconciliation while gameplay time is held).
 // Playback/editor threads publish a pose under g_poseMutex and never call Unity.
 namespace mmd_camera {
 struct Request {
@@ -49,6 +50,7 @@ static void SetFixed(bool enabled,void *actor=nullptr) {
 }
 static std::atomic<uint64_t> applied{0},callbacks{0},lastSequence{0},repeatedFrames{0};
 static std::atomic<double> lastCallback{-1e30},sourceFrame{0};
+static double (*sampleClock)() = nullptr;
 static std::atomic<bool> restorePending{false},driverPaused{false};
 static std::atomic<const char*> status{u8"镜头未启用"};
 static void *getMain = nullptr, *getFov = nullptr, *setFov = nullptr,
@@ -438,6 +440,20 @@ static bool BuildFixed(void *camera,const FixedRequest &f,Request &out,double no
   fixedStatus=u8"固定跟踪中：距离与焦距已锁定";return true;
 }
 // The native game uses instance void TailLateTick(float), including MethodInfo.
+// Recording can sample after TailLateTick, or its optional observer can lose a
+// try-lock race. Reconcile the current immutable camera sample at SRP-before,
+// on the same game thread, instead of exporting the previous sample's camera.
+static bool SyncRecording(void *camera,double now) {
+  if(RuntimeClosing()||poser_close::Closing()||!UnityObjAlive(camera))return false;
+  auto snapshot=std::atomic_load(&published);Request sample=snapshot?*snapshot:Request{};
+  sample.active=sample.active&&desiredActive.load()&&sample.session==desiredSession.load();
+  if(fixedEnabled.load()) {
+    auto fixed=std::atomic_load(&fixedPublished);sample={};
+    if(!fixed||!BuildFixed(camera,*fixed,sample,now))return false;
+  }
+  if(!sample.active)return Restore();
+  return Pump(camera,sample);
+}
 using TailFn=void(__fastcall *)(void*,float,void*);
 static TailFn original=nullptr;
 static void (*framePulse)() = nullptr;
@@ -462,7 +478,7 @@ static void __fastcall Tail(void *self,float dt,void *method) {
     const bool tracking=!first&&!poser_close::Closing()&&fixedEnabled.load();
     if(tracking) {
       auto fixed=std::atomic_load(&fixedPublished);sample={};
-      if(fixed)BuildFixed(camera,*fixed,sample);
+      if(fixed)BuildFixed(camera,*fixed,sample,sampleClock?sampleClock():FrameNow());
     } else if(!fixedEnabled.load()||poser_close::Closing())ReleaseFixed();
     bool appliedSample=false;
     if(!first&&RestoreFirstHead())appliedSample=Pump(camera,sample);

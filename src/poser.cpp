@@ -32,6 +32,8 @@
 #include "config.h"
 #include "game/cloth_init.h"
 #include "game/frame_limit.h"
+#include "editor/panel_capture.h"
+#include "editor/panel_recording.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
 // 面板里的「打开日志」：弹资源管理器并选中 poser_log.txt —— 让非技术用户
@@ -276,6 +278,12 @@ static void GameFrameTickBody() {
     ConsumeCapturedCharacter();
     if (g_charChanged)
       RebuildCapturedCharacter();
+    if(poser_recording::busy) {
+      const bool freeze=TakeHotkeyFreeze();const LONG keys=InterlockedExchange(&g_mmdHotkeyRequests,0);
+      if(freeze||keys)poser_recording::Cancel();
+      MaintainFreeze();
+      return;
+    }
     // 角色捕获自愈：SetMainCharacter hook 漏触发/时机错过时，
     // 周期性从 PlayerController 补捞当前角色（每 250ms 一次）。
     // 骨骼数为 0 也要补捞：角色切换/场景变化后 g_charAnimator 可能残留
@@ -445,6 +453,8 @@ static void DrawPoserGuiBody() {
       poser_frame_limit::Request(frameMode==1?30:frameMode==2?60:0);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"限制整个游戏画面的目标帧率，单人、多人和 Blender 联动共用；不改变动作速度。关闭后恢复原来的帧率和垂直同步设置。仅本次运行生效。");
     if(frameMode||poser_frame_limit::held)ImGui::TextDisabled("%s",poser_frame_limit::status);
+    DrawTransparentCapture();
+    DrawMmdRecording();
     ImGui::Separator();
     ImGui::TextDisabled(g_charAnimator?u8"当前角色已就绪":u8"等待进入角色场景");
     ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
@@ -628,6 +638,10 @@ void DrawPoserGui() {
     TakeLeftClick();
     return;
   }
+  if(poser_recording::busy) {
+    g_inputHoverGizmo=false;g_inputDragging=false;TakeLeftClick();
+    DrawMmdRecordingProgress();return;
+  }
   DrawPoserGuiBody();
 }
 
@@ -670,6 +684,7 @@ static void OnGuiShutdownRestore() {
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
   mmd_camera::SetFixed(false);
+  poser_capture::Cancel();
   first_person::Disable();
   MmdStop();
   s_mmdClosing.store(true);
@@ -692,7 +707,7 @@ static void OnGuiShutdownRestore() {
   while (GetTickCount64()<deadline) {
     { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
       if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring() &&
-          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && !first_person::headHolding.load() && s_mmdVisibilityRetired.empty() && poser_blush::actors.empty()) return; }
+          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && !first_person::headHolding.load() && s_mmdVisibilityRetired.empty() && poser_blush::actors.empty() && !poser_capture::busy) return; }
     Sleep(10);
   }
   Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
@@ -701,6 +716,7 @@ static void OnGuiShutdownRestore() {
 static void RequestToolClose() {
   if(!poser_close::state.request())return;
   g_pluginEnabled=false;g_webRunning=false;g_hotkeyPollRun=0;
+  poser_capture::Cancel();
   InterlockedExchange(&g_mmdHotkeyRequests,0);TakeHotkeyFreeze();
   s_mmdClosing=true;poser_blender::closing=true;
   if(HWND dialog=s_mmdDialog.load())PostMessageW(dialog,WM_CLOSE,0,0);
@@ -708,6 +724,7 @@ static void RequestToolClose() {
   Log("[TOOL-CLOSE] requested; game-thread restoration pending; restart-only=1");
 }
 static bool ToolAttachmentsRestored() {
+  if(poser_capture::busy)return false;
   if(poser_frame_limit::held||!poser_blush::actors.empty())return false;
   if(mmd_camera::restorePending.load()||mmd_camera::fixedHolding.load()||first_person::headHolding.load()||
       !s_mmdVisibilityRetired.empty()||!g_frozenGrips.empty())return false;
@@ -945,6 +962,10 @@ static DWORD WINAPI InitThread(LPVOID) {
   MmdSquadInstall();
   g_beforeCharacterChange = PrepareCharacterHandoff;
   g_renderPoseFinish=SecondaryBodyRender;
+  s_clothTurnMotionClock=MmdSimulationNow;
+  g_beforeGameRender=poser_recording::RenderPose;
+  g_beforeFrameLock=poser_recording::FramePulse;
+  g_afterGameRender=poser_recording::Rendered;
   g_onFreezeReleased=SMCReleaseFreeze;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）
   SetExtControl(ExtControl);
@@ -984,8 +1005,14 @@ static DWORD WINAPI InitThread(LPVOID) {
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
   g_characterFramePulse=[](){SampleGameRenderFrame(3);};
   mmd_camera::framePulse=[](){SampleGameRenderFrame(4);};
+  mmd_camera::sampleClock=MmdSimulationNow;
   mmd_camera::needsCamera=[](){return poser_gaze::motionLock||poser_gaze::settings.mode==eye_gaze::Mode::Camera;};
-  mmd_camera::afterCamera=SMCGazeCameraTick;
+  mmd_camera::afterCamera=[](void *camera) {
+    SMCGazeCameraTick(camera);
+    if(poser_recording::busy)poser_recording::AfterCamera(camera);
+    if(poser_capture::busy)poser_capture::AfterCamera(camera,g_charAnimator,GetCharRootTransform(),FrameNow(),
+      g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());
+  };
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
   s_clothThreadId = []() -> DWORD {
     DWORD observed=g_frameGameThreadId.load();
@@ -993,7 +1020,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   };
   s_clothHostEnabled=[](){return g_pluginEnabled.load();};
   s_clothHostIdle=[](){return !MmdOwnsPose()&&!MmdSquadBusy()&&!g_mmd.preview;};
-  g_gameMaintenance = []() { poser_frame_limit::Tick(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());ClothServiceActors();poser_blush::enabled=g_pluginEnabled&&!poser_close::Closing();if(!poser_blush::enabled)poser_blush::RestoreAll();ToolCloseMaintenance(); };
+  g_gameMaintenance = []() { poser_recording::Tick(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());poser_capture::Maintenance(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());poser_frame_limit::Tick(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());ClothServiceActors();poser_blush::enabled=g_pluginEnabled&&!poser_close::Closing();if(!poser_blush::enabled)poser_blush::RestoreAll();ToolCloseMaintenance(); };
   InstallFrameHook();
   mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）

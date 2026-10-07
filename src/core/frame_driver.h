@@ -29,6 +29,11 @@ struct FrameDiagnostics {
 };
 static void (*g_renderPoseFinish)(int frame) = nullptr;
 static void (*g_gameMaintenance)() = nullptr; // main-thread release jobs, including while disabled
+static void (*g_afterGameRender)(int frame) = nullptr;
+static void (*g_beforeGameRender)(int frame) = nullptr;
+// Main-thread, lock-independent clock latch. Must not touch editor-owned state.
+static void (*g_beforeFrameLock)(int frame) = nullptr;
+static std::atomic<bool> g_captureRenderActive{false};
 static FrameDiagnostics g_frameDiagnostics; // protected by g_poseMutex
 static bool RunFrameTick(bool fromGame, int frame = -1, int source = 1) {
   if (RuntimeClosing() || (!g_frameRunning.load() && !(fromGame && g_gameMaintenance)))
@@ -124,6 +129,7 @@ static void SampleGameRenderFrame(int source) {
     return;
   try {
     int frame = ReadUnityFrameCount();
+    if(frame>=0&&g_beforeFrameLock)g_beforeFrameLock(frame);
     if (frame >= 0 || !g_frameRunning.load())
       RunFrameTick(true, frame, source);
     FinishGameRenderPose(frame,source);
@@ -136,22 +142,53 @@ static void __fastcall FrameCameraPreCull(void *camera, void *method) {
     g_originalPreCull(camera, method);
   SampleGameRenderFrame(1);
 }
-// Unity 2021/2022's AtomicSafetyHandle is a 16-byte aggregate. Preserve its
-// complete value and the trailing MethodInfo argument; validate metadata first.
+// Release players can omit AtomicSafetyHandle. Select the three- or
+// four-parameter ABI from metadata; never cast one native signature to another.
 struct FrameSafetyHandle {
   uint64_t raw[2];
 };
+using SrpRenderLoop3Fn = void(__fastcall *)(void *, void *, void *, void *);
 using SrpRenderLoopFn = void(__fastcall *)(void *, void *, void *,
                                            FrameSafetyHandle, void *);
+static SrpRenderLoop3Fn g_originalSrpLoop3 = nullptr;
 static SrpRenderLoopFn g_originalSrpLoop = nullptr;
-static void __fastcall FrameSrpLoop(void *pipeline, void *loop, void *requests,
-                                    FrameSafetyHandle safety, void *method) {
+static bool FrameRenderReady(){return g_originalSrpLoop3||g_originalSrpLoop;}
+static void FrameSrpBefore(void *requests,int arity) {
+  if(RuntimeClosing())return;
+  static bool reported=false;
+  if(!requests&&!reported){reported=true;Log("[FRAME] SRP render callback active arity=%d",arity);}
   // Render-request passes can be probes/off-screen work; sample the normal
   // loop.
   if (!requests)
     SampleGameRenderFrame(2);
-  if (g_originalSrpLoop)
-    g_originalSrpLoop(pipeline, loop, requests, safety, method);
+  if(!requests&&g_captureRenderActive&&g_beforeGameRender&&!RuntimeClosing()) {
+    std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
+    if(lock.owns_lock()) {
+      RuntimeThreadScope runtime;
+      if(runtime.ready)g_beforeGameRender(ReadUnityFrameCount());
+    }
+  }
+}
+static void FrameSrpAfter(void *requests) {
+  if(!requests&&g_captureRenderActive&&g_afterGameRender&&!RuntimeClosing()) {
+    std::unique_lock<std::recursive_mutex> lock(g_poseMutex,std::try_to_lock);
+    if(lock.owns_lock()) {
+      RuntimeThreadScope runtime;
+      if(runtime.ready)try {g_afterGameRender(ReadUnityFrameCount());}
+      catch(...) {Log("[FRAME] post-render callback failed");}
+    }
+  }
+}
+static void __fastcall FrameSrpLoop3(void *pipeline,void *loop,void *requests,void *method) {
+  FrameSrpBefore(requests,3);
+  if(g_originalSrpLoop3)g_originalSrpLoop3(pipeline,loop,requests,method);
+  FrameSrpAfter(requests);
+}
+static void __fastcall FrameSrpLoop(void *pipeline, void *loop, void *requests,
+                                    FrameSafetyHandle safety, void *method) {
+  FrameSrpBefore(requests,4);
+  if(g_originalSrpLoop)g_originalSrpLoop(pipeline,loop,requests,safety,method);
+  FrameSrpAfter(requests);
 }
 static bool FrameParameterClass(void *method, int index, const char *space,
                                 const char *name) {
@@ -168,29 +205,25 @@ static bool FrameParameterClass(void *method, int index, const char *space,
 }
 static bool ValidateSrpSignature(void *method) {
   if (!method || sizeof(void *) != 8 || !il2cpp_method_get_return_type ||
-      !il2cpp_type_get_type)
+      !il2cpp_type_get_type||!il2cpp_method_get_param_count||!il2cpp_method_get_flags)
     return false;
-  using ValueSizeFn = int32_t (*)(void *, uint32_t *);
-  using MethodFlagsFn = uint32_t (*)(void *, uint32_t *);
-  auto valueSize = reinterpret_cast<ValueSizeFn>(
-      GetProcAddress(hGA, "il2cpp_class_value_size"));
-  auto flags = reinterpret_cast<MethodFlagsFn>(
-      GetProcAddress(hGA, "il2cpp_method_get_flags"));
+  const auto count=il2cpp_method_get_param_count(method);
+  if(count!=3&&count!=4)return false;
   uint32_t implementationFlags = 0;
-  if (!valueSize || !flags || !(flags(method, &implementationFlags) & 0x10) ||
+  if (!(il2cpp_method_get_flags(method, &implementationFlags) & 0x10) ||
       il2cpp_type_get_type(il2cpp_method_get_return_type(method)) != 1 ||
       !FrameParameterClass(method, 0, "UnityEngine.Rendering",
                            "RenderPipelineAsset") ||
-      !FrameParameterClass(method, 1, "System", "IntPtr") ||
-      !FrameParameterClass(method, 3, "Unity.Collections.LowLevel.Unsafe",
-                           "AtomicSafetyHandle"))
+      !FrameParameterClass(method, 1, "System", "IntPtr"))
     return false;
   int requestType = il2cpp_type_get_type(il2cpp_method_get_param(method, 2));
   if (requestType != 0x12 && requestType != 0x15 && requestType != 0x1c)
     return false; // class, generic List<...> or System.Object, never a value
+  if(count==3)return true;
+  if(!il2cpp_class_value_size||!FrameParameterClass(method,3,"Unity.Collections.LowLevel.Unsafe","AtomicSafetyHandle"))return false;
   uint32_t alignment = 0;
   void *safety = il2cpp_class_from_type(il2cpp_method_get_param(method, 3));
-  return valueSize(safety, &alignment) == sizeof(FrameSafetyHandle);
+  return il2cpp_class_value_size(safety, &alignment) == sizeof(FrameSafetyHandle);
 }
 static void InstallFrameHook() {
   size_t count = 0;
@@ -203,13 +236,19 @@ static void InstallFrameHook() {
                  (void *)FrameCameraPreCull, (void **)&g_originalPreCull);
   void *manager = FindClass("UnityEngine.Rendering", "RenderPipelineManager",
                             assemblies, count);
-  void *srpMethod = FindMethod(manager, "DoRenderLoop_Internal", 4);
-  bool srp = g_frameCountMethod && ValidateSrpSignature(srpMethod) &&
-             Hook(srpMethod, "RenderPipelineManager.DoRenderLoop_Internal",
-                  (void *)FrameSrpLoop, (void **)&g_originalSrpLoop);
-  Log("[FRAME] hooks: built-in=%d SRP=%d; independent 120 Hz fallback "
+  bool srp=false;int srpArity=0;
+  if(g_frameCountMethod)for(int arity:{3,4}) {
+    auto method=FindMethod(manager,"DoRenderLoop_Internal",arity);
+    const bool valid=ValidateSrpSignature(method);
+    Log("[FRAME] SRP candidate arity=%d method=%p signature=%d",arity,method,int(valid));
+    if(!valid)continue;
+    srp=arity==3?Hook(method,"RenderPipelineManager.DoRenderLoop_Internal(3)",(void*)FrameSrpLoop3,(void**)&g_originalSrpLoop3):
+      Hook(method,"RenderPipelineManager.DoRenderLoop_Internal(4)",(void*)FrameSrpLoop,(void**)&g_originalSrpLoop);
+    if(srp){srpArity=arity;break;}
+  }
+  Log("[FRAME] hooks: built-in=%d SRP=%d arity=%d; independent 120 Hz fallback "
       "available",
-      int(ok), int(srp));
+      int(ok), int(srp),srpArity);
 }
 static DWORD WINAPI FrameWorker(LPVOID) {
   HANDLE timer = CreateWaitableTimerExW(

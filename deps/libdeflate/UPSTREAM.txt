@@ -1,0 +1,5 @@
+libdeflate 1.24 (MIT license; see COPYING)
+Source: https://github.com/ebiggers/libdeflate/tree/v1.24
+Vendored files: lib/, common_defs.h, libdeflate.h, COPYING (unmodified).
+Used for lossless, low-latency PNG compression in the recording worker.
+Builds statically; no additional DLL is required.

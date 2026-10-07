@@ -113,6 +113,16 @@ foreach ($file in $decoderSources) {
 & lib /nologo /OUT:build\obj\cloth_decoder.lib (Get-ChildItem -LiteralPath 'build\obj\brotli' -Filter '*.obj' -File | ForEach-Object FullName)
 if ($LASTEXITCODE -ne 0) { throw 'Clothing decoder library failed' }
 
+New-Item -ItemType Directory -Force -Path 'build\obj\deflate' | Out-Null
+$deflateSources = @('deflate_compress', 'zlib_compress', 'adler32', 'utils', 'x86/cpu_features', 'arm/cpu_features')
+$deflateObjects = foreach ($source in $deflateSources) {
+  $object = 'build\obj\deflate\' + $source.Replace('/', '_') + '.obj'
+  Invoke-Cl ('/nologo /O2 /MD /c /TC /std:c11 /Fo:"' + $object + '" "deps\libdeflate\lib\' + $source + '.c"') | Out-Host
+  $object
+}
+& lib /nologo /OUT:build\obj\recording_deflate.lib $deflateObjects
+if ($LASTEXITCODE -ne 0) { throw 'Recording compression library failed' }
+
 Write-Host '=== Compiling version resource ==='
 # cl 不处理 .rc；必须先用 rc.exe 编成 .res，再交给链接器
 # （Applepie Manager 用 GetFileVersionInfoA 读它显示插件版本）
@@ -129,7 +139,7 @@ if (-not (Test-Path 'build\obj\poser.res')) {
 Write-Host '=== Building poser.dll ==='
 $poserArgs = "$common /DPOSER_ENABLE_XXMI_BRIDGE=$bridgeFlag /DBROTLI_STATIC /DAPPLEPIE_PLUGIN_IMPL $inc /I deps\brotli\c\include /LD " +
   'src\poser.cpp ' +
-  'build\obj\poser.res build\obj\cloth_decoder.lib ' +
+  'build\obj\poser.res build\obj\cloth_decoder.lib build\obj\recording_deflate.lib ' +
   'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp ' +
   'deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp ' +
   "/Fe:$pluginDir\poser.dll " +
@@ -205,12 +215,15 @@ $tests = @(
   @{ Name = 'test_eye_gaze_runtime'; Src = 'tests\test_eye_gaze_runtime.cpp' }
   @{ Name = 'test_blush_runtime'; Src = 'tests\test_blush_runtime.cpp' }
   @{ Name = 'test_frame_limit'; Src = 'tests\test_frame_limit.cpp' }
+  @{ Name = 'test_transparent_capture'; Src = 'tests\test_transparent_capture.cpp' }
+  @{ Name = 'test_mmd_recording'; Src = 'tests\test_mmd_recording.cpp' }
+  @{ Name = 'test_mmd_recording_runtime'; Src = 'tests\test_mmd_recording_runtime.cpp' }
 )
 foreach ($t in $tests) {
   if (-not (Test-Path -LiteralPath $t.Src)) { throw "Missing local test source: $($t.Src)" }
   $testFeature = if ($t.Name -eq 'test_mod_bridge_runtime') { '/DPOSER_ENABLE_XXMI_BRIDGE=1' } else { '' }
   $testExtra = if ($t.Name -eq 'test_tool_close') { 'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp' } else { '' }
-  Invoke-Cl "$common $testFeature $inc $($t.Src) $testExtra /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib /link $sdkLibFlags"
+  Invoke-Cl "$common $testFeature $inc $($t.Src) $testExtra /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib build\obj\recording_deflate.lib /link $sdkLibFlags"
   & ".\build\tests\$($t.Name).exe"
   if ($LASTEXITCODE -ne 0) { throw "test $($t.Name) failed with exit $LASTEXITCODE" }
 }

@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.5.43**。Blender 支持**最多四名小队成员同时编辑**：各自调整动作、表情和修正层，共用时间轴与镜头，导出后可在游戏多人播放器中使用。
+**当前预发布版：0.5.55**。新增人物透明截图与 MMD 序列录制，支持完整画面、背景和透明人物分层输出；分层时也会保存可直接使用的完整成片。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.43/Endfield-Poser-v0.5.43-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.55/Endfield-Poser-v0.5.55-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 下载 **Endfield-Poser-v0.5.43-win64.zip** 安装包。
+1. 下载 **Endfield-Poser-v0.5.55-win64.zip** 安装包。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装本地包** 或 **在线安装 / 更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -46,12 +46,34 @@
 | 第二骨骼物理增强 | 在播放器 **物理** 开启，仅用于单人、多人 MMD，可调整方向响应和回弹 |
 | 在 Blender 中修正动作 | 安装包内的 **Blender联动插件.zip** 从 Blender 插件管理中安装；在 **N → Endfield** 连接当前角色或小队，逐人编辑动作和表情、共用镜头，详见[编辑指南](tools/blender/endfield_poser_bridge/README.md) |
 | 隐藏面板拍摄 | 按 **L**；动作和音乐继续播放 |
+| 人物透明截图 | 主面板展开 **人物透明截图**，点击 **保存人物透明 PNG**；保存至 `plugin/screenshots/`，可点 **打开截图目录** 查看 |
+| MMD 序列录制 | 主面板展开 **MMD 序列录制**，选择 30／60 FPS、完整画面或人物分层，再点击 **开始录制序列**；保存至 `plugin/recordings/` |
 
 播放快捷键、窗口拖动和姿态保存见[快速教程](docs/tutorial.md)。动作幅度、IK、衣物物理和特殊骨骼适配见[MMD 播放指南](docs/mmd-player.md)。[Blender 联动](tools/blender/endfield_poser_bridge/README.md)支持骨架、表情、镜头，以及动作和镜头修正层，动作与镜头分别导出，在 MMD 播放器加载并共用物理增强、动作校准等设置。
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
 
-多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.43 更新说明](docs/releases/v0.5.43.md)。
+多人衣物增强独立默认开启，准标准骨补全默认全开；已有适配预设保留原选择。拇指 PMX 校准开关位于 **高级 → 角色校准**，单人、多人共用。详见 [0.5.55 更新说明](docs/releases/v0.5.55.md)。
+
+## 截图与序列录制
+
+**人物透明截图**：先冻结角色、暂停动作并固定镜头，在主面板点击 **人物透明截图 → 保存人物透明 PNG**。输出保留游戏分辨率、完整画幅和人物光照，保存至 `plugin/screenshots/`。透明边缘默认跟随游戏抗锯齿；不兼容时可切换 **FXAA 兼容模式**。采集期间可能短暂闪烁，请保持人物和镜头不动，并避免前景遮挡人物。
+
+**MMD 序列录制**：在单人或多人播放器加载动作与镜头（也支持 Blender 导出文件），展开主面板 **MMD 序列录制**，选择 30／60 FPS 和首帧稳定时间，点击 **开始录制序列**。录制从首帧开始，按原速完成一次，忽略循环与倍速，结束后暂停。
+
+| 输出方式 | 保存内容 |
+|---|---|
+| 完整画面 | `full/`：无界面的完整场景 PNG，保留阴影、反光和遮挡关系 |
+| 人物分层 | 同时保存 `full/`、`background/` 和透明 `characters/` |
+| 多角色分别保存 | 保留完整画面和背景，人物改为 `character_1/` 等队伍位置目录 |
+
+每次录制保存至 `plugin/recordings/` 下的独立目录，各层使用从 `000000` 开始的相同帧号。完整画面和人物层为 PNG，背景默认使用 JPEG（质量 95），需要无损时可取消 **背景保存为 JPEG**。默认开启 **快速无损 PNG** 以加快保存；关闭后文件通常更小，但保存更慢。
+
+30／60 FPS 是**导出序列的采样帧率**，并非实时录制速度。图像编码和写盘在后台并行进行；缓存满时等待保存，不丢帧。单人或合并人物层会在条件允许时复用颜色采集，减少重复渲染；分层仍需多次渲染，速度取决于分辨率、抗锯齿和硬件。序列不含音轨，`recording.json` 记录帧率、尺寸、各层格式、完成帧数以及配乐路径和偏移，便于后期合成。
+
+录制期间请勿切换场景或更改分辨率。分层默认开启 **录制时遮住分层闪烁（显示进度）**，适用于窗口／无边框模式，仅影响屏幕显示，不进入导出图片。可随时停止；停止或出错后恢复游戏时间与渲染设置，等待后台保存结束，保留各层均已保存成功的完整帧。
+
+透明输出的限制：大范围半透明材质可能残留底色，轮廓外的泛光和景深可能不完整，不包含落在场景上的人物投影。独立人物层的相互遮挡需后期处理；需要保留原始场景效果时直接使用 `full/`。
 
 ## 常见问题
 
@@ -84,6 +106,7 @@
 | 固定跟踪镜头参数 | `plugin/mmd/fixed-camera.json` |
 | 逐角色眼神校正与限位 | `plugin/mmd/eye-gaze.json` |
 | 逐角色脸红设置 | `plugin/mmd/blush.json` |
+| 透明截图 / 录制序列 | `plugin/screenshots/` / `plugin/recordings/` |
 | 安装备份 | `plugin/poser-backups/` |
 
 ## 从源码构建
@@ -106,6 +129,6 @@ MMD 表情参考自[茶叶味香皂](https://space.bilibili.com/3546783156276148
 
 第二骨骼物理增强的角色骨骼名称与候选表参考自 [SBM（ShakingBreastManager）](https://github.com/Sp1cHless/Arknights-Endfield-Plugin-Secondary-bodyphysics)，感谢原项目作者的开发与分享。来源与许可说明见[许可文件](licenses/secondary-bodyphysics.txt)。
 
-本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，按 [AGPL-3.0](LICENSE) 提供。依赖许可证保存在 [licenses](licenses/) 中。
+本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，按 [AGPL-3.0](LICENSE) 提供。录制 PNG 压缩使用 [libdeflate](https://github.com/ebiggers/libdeflate)（MIT）。依赖许可证保存在 [licenses](licenses/) 中。
 
 本分支问题请提交 [Issues](https://github.com/OedoSoldier/Endfield-Poser/issues)。上游交流群：终末地影棚爱好者（1126684901）；上游联系邮箱：king_time@foxmail.com。

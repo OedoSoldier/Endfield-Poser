@@ -26,6 +26,7 @@
 #include "tool_close_state.h"
 #include "layered_readback.h"
 #include "overlay_device.h"
+#include "recording_display.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 #include "user_agreement.h"
 #include "math/hotkey_state.h"
@@ -1091,6 +1092,7 @@ static DWORD GuiThreadBody(LPVOID) {
         Log("[INPUT] overlay hidden -> keyboard back to game");
       }
     }
+    recording_display::Tick(g_gameHwnd,g_guiHwnd);
     if (!s_panelShown) {
       // 隐藏覆盖层时仍跑游戏逻辑（冻结维持/IK写回/控制文件）
       Sleep(1);
@@ -1186,6 +1188,7 @@ static DWORD GuiThreadBody(LPVOID) {
   }
 
   Log("[GUI] Shutting down...");
+  recording_display::Shutdown();
   StopGameFrameDriver();
   if (g_guiShutdownFn) {
     __try {
