@@ -1,7 +1,7 @@
 """Endfield skeleton, expression, camera and correction-layer editor."""
 bl_info = {
     'name': 'Endfield Poser Bridge', 'author': 'Endfield Poser',
-    'version': (0, 3, 1), 'blender': (5, 2, 0),
+    'version': (0, 3, 2), 'blender': (5, 2, 0),
     'location': '3D View > N > Endfield', 'category': 'Animation',
     'description': '编辑游戏骨架、中文表情、镜头与动作修正层',
 }
@@ -50,6 +50,8 @@ _connect_scene_uid = None
 _connect_retry = 0.
 _connect_deadline = 0.
 _pending_session = 0
+_recovering = False
+_failure_since = None
 
 
 def scene_fps(scene):
@@ -102,20 +104,43 @@ def check(result):
 
 
 def preview_result(result):
-    global _session, _status, _connection_status
+    global _status, _connection_status, _failure_since
     if not result.get('ok'):
         _connection_status = result.get('error', '联动中断')
         if result.get('retryable'):
+            if _failure_since is None:
+                _failure_since = time.monotonic()
+            if time.monotonic()-_failure_since >= 8:
+                suspend_connection(_connection_status)
             return
-        _status = result.get('error', '联动中断')
-        _session = 0
-        bpy.context.scene.epb_live = False
+        suspend_connection(_connection_status, retry='Session expired or character changed' in _connection_status)
+    else:
+        _failure_since = None
+        _connection_status = '已连接游戏'
+
+
+def suspend_connection(reason, retry=True):
+    """Release only the live lease; Blender owns all authored data."""
+    global _recovering, _connecting, _connect_scene_uid, _connect_retry
+    global _status, _connection_status, _busy
+    scene = _connected_scene
+    # An offline file export does not depend on the lost game connection.
+    exporting = _busy and _baker is None
+    disconnect()
+    _busy = exporting
+    if scene and scene.epb_armature and retry:
+        _recovering = _connecting = True
+        _connect_scene_uid = scene.session_uid
+        _connect_retry = time.monotonic()+2
+    _connection_status = '游戏连接中断 · 编辑内容保留'
+    _status = ('等待游戏恢复后重连；可继续离线编辑' if _recovering else '请检查后重新连接：'+reason)
 
 
 def reply_for(session, frame=None):
+    generation = _connect_generation
     def reply(result):
         global _ack_frame, _ack_time
-        if _session == session:
+        if _session == session and generation == _connect_generation:
             preview_result(result)
             if result.get('ok') and frame is not None:
                 _ack_frame, _ack_time = frame, time.monotonic()
@@ -126,10 +151,40 @@ def reply_for(session, frame=None):
 def connect_result(result):
     with edit_transaction():
         check(result)
+        if _recovering:
+            validate_resume(bpy.context.scene, result)
         if result.get('mode') == 'squad': squad.connect(sys.modules[__name__], result)
         else:
             squad.clear()
             connect_current(result)
+
+
+def reusable_schema(arm, incoming):
+    previous = rig.schema(arm) if arm and 'epb_scene' in arm else None
+    mapped = rig.reconnect_schema(previous, incoming)
+    if mapped and all(b['blender_name'] in arm.pose.bones for b in mapped['bones']):
+        return mapped
+    return None
+
+
+def validate_resume(scene, result):
+    # Preflight every member before modifying any pointer/schema. Never move
+    # edits to another character or quietly build an empty rig after relogin.
+    if result.get('mode') == 'squad':
+        members = squad.members(scene)
+        incoming = result['members']
+        if not scene.get('epb_squad') or set(members) != {m['slot'] for m in incoming}:
+            raise ValueError('小队成员或顺序已改变；请恢复原小队后重新连接，原编辑保留')
+        pairs = [(members[m['slot']], m) for m in incoming]
+    else:
+        if scene.epb_mode == 'squad':
+            raise ValueError('连接对象已改变，请恢复原小队后重新连接')
+        pairs = [(scene.epb_armature, result)]
+    for arm, incoming in pairs:
+        mapped = reusable_schema(arm, incoming)
+        if not mapped or any(rig.principal(old) and not new['editable']
+                             for old, new in zip(rig.schema(arm)['bones'], mapped['bones'])):
+            raise ValueError('角色或身体骨架不匹配；请切回原角色后重新连接，原编辑保留')
 
 
 def connect_current(result, group_scene=None, shared_camera=None):
@@ -140,9 +195,8 @@ def connect_current(result, group_scene=None, shared_camera=None):
     scene = bpy.context.scene
     _session, _sequence = result['session'], 0
     arm = scene.epb_armature
-    previous = rig.schema(arm) if arm and 'epb_scene' in arm else None
-    compatible = rig.reconnect_schema(previous, result)
-    if compatible and all(b['blender_name'] in arm.pose.bones for b in compatible['bones']):
+    compatible = reusable_schema(arm, result)
+    if compatible:
         _schema = compatible
         # Keep existing property indices so saved face curves remain attached
         # to the same expression. New VMD aliases append instead of reordering.
@@ -176,16 +230,21 @@ def connect_current(result, group_scene=None, shared_camera=None):
     # would instead rotate already saved animation and camera curves.
     _schema['sample_anchor_rotation'] = result.get('anchor_rotation', [0, 0, 0, 1])
     _schema['bone_scale'] = result.get('bone_scale', False)
+    # Source metadata is only used for an explicit later import. Existing
+    # camera Actions own their cuts and are never rewritten by reconnecting.
     _schema['camera_cuts'] = result.get('camera_cuts', [])
     arm['epb_scene'] = json.dumps(_schema, ensure_ascii=False)
-    animation.repair_camera_quaternions(scene.epb_camera)
+    if not compatible:
+        animation.repair_camera_quaternions(scene.epb_camera)
     rig.apply_display(arm, scene.epb_show_fingers)
     fps = scene_fps(scene)
     if not compatible and not group_scene:
         scene.frame_start = 1
         scene.frame_end = max(2, math.ceil(result['duration'] * fps) + 1)
         scene.epb_import_end = scene.frame_end
-    initial = result.get('initial')
+    # Only a new rig adopts the game pose. On reconnect this would jump the
+    # timeline and write a full game pose into an additive correction layer.
+    initial = result.get('initial') if not compatible else None
     if initial:
         frame = 1 + initial['time']*fps
         scene.frame_set(int(frame), subframe=frame-int(frame))
@@ -194,7 +253,8 @@ def connect_current(result, group_scene=None, shared_camera=None):
         bpy.context.view_layer.update()
         if not initial.get('camera'):
             scene.epb_camera_sync = False
-    scene.epb_live = True
+    if not _recovering:
+        scene.epb_live = True
     _connected_arm = arm
     _connected_scene = scene
     _connected_scene_uid, _connected_arm_uid = scene.session_uid, arm.session_uid
@@ -203,7 +263,7 @@ def connect_current(result, group_scene=None, shared_camera=None):
     _connection_packet = rig.packet(arm, scene.epb_camera if scene.epb_camera_sync else None,
                                    scene, _session, 0, _schema) if initial else None
     _face_untouched = initial is not None
-    _status = '已连接 · 可编辑骨骼、中文表情和镜头'
+    _status = '已重连 · 保留当前帧、动作、表情和镜头修改' if compatible else '已连接 · 可编辑骨骼、中文表情和镜头'
     globals()['_connection_status'] = '已连接游戏'
 
 
@@ -219,21 +279,33 @@ def attempt_connect():
     _connect_retry = float('inf')
     def reply(result):
         global _connecting, _connect_retry, _connection_status, _status, _pending_session
+        global _recovering
         if generation != _connect_generation or not _connecting:
             if result.get('ok') and result.get('session'):
                 client().request('end', {'session': result['session']})
                 if _connecting:
                     _connect_retry = time.monotonic() + .5
             return
-        if result.get('retryable') and time.monotonic() < _connect_deadline:
-            _connect_retry = time.monotonic() + .5
+        unavailable = result.get('error', '') in (
+            'Character skeleton is not ready', 'Character changed; wait for the skeleton to settle',
+            'Game is closing')
+        if not result.get('ok') and ((result.get('retryable') and (_recovering or time.monotonic() < _connect_deadline)) or
+                                    (_recovering and unavailable)):
+            _connect_retry = time.monotonic() + (3 if _recovering else .5)
             _connection_status = '等待游戏就绪或上次连接释放…'
             return
         check(result)
         _pending_session = result['session']
         def ready(data):
-            global _connecting, _pending_session
+            global _connecting, _pending_session, _recovering, _failure_since, _connect_retry
             if generation != _connect_generation or not _connecting:
+                return
+            if _recovering and (_busy or bpy.context.scene.session_uid != _connect_scene_uid or
+                    (not data.get('ok') and (data.get('retryable') or
+                     'Session expired or character changed' in data.get('error', '')))):
+                client().request('end', {'session': _pending_session})
+                _pending_session = 0
+                _connect_retry = time.monotonic()+3
                 return
             scene = next((s for s in bpy.data.scenes if s.session_uid == _connect_scene_uid), None)
             if not scene:
@@ -243,6 +315,8 @@ def attempt_connect():
             connect_result(data)
             _pending_session = 0
             _connecting = False
+            _recovering = False
+            _failure_since = None
         client().request('scene', {'session': result['session']}, ready)
     target = next((s for s in bpy.data.scenes if s.session_uid == _connect_scene_uid), None)
     client().request('begin', {'mode': target.epb_mode if target else 'single'}, reply)
@@ -341,7 +415,8 @@ def tick():
             _display_pending = False
         if _client:
             _client.poll()
-        if _connecting and time.monotonic() >= _connect_retry:
+        if (_connecting and not _busy and time.monotonic() >= _connect_retry and
+                (not _recovering or bpy.context.scene.session_uid == _connect_scene_uid)):
             attempt_connect()
         scene = bpy.context.scene
         if _session and not connected_target(scene):
@@ -364,13 +439,16 @@ def tick():
 
 def disconnect():
     global _session, _busy, _baker, _status, _connecting, _connect_generation, _pending_session
+    global _recovering, _failure_since
     _connecting = False
+    _recovering = False
+    _failure_since = None
     _connect_generation += 1
     session = _session or _pending_session
     _pending_session = 0
     _session, _busy, _baker = 0, False, None
     squad.clear()
-    _status = '已断开；游戏恢复原状态'
+    _status = '已断开；编辑内容保留，可离线编辑或导出'
     globals()['_connection_status'] = '未连接游戏'
     if session and _client:
         try:
@@ -452,7 +530,7 @@ def load_post(_):
 class EPB_OT_connect(bpy.types.Operator):
     bl_idname = 'endfield.connect'
     bl_label = '连接当前游戏角色'
-    bl_description = '保留当前姿态和表情进入编辑；播放中的 MMD 暂停在当前帧'
+    bl_description = '已有工程保留当前帧和全部修改；新工程读取游戏当前姿态'
     def execute(self, context):
         global _connecting, _connect_generation, _connect_scene_uid, _connect_deadline, _connection_status
         if _session or _connecting:
@@ -784,7 +862,11 @@ class EPB_OT_pull(bpy.types.Operator):
                 global _busy, _status, _baker, _face_untouched
                 if not _busy or _session != active_session:
                     return
-                check(result)
+                if not result.get('ok'):
+                    suspend_connection(result.get('error', '动作导入中断'), retry=bool(result.get('retryable')) or
+                                       'Session expired or character changed' in result.get('error', ''))
+                    _status = '动作导入中断；原动作与修正层保留，重连后可重新导入'
+                    return
                 for sample in result['frames']:
                     _baker.sample(sample)
                 _status = f'导入动作 {min(frame+count-1, end)}/{end}'
@@ -1201,7 +1283,9 @@ class EPB_PT_main(bpy.types.Panel):
         row = l.row(); row.enabled = not (_session or _connecting or _busy)
         row.prop(s, 'epb_mode', text='连接对象')
         l.operator('endfield.connect' if not (_session or _connecting) else 'endfield.disconnect',
-                   text='取消连接' if _connecting else '断开并恢复游戏' if _session else '连接当前小队' if s.epb_mode == 'squad' else '连接当前游戏角色')
+                   text='停止自动重连' if _recovering else '取消连接' if _connecting else '断开并恢复游戏' if _session else '连接当前小队' if s.epb_mode == 'squad' else '连接当前游戏角色')
+        if _recovering:
+            l.label(text='可继续编辑和导出；返回原角色场景后自动同步')
         if s.epb_mode == 'squad':
             l.label(text='在游戏多人面板按第 1–4 位选择参与成员和动作')
         else: l.operator('endfield.open_vmd', icon='FILE_FOLDER')

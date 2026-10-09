@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前预发布版：0.5.57**。安装包新增独立镜头修复工具，使用原始 VMD 为旧 `.epcamera` 补回硬切镜标记，保留修改后的构图；支持时间偏移和逐项选择切镜点。
+**当前预发布版：0.5.58**。Blender 联动更新至 **0.3.2**：游戏断连后保留动作、表情、镜头和修正层，可继续离线编辑；返回原角色／原小队场景后自动重连，从 Blender 当前帧恢复同步。
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.57/Endfield-Poser-v0.5.57-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/download/v0.5.58/Endfield-Poser-v0.5.58-win64.zip) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 下载 **Endfield-Poser-v0.5.57-win64.zip** 安装包。
+1. 下载 **Endfield-Poser-v0.5.58-win64.zip** 安装包。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装本地包** 或 **在线安装 / 更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -45,7 +45,7 @@
 | 增强衣物惯性 | 在播放器 **物理** 调整 **衣物惯性物理增强**；衣物与头发强度可分别设置 |
 | 第二骨骼物理增强 | 在播放器 **物理** 开启，仅用于单人、多人 MMD，可调整方向响应和回弹 |
 | 在 Blender 中修正动作 | 安装包内的 **Blender联动插件.zip** 从 Blender 插件管理中安装；在 **N → Endfield** 连接当前角色或小队，逐人编辑动作和表情、共用镜头，详见[编辑指南](tools/blender/endfield_poser_bridge/README.md) |
-| 重新编辑导出的动作／镜头 | 更新 Blender 联动插件至 **0.3.1**，断开连接，在 **N → Endfield → 从已导出文件继续编辑** 导入 `.epmotion` 或 `.epcamera`；原修正层需通过 `.blend` 工程保留 |
+| 重新编辑导出的动作／镜头 | 使用 Blender 联动插件 **0.3.1 或以上版本**，断开连接，在 **N → Endfield → 从已导出文件继续编辑** 导入 `.epmotion` 或 `.epcamera`；原修正层需通过 `.blend` 工程保留 |
 | 修复旧镜头转场闪跳 | 运行 **镜头修复工具.exe**，选择原始 VMD 与旧 `.epcamera`，核对切镜点后另存；无需启动游戏或 Blender，见[使用步骤](docs/camera-repair.md) |
 | 隐藏面板拍摄 | 按 **L**；动作和音乐继续播放 |
 | 人物透明截图 | 主面板展开 **人物透明截图**，点击 **保存人物透明 PNG**；保存至 `plugin/screenshots/`，可点 **打开截图目录** 查看 |
@@ -85,6 +85,7 @@
 | 更新提示游戏仍在运行 | 完全退出游戏；若窗口已关闭，在任务管理器确认 `Endfield.exe` 已退出后重试 |
 | 面板无法点击或拖动 | 按住 **Alt**；取消 **锁定窗口**，或点击 **重排窗口** |
 | 换人后不能播放 | 播放器会等待新角色和衣物就绪；若持续提示恢复中，可先停止并关闭衣物增强重试 |
+| Blender 编辑时游戏掉线 | 联动插件 **0.3.2** 保留编辑并自动重连；返回原角色／原小队场景后恢复同步，无需重新导入。用 **Ctrl+S** 保存工程 |
 | 播放时不能手动摆姿 | 先点 **停止并恢复**；暂停时仍由播放器控制 |
 | 腿部僵硬、动作夸张 | 手动对照 IK 开关，调整动作幅度；见[适配方法](docs/mmd-player.md#动作幅度与-ik) |
 | 衣服或脚底穿模 | 调整[衣物物理与高度](docs/mmd-player.md#衣物物理)，效果取决于角色和动作 |

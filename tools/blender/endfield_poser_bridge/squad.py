@@ -47,6 +47,8 @@ def connect(owner, result):
         scene['epb_squad'] = True
     scene.epb_mode = 'squad'
     old = members(scene)
+    selected = scene.epb_armature
+    reused = {m['slot'] for m in incoming if owner.reusable_schema(old.get(m['slot']), m)}
     for slot in range(4): setattr(scene, f'epb_member_{slot}', None)
     camera = scene.epb_camera
     for member in incoming:
@@ -60,10 +62,10 @@ def connect(owner, result):
         setattr(scene, f'epb_member_{slot}', arm)
         schemas[slot] = rig.schema(arm)
         identities[slot] = arm.session_uid
-        face_untouched[slot] = True
+        face_untouched[slot] = slot not in reused
     for slot, arm in old.items():
         if slot not in identities: arm.hide_set(True)
-    first = min(identities)
+    first = next((i for i, arm in members(scene).items() if arm == selected), min(identities))
     if fresh:
         scene.frame_start = 1
         scene.frame_end = max(2, math.ceil(result['duration'] * owner.scene_fps(scene)) + 1)
@@ -74,14 +76,16 @@ def connect(owner, result):
     owner._schema = schemas[first]
     # All actors now exist; apply connection samples after the last frame_set.
     for member in incoming:
-        rig.apply_sample(members(scene)[member['slot']], member['initial'])
+        if member['slot'] not in reused:
+            rig.apply_sample(members(scene)[member['slot']], member['initial'])
     bpy.context.view_layer.update()
     active = True
     baseline = packet(owner, scene, 0)
     owner._connection_packet = baseline
-    owner._preview_started = False
-    owner._status = f'已连接 {len(identities)} 位队员 · 选择骨架分别编辑'
-    select(scene, first)
+    owner._preview_started = bool(reused)
+    owner._status = f'已连接 {len(identities)} 位队员 · ' + ('已有编辑与当前帧保留' if reused else '选择骨架分别编辑')
+    if not reused:
+        select(scene, first)
 
 
 def select(scene, slot):
