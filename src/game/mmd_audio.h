@@ -33,10 +33,80 @@ struct AudioClip {
                                   : 0;
   }
 };
+
+inline std::shared_ptr<const AudioClip>
+DecodeWavDirect(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) return nullptr;
+
+  char riff[4];
+  if (!file.read(riff, 4) || std::memcmp(riff, "RIFF", 4) != 0) return nullptr;
+
+  uint32_t riffSize = 0;
+  if (!file.read(reinterpret_cast<char*>(&riffSize), 4)) return nullptr;
+
+  char wave[4];
+  if (!file.read(wave, 4) || std::memcmp(wave, "WAVE", 4) != 0) return nullptr;
+
+  WAVEFORMATEX fmt{};
+  bool hasFmt = false;
+  std::vector<BYTE> pcmData;
+  constexpr size_t maxBytes = 256u * 1024u * 1024u;
+
+  while (file) {
+    char chunkId[4];
+    uint32_t chunkSize = 0;
+    if (!file.read(chunkId, 4)) break;
+    if (!file.read(reinterpret_cast<char*>(&chunkSize), 4)) break;
+
+    if (std::memcmp(chunkId, "fmt ", 4) == 0) {
+      if (chunkSize < 16) return nullptr;
+      if (!file.read(reinterpret_cast<char*>(&fmt), 16)) return nullptr;
+      if (chunkSize > 16) {
+        file.seekg(chunkSize - 16, std::ios::cur);
+      }
+      hasFmt = true;
+    } else if (std::memcmp(chunkId, "data", 4) == 0) {
+      if (chunkSize > maxBytes) {
+        throw std::runtime_error("Decoded music exceeds 256 MiB (about 23 minutes)");
+      }
+      pcmData.resize(chunkSize);
+      if (!file.read(reinterpret_cast<char*>(pcmData.data()), chunkSize)) return nullptr;
+      if (chunkSize % 2 != 0) {
+        file.seekg(1, std::ios::cur);
+      }
+      break;
+    } else {
+      file.seekg(chunkSize + (chunkSize % 2), std::ios::cur);
+    }
+  }
+
+  if (!hasFmt || pcmData.empty()) return nullptr;
+  if (fmt.wFormatTag != WAVE_FORMAT_PCM && fmt.wFormatTag != 3 /* WAVE_FORMAT_IEEE_FLOAT */) {
+    return nullptr;
+  }
+  if (fmt.nBlockAlign == 0 || pcmData.size() % fmt.nBlockAlign != 0) return nullptr;
+
+  auto clip = std::make_shared<AudioClip>();
+  clip->format = fmt;
+  clip->pcm = std::move(pcmData);
+  return clip;
+}
+
 // This function runs only on the file worker; it never accesses Unity objects.
 inline std::shared_ptr<const AudioClip>
 DecodeAudio(const std::filesystem::path &path,
             const std::atomic<bool> &cancel) {
+  // If the file is a standard WAV, directly decode it first.
+  // This bypasses Windows Media Foundation / Media Player dependencies under Wine / Proton.
+  try {
+    auto directClip = DecodeWavDirect(path);
+    if (directClip && !directClip->pcm.empty()) {
+      return directClip;
+    }
+  } catch (...) {
+    // If direct WAV reading throws, fall through to Media Foundation or let error propagate
+  }
   struct MediaScope {
     bool com = false, mf = false;
     MediaScope() {
