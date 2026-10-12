@@ -12,6 +12,8 @@
 #include <imm.h>
 #include <tlhelp32.h>
 #include <cmath>
+#include <vector>
+#include <string>
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -884,6 +886,69 @@ static const ImWchar *PoserGlyphRanges(ImFontAtlas *atlas) {
   return glyphRanges.Data;
 }
 
+static void LoadOverlayFont(ImGuiIO &io, const char *layoutSlash, const char *layoutPath) {
+  ImFontConfig fontCfg;
+  fontCfg.OversampleH = 2;
+  fontCfg.OversampleV = 1;
+  fontCfg.PixelSnapH = true;
+
+  // Resolve directory containing poser.dll to check for local font overrides
+  char pluginFontPath[MAX_PATH] = {};
+  if (layoutSlash && layoutPath) {
+    size_t dirLen = layoutSlash - layoutPath + 1;
+    strncpy_s(pluginFontPath, layoutPath, dirLen);
+  }
+
+  std::vector<std::string> fontCandidates;
+  if (pluginFontPath[0]) {
+    fontCandidates.push_back(std::string(pluginFontPath) + "font.ttf");
+    fontCandidates.push_back(std::string(pluginFontPath) + "font.otf");
+    fontCandidates.push_back(std::string(pluginFontPath) + "font.ttc");
+    fontCandidates.push_back(std::string(pluginFontPath) + "msyh.ttc");
+  }
+  fontCandidates.push_back("plugin\\font.ttf");
+  fontCandidates.push_back("plugin\\font.otf");
+  fontCandidates.push_back("font.ttf");
+
+  // Windows & Proton/Wine standard CJK font locations
+  fontCandidates.push_back("C:\\Windows\\Fonts\\msyh.ttc");       // Microsoft YaHei
+  fontCandidates.push_back("C:\\Windows\\Fonts\\msyh.ttf");
+  fontCandidates.push_back("C:\\Windows\\Fonts\\simsun.ttc");     // SimSun / NSimSun
+  fontCandidates.push_back("C:\\Windows\\Fonts\\simhei.ttf");     // SimHei
+  fontCandidates.push_back("C:\\Windows\\Fonts\\msjh.ttc");       // Microsoft JhengHei
+  fontCandidates.push_back("C:\\Windows\\Fonts\\arialuni.ttf");   // Arial Unicode MS
+  fontCandidates.push_back("C:\\Windows\\Fonts\\msgothic.ttc");   // MS Gothic
+  fontCandidates.push_back("C:\\Windows\\Fonts\\meiryo.ttc");     // Meiryo
+  fontCandidates.push_back("C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc");
+
+  // Host Linux fonts accessible through Wine Z: drive mapping (NixOS / standard Linux)
+  fontCandidates.push_back("Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont.otf");
+  fontCandidates.push_back("Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont_jp.otf");
+  fontCandidates.push_back("Z:\\usr\\share\\fonts\\opentype\\noto\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back("Z:\\usr\\share\\fonts\\noto-cjk\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back("Z:\\usr\\share\\fonts\\truetype\\noto\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back("Z:\\usr\\share\\fonts\\wenquanyi\\wqy-microhei\\wqy-microhei.ttc");
+  fontCandidates.push_back("Z:\\usr\\share\\fonts\\wenquanyi\\wqy-zenhei\\wqy-zenhei.ttc");
+
+  bool loaded = false;
+  for (const auto &candidate : fontCandidates) {
+    if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) {
+      ImFont *f = io.Fonts->AddFontFromFileTTF(
+          candidate.c_str(), 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
+      if (f != nullptr) {
+        loaded = true;
+        Log("[GUI] Loaded CJK font from: %s", candidate.c_str());
+        break;
+      }
+    }
+  }
+
+  if (!loaded) {
+    io.Fonts->AddFontDefault();
+    Log("[GUI] WARN: No suitable CJK font found, Chinese/Japanese text may render as '?'");
+  }
+}
+
 static DWORD GuiThreadBody(LPVOID) {
   g_guiTraceMask = 0;
   // Runtime registration is scoped to editor operations, never GPU/message waits.
@@ -993,23 +1058,7 @@ static DWORD GuiThreadBody(LPVOID) {
   style.ScrollbarSize = 12.0f;
   style.GrabMinSize = 10.0f;
 
-  {
-    ImFontConfig fontCfg;
-    fontCfg.OversampleH = 2;
-    fontCfg.OversampleV = 1;
-    fontCfg.PixelSnapH = true;
-    const char *fontPath = "C:\\Windows\\Fonts\\msyh.ttc";
-    bool loaded = false;
-    if (GetFileAttributesA(fontPath) != INVALID_FILE_ATTRIBUTES) {
-      ImFont *f = io.Fonts->AddFontFromFileTTF(
-          fontPath, 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
-      loaded = (f != nullptr);
-    }
-    if (!loaded) {
-      io.Fonts->AddFontDefault();
-      Log("[GUI] WARN: msyh.ttc not found, Chinese text may not render");
-    }
-  }
+  LoadOverlayFont(io, layoutSlash, layoutPath);
 
   ImGui_ImplWin32_Init(g_guiHwnd);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
