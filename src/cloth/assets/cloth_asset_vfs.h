@@ -40,11 +40,11 @@ inline std::string Digest(const uint8_t *data,size_t bytes,LPCWSTR type=BCRYPT_S
 inline std::string Digest(const Bytes &b){return Digest(b.data(),b.size());}
 struct VfsSource {
   std::string name,chunkName,chunkContent,fileChunk,fileData;
-  uint64_t offset=0,length=0,chunkLength=0,iv=0;uint8_t type=0,tag=0;
+  uint64_t offset=0,length=0,chunkLength=0,iv=0,tag=0,chunkTag=0;uint8_t type=0;
   bool encrypted=false;int layer=0;
   bool Same(const VfsSource &b) const {
     return type==b.type&&chunkName==b.chunkName&&chunkContent==b.chunkContent&&fileChunk==b.fileChunk&&fileData==b.fileData&&
-      offset==b.offset&&length==b.length&&chunkLength==b.chunkLength&&iv==b.iv&&encrypted==b.encrypted&&tag==b.tag;
+      offset==b.offset&&length==b.length&&chunkLength==b.chunkLength&&iv==b.iv&&encrypted==b.encrypted&&tag==b.tag&&chunkTag==b.chunkTag;
   }
 };
 struct VfsIndex { int version=0,code=0;uint8_t type=0;uint64_t buildTime=0;std::string buildNote;std::vector<VfsSource> files; };
@@ -52,18 +52,22 @@ inline VfsIndex ParseVfs(const Bytes &decrypted,uint8_t expectedType,int layer) 
   Need(decrypted.size()>=4,"asset-index-too-short");Reader crc(decrypted.data()+decrypted.size()-4,4);
   Need(crc.U32()==Crc32(decrypted.data(),decrypted.size()-4),"asset-index-crc");Reader r(decrypted.data(),decrypted.size()-4);
   VfsIndex out;const int raw=r.I32();if(raw<11){out.code=raw;out.version=r.I32();}else{out.code=3;out.version=raw;}
-  Need(out.code>=3&&out.code<=4&&out.version>0,"asset-index-version");r.Text(r.U16());r.U64();const auto total=r.Count(1000000);r.U64();out.type=r.U8();
+  Need(out.code>=3&&out.code<=5&&out.version>0,"asset-index-version");r.Text(r.U16());r.U64();const auto total=r.Count(1000000);r.U64();out.type=r.U8();
   Need(out.type==expectedType,"asset-index-type");const auto chunks=r.Count(200000);std::set<std::string> names;
   for(uint32_t c=0;c<chunks;++c) {
     VfsSource base;base.chunkName=Hex(r.Take(16),16,true)+".chk";base.chunkContent=Hex(r.Take(16),16);base.chunkLength=r.U64();
     Need(base.chunkLength<=uint64_t(INT64_MAX)&&r.U8()==expectedType,"asset-index-chunk");
-    if(out.code>3){const auto tag=r.U32();Need(tag<=1,"asset-index-chunk-tag");}
+    // Version 5 stores an opaque 64-bit tag instead of the version 4 flag.
+    // It is not a boolean: manifest chunks have nonzero values above UINT32_MAX.
+    if(out.code==5)base.chunkTag=r.U64();
+    else if(out.code>3){base.chunkTag=r.U32();Need(base.chunkTag<=1,"asset-index-chunk-tag");}
     const auto files=r.Count(1000000);Need(files<=1000000-out.files.size(),"asset-index-total-budget");
     for(uint32_t n=0;n<files;++n) {
       VfsSource f=base;f.name=r.Text(r.U16());Need(ResourcePath(f.name)&&names.insert(Lower(f.name)).second,"asset-index-duplicate-or-invalid-path");
       r.U64();f.fileChunk=Hex(r.Take(16),16);f.fileData=Hex(r.Take(16),16);f.offset=r.U64();f.length=r.U64();f.type=r.U8();
       const auto encrypted=r.U8();Need(encrypted<=1,"asset-index-encryption-flag");f.encrypted=encrypted!=0;f.iv=f.encrypted?r.U64():0;
-      if(out.code>3){const auto tag=r.U32();Need(tag<=1,"asset-index-file-tag");f.tag=uint8_t(tag);}
+      if(out.code==5)f.tag=r.U64();
+      else if(out.code>3){const auto tag=r.U32();Need(tag<=1,"asset-index-file-tag");f.tag=tag;}
       Need(f.type==expectedType&&f.offset<=f.chunkLength&&f.length<=f.chunkLength-f.offset,"asset-index-file-range");f.layer=layer;out.files.push_back(std::move(f));
     }
   }

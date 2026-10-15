@@ -85,6 +85,35 @@ inline std::map<int64_t,int> SourceSelection(Scene &s,int64_t component,const Va
   else for(const auto &f:raw.List())flags.push_back(int(f.kind==Value::Integer?f.Int():f.At("Value").Int()));
   const auto inverse=Inverse(s.World(s.TransformId(component)));
   for(auto id:ids){world.push_back(Transform(s.World(id),{0,0,0}));local.push_back(Transform(inverse,world.back()));}
+  if(s.file.sha=="e35214f71bf8886bf2d1ffe31d65e38893d5de2f866f068443b0de0685377f96"&&
+      (s.Name(component)=="MC_jsspsi_sleeve_L"||s.Name(component)=="MC_jsspsi_sleeve_R")) {
+    Need(ids.size()==7&&samples.size()==7&&flags.size()==7,"si-sleeve-selection-count");std::map<int64_t,int> out;
+    for(size_t n=0;n<ids.size();++n){Need(flags[n]==(n?2:1)&&Distance(samples[n],local[n])<.045,"si-sleeve-selection-reference");
+      for(size_t k=0;k<samples.size();++k)if(k!=n)Need(Distance(samples[n],local[n])<Distance(samples[k],local[n])*.5,"si-sleeve-selection-order");out[ids[n]]=flags[n];}
+    return out;
+  }
+  // These offset collider children were added after the selection was authored.
+  // Native ApplySelectionAttribute still assigns the nearest sample inside its
+  // search radius. Preserve that source attribute; exclude their candidate
+  // simulation separately in PassiveSourceLeaves.
+  if(s.file.sha=="e35214f71bf8886bf2d1ffe31d65e38893d5de2f866f068443b0de0685377f96"&&s.Name(component)=="MC_jsspsi_Skirt") {
+    std::vector<Point> cloth;std::vector<int64_t> chain;std::set<std::string> names;
+    for(size_t n=0;n<ids.size();++n){const auto name=s.Name(ids[n]);
+      if(name.size()>9&&name.compare(name.size()-9,9,"_Collider")==0){Need(s.children[ids[n]].empty()&&
+          s.Name(s.Parent(ids[n])).find("_skirtA_")!=std::string::npos,"si-skirt-collider-child-changed");continue;}
+      Need(names.insert(name).second,"si-skirt-bone-alias");chain.push_back(ids[n]);cloth.push_back(local[n]);}
+    Need(chain.size()==30&&ids.size()==36,"si-skirt-source-closure-changed");
+    const auto matched=MatchSelection(samples,flags,cloth);std::map<int64_t,int> out;
+    for(size_t n=0;n<chain.size();++n)out[chain[n]]=matched[n];
+    const double radius=selection.At("maxConnectionDistance").Number();Need(std::isfinite(radius)&&radius>0,"si-skirt-selection-radius");
+    for(size_t n=0;n<ids.size();++n)if(!out.count(ids[n])){
+      double nearest=1e100;int attribute=-1;
+      for(size_t k=0;k<samples.size();++k){const double distance=Distance(samples[k],local[n]);
+        if(distance<nearest-1e-6){nearest=distance;attribute=flags[k];}
+        else if(std::abs(distance-nearest)<=1e-6)Need(attribute==flags[k],"si-skirt-helper-ambiguous-selection");}
+      Need(nearest<radius-1e-5&&attribute==2,"si-skirt-helper-source-selection-changed");out[ids[n]]=attribute;
+    }return out;
+  }
   std::vector<int> a,b;bool worldOK=false,localOK=false;
   try{a=MatchSelection(samples,flags,world);worldOK=true;}catch(const std::runtime_error &){}
   try{b=MatchSelection(samples,flags,local);localOK=true;}catch(const std::runtime_error &){}
@@ -140,6 +169,10 @@ inline std::set<int64_t> PassiveSourceLeaves(Scene &s,const std::vector<int64_t>
     for(const auto &c:components){const auto object=c.At("component").LocalRef();if(object==id){transform=true;continue;}
       const auto &v=s.file.Get(object);verified&=s.file.Class(object)==114&&v.Has("center")&&v.Has("size");}
     if(!verified||!transform)continue;
+    const auto &name=s.Name(id);
+    if(s.file.sha=="e35214f71bf8886bf2d1ffe31d65e38893d5de2f866f068443b0de0685377f96"&&components.size()==2&&
+        name.size()>9&&name.compare(name.size()-9,9,"_Collider")==0&&s.Name(parent).find("_skirtA_")!=std::string::npos){
+      Need(attrs.at(id)==2&&attrs.at(parent)==2,"si-skirt-helper-not-move-source");passive.insert(id);continue;}
     if(Distance(Vec(t.At("m_LocalPosition")),{0,0,0})<1e-7){passive.insert(id);continue;}
     if(components.size()!=1||attrs.at(id)!=2)continue;
     int continuation=0;

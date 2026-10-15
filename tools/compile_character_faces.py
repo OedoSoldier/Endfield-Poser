@@ -19,6 +19,8 @@ os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 import numpy as np
 from scipy.linalg import lstsq
+from scipy.optimize import least_squares
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 
@@ -169,9 +171,60 @@ def region(name):
     if n.startswith(('browline','eye')): return 'eyes'
     if n.startswith(('facelfiris','facertiris','facelfpupil','facertpupil','facelfhighlight','facerthighlight')): return 'eyes'
     if n.startswith('brow'): return 'brows'
-    if n.startswith(('lip','tongue','facemdtooth')) or n in ('jawjoint','facemdjawdnjoint','line_toothjoint'): return 'mouth'
+    if n.startswith(('lip','tongue','facemdtooth')) or n in ('jawjoint','facemdjawdnjoint','line_toothjoint','linejoint'): return 'mouth'
     if n.startswith(('facelfcheek','facertcheek')): return 'cheeks'
     return None
+
+
+def prepare_mouth_line_retraction(model):
+    """Separate authored mouth-line hiding from the visible lip shape.
+
+    Some vertex morphs hide a lightly weighted line overlay far inside the
+    head. Fitting that displacement as lip motion distorts the entire mouth.
+    Only recognize a detached line control with consistently inward hiding;
+    use neighboring lip motion plus bounded line retraction instead. This is
+    an offline visibility approximation, not an exact vertex reconstruction.
+    """
+    if model.get('mouth_line_retraction'):
+        return model, model['mouth_line_retraction']
+    report={'method':'bounded_mouth_line_v1','shapes':[]}
+    names=[game_bone(b['name']).lower() for b in model['bones']]
+    if names.count('linejoint')!=1:return model,report
+    line=names.index('linejoint');indices=model['indices'];weights=model['weights']
+    lw=np.sum(np.where(indices==line,weights,0),axis=1);mask=lw>1e-7
+    lips=[i for i,n in enumerate(names) if n.startswith('lip')]
+    if np.count_nonzero(mask)<3 or not lips:return model,report
+    # This case is a lightly weighted mouth overlay, never skin or teeth.
+    if np.max(lw)>.05 or np.min(lw[mask])<.005:return model,report
+    W=np.column_stack([np.sum(np.where(indices==i,weights,0),axis=1) for i in lips])
+    if np.any(W[mask].sum(1)<.9):return model,report
+    vertices=model['vertices'];span=float(np.ptp(vertices[mask,0]))
+    if span<1e-5:return model,report
+    candidates=np.flatnonzero((W.sum(1)>.5)&~mask)
+    if len(candidates)<3:return model,report
+    points=np.c_[W*span,vertices]
+    _,nearest=cKDTree(points[candidates]).query(points[mask])
+    nearest=candidates[nearest]
+    if np.max(np.linalg.norm(vertices[nearest]-vertices[mask],axis=1))>span*.5:
+        return model,report
+    # PMX faces look toward -Z. A few millimetres of inset is enough to hide
+    # the overlay; never emit the source's metre-scale control translation.
+    control_depth=min(4.,span*.2/float(np.median(lw[mask])))
+    result=copy.deepcopy(model)
+    for morph in result['morphs']:
+        if morph['type']!=1 or morph.get('category')!=3:continue
+        full=np.zeros_like(vertices);np.add.at(full,morph['ids'],morph['offsets'])
+        surplus=full[mask]-full[nearest]
+        if np.min(surplus[:,2])<span or np.max(np.ptp(surplus[:,1:],axis=0))>span*.5:
+            continue
+        full[mask]=full[nearest]+lw[mask,None]*np.array([0.,0.,control_depth])
+        morph['ids']=np.union1d(morph['ids'],np.flatnonzero(mask))
+        morph['offsets']=full[morph['ids']]
+        report['shapes'].append({'name':normalize(morph['name']),
+                                'vertices':int(mask.sum()),'control_depth':control_depth})
+    if not report['shapes']:return model,report
+    result['mouth_line_retraction']=report
+    return result,report
 
 
 def recover_teeth_weights(model, selected):
@@ -253,6 +306,7 @@ def refit_mouth(model, profile, *, vertex_importance=None, fit_jaw=False):
     jaw in the solve. The default keeps the jaw and uses uniform importance.
     This also updates existing profiles without losing gaze or manual fixes.
     """
+    model,_=prepare_mouth_line_retraction(model)
     if profile.get('source_hash') != model['hash']:
         raise ValueError('Mouth refit requires the exact source PMX')
     skin_reference=model.get('mouth_skin_reference')
@@ -354,6 +408,7 @@ def refit_teeth(model, profile):
     Lip motion, tooth rotations, neutral poses and non-mouth shapes are retained.
     This is an offline approximation, not runtime mesh collision detection.
     """
+    model,_=prepare_mouth_line_retraction(model)
     if profile.get('source_hash') != model['hash']:
         raise ValueError('Tooth refit requires the exact source PMX')
     result=copy.deepcopy(profile);targets={}
@@ -428,7 +483,64 @@ def refit_teeth(model, profile):
     return result,{'method':'depth_envelope_v1','shapes':reports}
 
 
+def prune_unused_face_anchors(model, profile):
+    """Remove unweighted, unused terminal controls from calibration anchors.
+
+    Keep the source hierarchy and all constrained or animated controls intact.
+    This only changes the profile's anchor list and its delta indices; it never
+    changes the PMX or relaxes the runtime neutral-geometry validation.
+    """
+    if profile.get('source_hash') != model['hash']:
+        raise ValueError('Face anchor pruning requires the exact source PMX')
+    targets={}
+    for i,bone in enumerate(model['bones']):
+        name=game_bone(bone['name']).lower()
+        if name not in targets or name==bone['name'].lower():targets[name]=i
+    names=[bone['name'].lower() for bone in profile['bones']]
+    if len(set(names))!=len(names) or any(name not in targets for name in names):
+        raise ValueError('Face anchor pruning has missing or duplicate source bones')
+    selected=[targets[name] for name in names]
+    if not np.allclose([bone['rest'] for bone in profile['bones']],
+                       [model['bones'][i]['rest'] for i in selected],atol=1e-6,rtol=0):
+        raise ValueError('Face anchor pruning has mismatched reference positions')
+    # Count even tiny weights, including tooth weights recovered for the fit.
+    indices,weights,_=recover_teeth_weights(model,selected)
+    used=set(model['indices'][model['weights']!=0].tolist())
+    used.update(indices[weights!=0].tolist())
+    # SMCGazeBind uses these pivots and optical-axis references even when the
+    # source skinning and ordinary expression deltas do not move them.
+    gaze_anchors={'eyelfjoint','eyertjoint','facelfirisjoint','facertirisjoint'}
+    used.update(selected[i] for i,name in enumerate(names) if name in gaze_anchors)
+    for i,bone in enumerate(model['bones']):
+        if bone['parent']>=0:used.add(bone['parent'])
+        if 'append' in bone:
+            used.update((i,bone['append'][0]))
+        if 'ik' in bone:
+            used.update((i,bone['ik']['target']))
+            used.update(link['bone'] for link in bone['ik']['links'])
+        # External-parent constraints have no ordinary source-bone reference.
+        if bone.get('flags',0)&0x2000:used.add(i)
+    for morph in profile['morphs']:
+        for delta in morph['deltas']:
+            index=delta['bone']
+            if not isinstance(index,int) or not 0<=index<len(selected):
+                raise ValueError('Face anchor pruning has invalid delta indices')
+            if any(value!=0 for value in delta['position']+delta['rotation']):
+                used.add(selected[index])
+    keep=[i for i,source in enumerate(selected) if source in used]
+    remap={old:new for new,old in enumerate(keep)}
+    result=copy.deepcopy(profile)
+    result['bones']=[result['bones'][i] for i in keep]
+    for morph in result['morphs']:
+        # Only identically zero records can reference a removed anchor.
+        morph['deltas']=[dict(delta,bone=remap[delta['bone']])
+                         for delta in morph['deltas'] if delta['bone'] in remap]
+    return result,{'removed':[names[i] for i in range(len(names)) if i not in remap],
+                   'before':len(names),'after':len(keep)}
+
+
 def compile_profile(model, label):
+    model,line_report=prepare_mouth_line_retraction(model)
     # Exact original names take precedence over additional MMD control bones.
     targets={}
     for i,b in enumerate(model['bones']):
@@ -555,14 +667,190 @@ def compile_profile(model, label):
              'bones':[{'name':name,'rest':positions[i].tolist()} for i,name in enumerate(names)],'morphs':expressions}
     profile,mouth_report=refit_mouth(model,profile)
     profile,tooth_clearance=refit_teeth(model,profile)
+    if line_report['shapes']:profile['mouth_line_calibration']=line_report['method']
     for q in quality:
         match=next((s for s in mouth_report['shapes'] if s['name']==q['name']),None)
         if match:
             q.update(match);q['reason']=next(m['reason'] for m in profile['morphs'] if m['name']==q['name'])
         q['residual']=next(m['residual'] for m in profile['morphs'] if m['name']==q['name'])
-    return profile,{'model':key,'label':label,'bones':len(selected),'morphs':quality,'skipped':skipped,'teeth':teeth_report,'missing_teeth':missing_teeth,'normalized_weight_vertices':model.get('weight_fixes',0),
-                   'mouth_refit':mouth_report,'tooth_clearance':tooth_clearance,
+    profile,unused_anchors=prune_unused_face_anchors(model,profile)
+    return profile,{'model':key,'label':label,'bones':len(profile['bones']),'morphs':quality,'skipped':skipped,'teeth':teeth_report,'missing_teeth':missing_teeth,'normalized_weight_vertices':model.get('weight_fixes',0),
+                   'mouth_refit':mouth_report,'tooth_clearance':tooth_clearance,'unused_anchors':unused_anchors,'mouth_line_retraction':line_report,
                    'note':'Source PMX reconstruction error, not game visual acceptance.'}
+
+
+def scaled_face_delta(neutral, parents, points, weights, parameters):
+    """Evaluate the runtime's global position/rotation + local scale contract.
+
+    Controlled children retain their desired global position and quaternion,
+    but inherit their parent's nonuniform scale. Do not polar-decompose the
+    resulting skin matrix: Unity's quaternion chain is separate from shear.
+    Neutral matrices and points are expressed in source model coordinates.
+    """
+    parameters=np.asarray(parameters).reshape(len(neutral),9)
+    rotations=Rotation.from_rotvec(parameters[:,3:6]).as_matrix()@neutral[:,:3,:3]
+    matrices=[];result=np.zeros_like(points)
+    for i,parent in enumerate(parents):
+        inherited=matrices[parent]@rotations[parent].T if parent>=0 else np.eye(3)
+        matrix=inherited@rotations[i]@np.diag(np.clip(1+parameters[i,6:9],.01,4))
+        matrices.append(matrix)
+        skin=matrix@neutral[i,:3,:3].T
+        result+=weights[:,i,None]*((points-neutral[i,:3,3])@skin.T+
+                                  neutral[i,:3,3]+parameters[i,:3]-points)
+    return result
+
+
+def refit_scaled_shapes(model, profile, reference, shape_names):
+    """Fit selected shapes against an offline, matching game skin reference.
+
+    Opt-in only: bone axes and actual game weights are mandatory. Existing
+    calibration outside these shapes is preserved, and ambiguous geometry,
+    unmatched hierarchy, excessive deformation or a poor fit aborts the edit.
+    The caller writes the result only after every requested shape succeeds.
+    """
+    reference_model=Path(reference.get('model','')).name.lower()
+    prefab=re.fullmatch(r'chr_\d+_(.+)_postmodel\.prefab',reference_model)
+    if prefab:reference_model=prefab[1]
+    if model['hash']!=profile['source_hash'] or reference_model!=profile['model']:
+        raise ValueError('Scale reference/model identity mismatch')
+    if not shape_names or len(set(shape_names))!=len(shape_names):
+        raise ValueError('Specify unique scale-fit shapes')
+    game={}
+    for bone in reference['bones']:
+        key=bone['name'].lower()
+        if key in game:raise ValueError('Ambiguous game face bone')
+        game[key]=bone
+    names=[b['name'].lower() for b in profile['bones']]
+    anchors=[i for i,n in enumerate(names) if n in game]
+    if len(anchors)<12:raise ValueError('Insufficient matching face anchors')
+    source=np.array([profile['bones'][i]['rest'] for i in anchors])
+    target=np.array([game[names[i]]['matrix'][12:15] for i in anchors])
+    sm,tm=source.mean(0),target.mean(0);x,y=source-sm,target-tm
+    affine=np.linalg.lstsq(x,y,rcond=None)[0];scale=float(np.linalg.norm(affine,axis=1).mean())
+    qx=affine[0]/np.linalg.norm(affine[0]);qy=affine[1]-qx*np.dot(qx,affine[1]);qy/=np.linalg.norm(qy)
+    qz=np.cross(qx,qy);qz*=1 if np.dot(qz,affine[2])>=0 else -1
+    basis=np.column_stack([qx,qy,qz]);translation=tm-sm@basis.T*scale
+    alignment=float(np.linalg.norm(x@basis.T*scale-y)/np.linalg.norm(y))
+    if not np.isfinite(alignment) or alignment>.001 or not .001<scale<1:
+        raise ValueError('Offline game reference does not match the source neutral face')
+    # Scale axes may have either sign. Choose a proper source-space frame even
+    # when the PMX/game alignment contains a reflection.
+    axis_sign=np.diag([np.linalg.det(basis),1.,1.])
+    source_bones={}
+    for i,bone in enumerate(model['bones']):
+        key=game_bone(bone['name']).lower()
+        if key not in source_bones or key==bone['name'].lower():source_bones[key]=i
+    source_vertices=model['vertices']
+    pmx_names={normalize(m['name']):i for i,m in enumerate(model['morphs'])}
+    def vertex_delta(index,stack=()):
+        if index in stack:raise ValueError('Cyclic PMX expression')
+        morph=model['morphs'][index];delta=np.zeros_like(source_vertices)
+        if morph['type']==1:np.add.at(delta,morph['ids'],morph['offsets'])
+        elif morph['type']==0:
+            for child,weight in morph['groups']:delta+=vertex_delta(child,stack+(index,))*weight
+        else:raise ValueError('Scale fitting requires a vertex expression')
+        return delta
+    result=copy.deepcopy(profile);reports=[]
+    for shape_name in shape_names:
+        matches=[m for m in result['morphs'] if m['name']==shape_name]
+        if len(matches)!=1 or shape_name not in pmx_names:raise ValueError('Scale expression not found')
+        shape=matches[0];selected={names[d['bone']] for d in shape['deltas']}
+        if not selected or not selected.issubset(game) or not selected.issubset(source_bones):
+            raise ValueError('Incomplete scale expression bone mapping')
+        ordered=[];visiting=set()
+        def visit(name):
+            if name in ordered:return
+            if name in visiting:raise ValueError('Cyclic scale bone hierarchy')
+            visiting.add(name);parent=game[name]['parent'].lower()
+            if parent in selected:visit(parent)
+            ordered.append(name);visiting.remove(name)
+        for name in sorted(selected):visit(name)
+        parents=[ordered.index(game[n]['parent'].lower()) if game[n]['parent'].lower() in selected else -1 for n in ordered]
+        # A non-selected intermediary would inherit scale while retaining its
+        # own neutral local transform. Require a complete controlled chain.
+        for name in ordered:
+            parent=game[name]['parent'].lower();seen=set()
+            while parent in game and parent not in seen:
+                seen.add(parent);ancestor=game[parent]['parent'].lower()
+                if parent not in selected and ancestor in selected:
+                    raise ValueError('Scale hierarchy has an uncontrolled intermediary')
+                parent=ancestor
+        for name,bone in game.items():
+            if name not in selected and bone['parent'].lower() in selected:
+                raise ValueError('Scale fitting requires all descendants of its controlled bones')
+        neutral=[]
+        for name in ordered:
+            matrix=np.array(game[name]['matrix']).reshape(4,4,order='F')
+            axes=matrix[:3,:3];lengths=np.linalg.norm(axes,axis=0)
+            unit=axes/lengths
+            if np.max(np.abs(unit.T@unit-np.eye(3)))>1e-4 or np.max(np.abs(lengths-1))>1e-4:
+                raise ValueError('Scale reference has a non-rigid neutral bone')
+            n=np.eye(4);n[:3,:3]=Rotation.from_matrix(basis.T@unit@axis_sign).as_matrix()
+            n[:3,3]=(matrix[:3,3]-translation)@basis/scale;neutral.append(n)
+        neutral=np.array(neutral);source_ids=[source_bones[n] for n in ordered]
+        eligible=np.flatnonzero(np.any(np.isin(model['indices'],source_ids)&(model['weights']>1e-7),axis=1))
+        if len(eligible)<3:raise ValueError('No matching source skin weights')
+        tree=cKDTree(source_vertices[eligible]);full_target=vertex_delta(pmx_names[shape_name])
+        points=[];weight_sets=[];targets=[];mesh_counts={};max_distance=0.
+        for mesh in reference['meshes']:
+            bone_names=[n.lower() for n in mesh['bones']]
+            indices=np.array(mesh['indices'],int);skin_weights=np.array(mesh['weights'])
+            if indices.shape!=skin_weights.shape or len(indices)!=len(mesh['vertices']):
+                raise ValueError('Invalid offline game skin weights')
+            if np.any(skin_weights<0) or np.max(np.abs(skin_weights.sum(1)-1))>1e-4:
+                raise ValueError('Unnormalized offline game skin weights')
+            columns=[]
+            for name in ordered:
+                columns.append(np.where(indices==bone_names.index(name),skin_weights,0).sum(1)
+                               if name in bone_names else np.zeros(len(indices)))
+            weights=np.column_stack(columns);mask=np.any(weights>1e-7,axis=1)
+            if not mask.any():continue
+            v=(np.array(mesh['vertices'])[mask]-translation)@basis/scale
+            distances,near=tree.query(v);nearest=eligible[near]
+            max_distance=max(max_distance,float(distances.max()*scale))
+            if max_distance>.0001:raise ValueError('Offline/source surface correspondence exceeds 0.1 mm')
+            for i,candidates in enumerate(tree.query_ball_point(v,distances+1e-7)):
+                if np.any(np.linalg.norm(full_target[eligible[candidates]]-full_target[nearest[i]],axis=1)>1e-5):
+                    raise ValueError('Ambiguous coincident source expression vertices')
+            points.append(v);weight_sets.append(weights[mask]);targets.append(full_target[nearest])
+            mesh_counts[mesh['name']]=int(mask.sum())
+        if not points:raise ValueError('No matching offline game skin')
+        points=np.vstack(points);weights=np.vstack(weight_sets);target_delta=np.vstack(targets)
+        if np.any((weights>1e-7).sum(0)<3):raise ValueError('Scale bone has insufficient skin evidence')
+        original=np.zeros((len(ordered),9))
+        for delta in shape['deltas']:
+            original[ordered.index(names[delta['bone']])]=delta['position']+delta['rotation']+delta.get('scale',[0,0,0])
+        levels=(.25,.5,.75,1.)
+        def residual(parameters):
+            parameters=parameters.reshape(len(ordered),9)
+            return np.r_[*( (scaled_face_delta(neutral,parents,points,weights,parameters*w)-target_delta*w).ravel()
+                            for w in levels),.001*parameters.ravel()]
+        lo=np.tile([-2]*3+[-1.5]*3+[-.75]*3,len(ordered))
+        hi=np.tile([2]*3+[1.5]*3+[1.5]*3,len(ordered))
+        solved=least_squares(residual,original.ravel(),bounds=(lo,hi),max_nfev=300,
+                             xtol=1e-10,ftol=1e-10,gtol=1e-9)
+        fitted=np.round(solved.x.reshape(len(ordered),9),8)
+        if not solved.success or np.max(np.linalg.norm(fitted[:,3:6],axis=1))>1.6:
+            raise ValueError('Scale shape fit did not converge within rotation limits')
+        def metrics(parameters,w):
+            difference=scaled_face_delta(neutral,parents,points,weights,parameters*w)-target_delta*w
+            errors=np.linalg.norm(difference,axis=1)*scale*1000
+            return {'rms_mm':float(np.sqrt(np.mean(errors**2))),'max_mm':float(errors.max()),
+                    'relative':float(np.linalg.norm(difference)/max(np.linalg.norm(target_delta*w),1e-12)) if w else 0.}
+        samples=[{'weight':w,'before':metrics(original,w),'after':metrics(fitted,w)} for w in (0.,)+levels]
+        if any(s['after']['rms_mm']>.5 or s['after']['max_mm']>1.5 for s in samples):
+            raise ValueError('Scaled face shape exceeds the skin error limits')
+        if samples[-1]['after']['rms_mm']>samples[-1]['before']['rms_mm']+1e-5:
+            raise ValueError('Scaled face fit does not improve the original shape')
+        for delta in shape['deltas']:
+            i=ordered.index(names[delta['bone']]);values=fitted[i]
+            delta['position']=values[:3].tolist();delta['rotation']=values[3:6].tolist();delta['scale']=values[6:9].tolist()
+            result['bones'][delta['bone']]['scale_axes']=np.round(neutral[i,:3,:3].T,9).tolist()
+        shape['residual']=round(samples[-1]['after']['relative'],6)
+        reports.append({'name':shape_name,'bones':ordered,'meshes':mesh_counts,'vertices':len(points),
+                        'neutral_match_max_mm':max_distance*1000,'iterations':solved.nfev,
+                        'local_scale':(1+fitted[:,6:9]).tolist(),'samples':samples})
+    return result,{'method':'offline_native_axis_scale_v1','alignment':alignment,'scale':scale,'shapes':reports}
 
 
 def main():
@@ -571,7 +859,12 @@ def main():
     ap.add_argument('--report',type=Path);ap.add_argument('--only',default='')
     ap.add_argument('--refit-mouth',action='store_true',help='Refit only mouths in existing output profiles; preserve gaze and other calibration')
     ap.add_argument('--refit-teeth',action='store_true',help='Correct tooth depth in existing output profiles without changing lips or other calibration')
-    args=ap.parse_args();args.output.mkdir(parents=True,exist_ok=True)
+    ap.add_argument('--refit-scale-shape',action='append',default=[],help='Refit one existing expression with verified game bone axes and skin weights; repeat for multiple shapes')
+    ap.add_argument('--game-reference',type=Path,help='Offline game face bones/meshes JSON; required for scale fitting')
+    args=ap.parse_args()
+    if args.refit_scale_shape and (not args.game_reference or args.refit_mouth or args.refit_teeth):
+        ap.error('Scale fitting requires --game-reference and cannot be combined with mouth/teeth refitting')
+    args.output.mkdir(parents=True,exist_ok=True)
     paths=sorted(args.source.rglob('*.pmx')) if args.source.is_dir() else [args.source]
     reports=[];seen=set()
     for path in paths:
@@ -579,13 +872,16 @@ def main():
         print('Calibrating:',path.stem,flush=True)
         try:
             model=read_pmx(path)
-            if args.refit_mouth or args.refit_teeth:
+            if args.refit_mouth or args.refit_teeth or args.refit_scale_shape:
                 # Locate by hash, not local filename or translated character label.
                 matches=list(args.output.glob('*-'+model['hash'][:12]+'.face.json'))
                 if not matches:continue
                 if len(matches)!=1:raise ValueError('Ambiguous existing profile')
                 original=json.loads(matches[0].read_text(encoding='utf-8'))
-                if args.refit_mouth:
+                if args.refit_scale_shape:
+                    reference=json.loads(args.game_reference.read_text(encoding='utf-8-sig'))
+                    profile,report=refit_scaled_shapes(model,original,reference,args.refit_scale_shape)
+                elif args.refit_mouth:
                     profile,report=refit_mouth(model,original)
                     profile,report['tooth_clearance']=refit_teeth(model,profile)
                 else:profile,report=refit_teeth(model,original)

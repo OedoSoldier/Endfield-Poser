@@ -290,7 +290,7 @@ static bool ClothBoneLocalDistancePolicy(int slot,const ClothContactSample &samp
     return ClothBoneLocalRefuse(slot,"paired-waist-effective-output-policy-mismatch");
   if(!b.local.distanceParametersReadback) {
     b.local.distanceParametersReadback=true;
-    if(b.local.recipe->distanceCurve)Log("[CLOTH-AUTO] stage=distance-policy-confirmed frame=%d team=%d sourceCurveRetained=%d samples=16 nativeVelocityAttenuation=%g reference=%s",sample.frame,b.team[1],!b.local.recipe->resampledPanel,attenuation,b.local.recipe->RetainsSourceReference()?"source-retained":"natural");
+    if(b.local.recipe->distanceCurve)Log("[CLOTH-AUTO] stage=distance-policy-confirmed frame=%d team=%d sourceCurveRetained=%d samples=16 nativeVelocityAttenuation=%g reference=%s",sample.frame,b.team[1],!b.local.recipe->resampledPanel&&!ClothBoneSleeveElasticPolicy(b),attenuation,b.local.recipe->RetainsSourceReference()?"source-retained":"natural");
     else Log("[CLOTH-BONE-LOCAL] stage=distance-policy-confirmed frame=%d team=%d effectiveStiffness=%g samples=16 nativeVelocityAttenuation=%g reference=natural",
         sample.frame,b.team[1],b.local.recipe->distanceStiffness,attenuation);
     if(ClothBoneElasticRequested(b)) Log("[CLOTH-BONE-ELASTIC] stage=Team-confirmed frame=%d team=%d generation=%llu session=%llu distance=%g stretchThreshold=%g bending=%g compression=%g conversions=%u visualVerified=0",
@@ -600,6 +600,8 @@ static bool ClothBoneColliderWorkPending(ClothBoneLocalState &local,const ClothC
       !std::isfinite(sample.simulateWeight) || sample.simulateWeight<=0 ||
       !std::isfinite(sample.lodWeight) || sample.lodWeight<=0 || !sample.validMask || !sample.enableMask)return false;
   std::array<std::array<int,2>,ClothContactColliders> filled{};
+  std::vector<std::array<int,6>> identities;
+  std::vector<std::array<float,6>> geometry;
   for(int n=0;n<sample.colliders;++n) {
     const auto &c=sample.shapes[n];
     if(!c.id || !c.transform || (c.flags&(sample.validMask|sample.enableMask))!=(sample.validMask|sample.enableMask))return false;
@@ -607,21 +609,37 @@ static bool ClothBoneColliderWorkPending(ClothBoneLocalState &local,const ClothC
     for(float v:c.size)if(!std::isfinite(v))return false;
     if(c.size[0]<=0)return false;
     for(float v:c.center)if(!std::isfinite(v))return false;
+    const bool sphere=!strcmp(c.componentType,"BeyondBoneSphereCollider");
+    const bool capsule=!strcmp(c.componentType,"BeyondBoneCapsuleCollider");
+    if(!sphere&&!capsule)return false;
+    identities.push_back({c.id,c.transform,c.slot,c.transformSlot,int(c.flags),int(capsule)});
+    geometry.push_back({c.center[0],c.center[1],c.center[2],c.size[0],c.size[1],c.size[2]});
     bool zero=true;
     for(float v:c.radius){if(!std::isfinite(v)||v<0)return false;zero&=v==0;}
     for(double v:c.oldEndpoints){if(!std::isfinite(v))return false;zero&=v==0;}
     for(double v:c.nextEndpoints){if(!std::isfinite(v))return false;zero&=v==0;}
     if(zero) {++empty;continue;}
-    const bool sphere=!strcmp(c.componentType,"BeyondBoneSphereCollider");
-    const bool capsule=!strcmp(c.componentType,"BeyondBoneCapsuleCollider");
-    if((!sphere&&!capsule)||c.radius[0]<=0||(capsule&&c.radius[1]<=0))return false;
+    if(c.radius[0]<=0||(capsule&&c.radius[1]<=0))return false;
     filled[populated++]={c.id,c.transform};
   }
-  if(!empty)return false;
+  // Reused native slots can contain the previous collider's completed WorkData.
+  // Only the first unpublished input may wait for it; its current owner, mapping
+  // and static geometry must remain identical throughout that bounded wait.
+  if(!local.colliderInputIdentities.empty() &&
+      (local.colliderInputIdentities!=identities || local.colliderInputGeometry!=geometry))return false;
   for(const auto &prior:local.colliderInputPopulated)
     if(std::find(filled.begin(),filled.begin()+populated,prior)==filled.begin()+populated)return false;
   local.colliderInputPopulated.assign(filled.begin(),filled.begin()+populated);
+  local.colliderInputIdentities=std::move(identities);
+  local.colliderInputGeometry=std::move(geometry);
   return true;
+}
+static bool ClothBoneFirstInputWindow(const ClothBoneLocalState &local,const ClothContactSample &sample,
+                                     uint64_t now,uint64_t deadline) {
+  return !local.colliderInputReady && !local.solverFrames && !local.published && now<deadline &&
+      (!local.colliderInputWaitFrames || (now>=local.colliderInputWaitStart &&
+       now-local.colliderInputWaitStart<750 &&
+       (sample.frame==local.colliderInputWaitFrame || local.colliderInputWaitFrames<120)));
 }
 enum class ClothBoneInputReadiness { Failed, Waiting, Ready };
 static ClothBoneInputReadiness ClothBoneLocalInputReadiness(int slot,const ClothContactSample &sample,uint64_t now) {
@@ -631,6 +649,13 @@ static ClothBoneInputReadiness ClothBoneLocalInputReadiness(int slot,const Cloth
   if(!ClothBoneBodyInput(b,sample,false))return refuse("local-body-collider-native-input-unconfirmed");
   if(!ClothBoneSideInput(b,sample,false))return refuse("body-side-collider-native-input-unconfirmed");
   const bool body=ClothBoneBodyInput(b,sample),side=ClothBoneSideInput(b,sample);
+  int empty=0,populated=0;
+  if((!body || !side || (l.colliderInputWaitFrames&&!l.colliderInputReady)) &&
+      !ClothBoneColliderWorkPending(l,sample,empty,populated))
+    return refuse("local-collider-first-input-identity-or-workdata-invalid");
+  if(l.colliderInputWaitFrames&&!l.colliderInputReady &&
+      !ClothBoneFirstInputWindow(l,sample,now,b.modeDeadline))
+    return refuse("local-collider-first-workdata-timeout");
   if(body && side) {
     if(!l.colliderInputReady && l.colliderInputWaitFrames)
       Log("[CLOTH-BONE-INPUT] stage=first-workdata-ready component=%s session=%llu generation=%llu command=%u frame=%d team=%d waitFrames=%u waitMs=%llu renderPublished=%d contactVerified=0",
@@ -638,16 +663,14 @@ static ClothBoneInputReadiness ClothBoneLocalInputReadiness(int slot,const Cloth
           now-l.colliderInputWaitStart,int(l.published));
     l.colliderInputReady=true;return ClothBoneInputReadiness::Ready;
   }
-  int empty=0,populated=0;
-  if(l.colliderInputReady || l.solverFrames || l.published || !ClothBoneColliderWorkPending(l,sample,empty,populated))
+  if(l.colliderInputReady || l.solverFrames || l.published)
     return refuse(!body?"local-body-collider-native-input-unconfirmed":"body-side-collider-native-input-unconfirmed");
   if(!l.colliderInputWaitFrames) {
     l.colliderInputWaitStart=now;
     Log("[CLOTH-BONE-INPUT] stage=awaiting-first-workdata component=%s session=%llu generation=%llu command=%u frame=%d team=%d colliders=%d pendingColliders=%d populatedColliders=%d blendWeight=%g renderPublished=0 maxWaitMs=750 maxFrames=120",
         b.profile->component,b.owner.session,b.owner.generation,b.command,sample.frame,b.team[1],sample.colliders,empty,populated,sample.blendWeight);
   }
-  if(now>=b.modeDeadline || now-l.colliderInputWaitStart>=750 ||
-      (sample.frame!=l.colliderInputWaitFrame && l.colliderInputWaitFrames>=120))
+  if(!ClothBoneFirstInputWindow(l,sample,now,b.modeDeadline))
     return refuse("local-collider-first-workdata-timeout");
   if(sample.frame!=l.colliderInputWaitFrame) {l.colliderInputWaitFrame=sample.frame;++l.colliderInputWaitFrames;}
   l.colliderInputPending=true;return ClothBoneInputReadiness::Waiting;

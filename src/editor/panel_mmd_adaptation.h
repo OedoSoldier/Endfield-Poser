@@ -2,21 +2,26 @@
 #include "editor/panel_scale.h"
 #include "game/mmd_player.h"
 #include "editor/mmd_adaptation_draft.h"
+#include "editor/mmd_bone_labels.h"
 #include "imgui.h"
 
 static bool MmdBoneChoice(const char *label, std::string &value,
                           const char *emptyLabel) {
   bool changed = false;
-  if (ImGui::BeginCombo(label, value.empty() ? emptyLabel : value.c_str())) {
+  const auto display=mmd_ui::BoneLabel(value);
+  if (ImGui::BeginCombo(label, value.empty() ? emptyLabel : display.c_str())) {
     if (ImGui::Selectable(emptyLabel, value.empty())) {
       value.clear();
       changed = true;
     }
-    for (const auto &b : g_mmd.rig.bones)
-      if (ImGui::Selectable(b.name.c_str(), value == b.name)) {
+    for (const auto &b : g_mmd.rig.bones) {
+      ImGui::PushID(b.name.c_str());
+      if (ImGui::Selectable(mmd_ui::BoneLabel(b.name).c_str(), value == b.name)) {
         value = b.name;
         changed = true;
       }
+      ImGui::PopID();
+    }
     ImGui::EndCombo();
   }
   return changed;
@@ -77,15 +82,15 @@ static void DrawMmdAdaptationPanel() {
     ImGui::TextDisabled(u8"默认全部开启，可单独关闭。载入预设时使用预设设置。");
     ImGui::TextWrapped(u8"已有同名骨骼保留原定义。内置骨架已含部分标准骨；此处"
                        u8"也可补全 PMX 参考缺少的骨骼。");
-    dirty |= ImGui::Checkbox(u8"全ての親（总父级）", &draft.parentRoot);
-    dirty |= ImGui::Checkbox(u8"グルーブ（上下位移）", &draft.groove);
-    dirty |= ImGui::Checkbox(u8"上半身2（胸部）", &draft.upperBody2);
+    dirty |= ImGui::Checkbox(u8"总父级（全ての親）", &draft.parentRoot);
+    dirty |= ImGui::Checkbox(u8"上下位移（グルーブ）", &draft.groove);
+    dirty |= ImGui::Checkbox(u8"胸部（上半身2）", &draft.upperBody2);
     dirty |=
-        ImGui::Checkbox(u8"腰 / 腰キャンセル（腰部取消）", &draft.waistCancel);
-    dirty |= ImGui::Checkbox(u8"肩P / 肩C（肩部取消）", &draft.shoulderCancel);
-    dirty |= ImGui::Checkbox(u8"腕捩 / 手捩及分段附加骨", &draft.twists);
-    dirty |= ImGui::Checkbox(u8"足IK親（脚部 IK 父级）", &draft.ikParents);
-    dirty |= ImGui::Checkbox(u8"足D / ひざD / 足首D / 足先EX", &draft.legD);
+        ImGui::Checkbox(u8"腰部控制与取消（腰 / 腰キャンセル）", &draft.waistCancel);
+    dirty |= ImGui::Checkbox(u8"肩部父级与取消（肩P / 肩C）", &draft.shoulderCancel);
+    dirty |= ImGui::Checkbox(u8"上臂 / 前臂扭转及分段骨（腕捩 / 手捩）", &draft.twists);
+    dirty |= ImGui::Checkbox(u8"腿部 IK 父级（足IK親）", &draft.ikParents);
+    dirty |= ImGui::Checkbox(u8"腿 / 膝 / 脚踝 / 脚尖（足D / ひざD / 足首D / 足先EX）", &draft.legD);
     if (draft.legD)
       ImGui::TextWrapped(
           u8"腿、膝、脚踝、脚尖默认改用 D / EX 链；可在角色部位映射中覆盖。");
@@ -102,7 +107,7 @@ static void DrawMmdAdaptationPanel() {
     const char *kinds[]={u8"通用握拳",u8"通用张指",u8"手臂 IK",u8"视线目标"};
     for(int i=0;i<int(draft.controls.size());++i) {
       auto &c=draft.controls[i];ImGui::PushID(i);
-      ImGui::TextWrapped("%s / %s",c.name.c_str(),kinds[int(c.kind)]);
+      ImGui::TextWrapped("%s / %s",mmd_ui::BoneLabel(c.name).c_str(),kinds[int(c.kind)]);
       ImGui::SameLine();if(ImGui::SmallButton(u8"删除控制"))removeControl=i;
       if(c.kind==mmd::MotionControlKind::Grip||c.kind==mmd::MotionControlKind::Spread) {
         dirty|=ImGui::Combo(u8"动作输入轴",&c.inputAxis,"X\0Y\0Z\0");
@@ -125,7 +130,7 @@ static void DrawMmdAdaptationPanel() {
     for (size_t i = 0; i < draft.extra.size(); ++i) {
       ImGui::PushID(int(i));
       const auto &b = draft.extra[i];
-      if (ImGui::Selectable(b.name.c_str(), editing == int(i))) {
+      if (ImGui::Selectable(mmd_ui::BoneLabel(b.name).c_str(), editing == int(i))) {
         editing = int(i);
         snprintf(name, sizeof(name), "%s", b.name.c_str());
         parent = b.parent;
@@ -199,12 +204,13 @@ static void DrawMmdAdaptationPanel() {
     MmdBoneChoice(u8"目标源骨骼", bone, u8"选择要驱动的源骨骼");
     if (!bone.empty()) {
       auto it = draft.tracks.find(bone);
-      const char *label = it == draft.tracks.end() ? u8"默认：同名轨道"
+      const auto selectedTrack=it==draft.tracks.end()?std::string{}:it->second;
+      const std::string label = it == draft.tracks.end() ? u8"自动匹配"
                           : it->second.empty()     ? u8"忽略此骨骼的动作轨道"
-                                                   : it->second.c_str();
+                                                   : mmd_ui::BoneLabel(it->second);
       ImGui::InputText(u8"筛选动作轨道", filter, sizeof(filter));
-      if (ImGui::BeginCombo(u8"使用动作轨道", label)) {
-        if (ImGui::Selectable(u8"默认：同名轨道", it == draft.tracks.end())) {
+      if (ImGui::BeginCombo(u8"使用动作轨道", label.c_str())) {
+        if (ImGui::Selectable(u8"自动匹配", it == draft.tracks.end())) {
           draft.tracks.erase(bone);
           dirty = true;
         }
@@ -213,12 +219,14 @@ static void DrawMmdAdaptationPanel() {
           dirty = true;
         }
         for (const auto &kv : m.clip.bones) {
-          if (filter[0] && kv.first.find(filter) == std::string::npos)
+          if (!mmd_ui::BoneMatches(kv.first,filter))
             continue;
-          if (ImGui::Selectable(kv.first.c_str())) {
+          ImGui::PushID(kv.first.c_str());
+          if (ImGui::Selectable(mmd_ui::BoneLabel(kv.first).c_str(),selectedTrack==kv.first)) {
             draft.tracks[bone] = kv.first;
             dirty = true;
           }
+          ImGui::PopID();
         }
         ImGui::EndCombo();
       }
@@ -227,25 +235,27 @@ static void DrawMmdAdaptationPanel() {
         u8"把特殊命名的轨道指定给源骨骼；不会按文件名或说明文件自动识别。");
     for (const auto &kv : draft.tracks)
       ImGui::TextWrapped("%s -> %s",
-                         kv.second.empty() ? u8"忽略" : kv.second.c_str(),
-                         kv.first.c_str());
+                         kv.second.empty() ? u8"忽略" : mmd_ui::BoneLabel(kv.second).c_str(),
+                         mmd_ui::BoneLabel(kv.first).c_str());
     ImGui::TreePop();
   }
   if (ImGui::TreeNode(u8"源骨骼 → 角色部位")) {
     auto defaults = draft;
     defaults.roles.clear();
     auto resolved = mmd::AdaptedRoles(defaults);
+    const auto automatic=mmd::DefaultSourceRoles(m.rig);
     ImGui::BeginChild("##mmdroles", poser_ui::Size(0, 240), true);
     for (int role = 0; role < 55; ++role) {
       ImGui::PushID(role);
       std::string fallback =
-          resolved.count(role) ? resolved.at(role) : mmd::RoleNames()[role];
+          mmd_ui::BoneLabel(resolved.count(role) ? resolved.at(role) : automatic[role]>=0?m.rig.bones[automatic[role]].name:u8"未找到对应骨骼");
       auto it = draft.roles.find(role);
+      const auto selectedBone=it==draft.roles.end()?std::string{}:it->second;
       std::string label = it == draft.roles.end()
                               ? std::string(u8"默认：") + fallback
                           : it->second.empty() ? u8"不控制此部位"
-                                               : it->second;
-      ImGui::TextUnformatted(HumanBoneName(role));
+                                               : mmd_ui::BoneLabel(it->second);
+      ImGui::TextUnformatted(mmd_ui::RoleLabel(role).c_str());
       ImGui::SetNextItemWidth(-1);
       if (ImGui::BeginCombo("##mappedrole", label.c_str())) {
         if (ImGui::Selectable((std::string(u8"默认：") + fallback).c_str())) {
@@ -256,11 +266,14 @@ static void DrawMmdAdaptationPanel() {
           draft.roles[role] = "";
           dirty = true;
         }
-        for (const auto &b : m.rig.bones)
-          if (ImGui::Selectable(b.name.c_str())) {
+        for (const auto &b : m.rig.bones) {
+          ImGui::PushID(b.name.c_str());
+          if (ImGui::Selectable(mmd_ui::BoneLabel(b.name).c_str(),selectedBone==b.name)) {
             draft.roles[role] = b.name;
             dirty = true;
           }
+          ImGui::PopID();
+        }
         ImGui::EndCombo();
       }
       ImGui::PopID();

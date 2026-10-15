@@ -30,8 +30,11 @@ struct Generated {
   size_t meshReads=0,meshCacheHits=0,meshCacheBytes=0;uint64_t meshDecodeMs=0;
 };
 inline void ResolveGeneratedRenderers(Generated &result) {
+  // Keep each group's profile alive while conflict resolution removes candidates.
+  std::map<std::string,std::vector<std::shared_ptr<eiem_cloth_cache::Profile>>> sharedGroups;
+  for(const auto &p:result.profiles)if(const auto r=p->view.generatedLocal)if(r->SharedSkin())sharedGroups[r->sharedSkinGroup].push_back(p);
   std::set<const ClothBoneProfile*> conflictingPanels;
-  for(const auto &p:result.profiles)if(p->view.runtimeUnowned||(p->view.generatedLocal&&p->view.generatedLocal->NativeSkinRetained())) {
+  for(const auto &p:result.profiles)if(p->view.runtimeUnowned||(p->view.generatedLocal&&p->view.generatedLocal->NativeSkinRetained()&&!p->view.generatedLocal->SharedSupplier())) {
     bool shared=false;for(const auto &q:result.profiles)if(q!=p&&q->view.generatedLocal&&!q->view.generatedLocal->NativeSkinRetained())
       for(const auto &a:p->renderers)for(const auto &b:q->renderers)shared|=!strcmp(a.name,b.name)&&!strcmp(a.parent?a.parent:"",b.parent?b.parent:"");
     if(shared){conflictingPanels.insert(&p->view);result.reports.push_back({p->view.component,p->view.runtimeUnowned?"auto-unowned-renderer-reserved-by-private-skin":"auto-separated-panels-renderer-reserved-by-private-skin"});}
@@ -39,12 +42,22 @@ inline void ResolveGeneratedRenderers(Generated &result) {
   result.profiles.erase(std::remove_if(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return conflictingPanels.count(&p->view)!=0;}),result.profiles.end());
   std::set<const ClothBoneProfile*> privateGraphRequired;
   for(const auto &p:result.profiles)if(p->view.generatedLocal&&p->view.generatedLocal->separatedPanels)privateGraphRequired.insert(&p->view);
-  std::map<std::pair<std::string,std::string>,int> users;
-  for(const auto &p:result.profiles)for(const auto &r:p->renderers)++users[{r.name,r.parent?r.parent:""}];
-  for(const auto &p:result.profiles)if(p->view.generatedLocal&&!p->view.generatedLocal->NativeSkinRetained()){bool shared=false;for(const auto &r:p->renderers)shared|=users[{r.name,r.parent?r.parent:""}]>1;
+  for(const auto &p:result.profiles)if(p->view.generatedLocal&&!p->view.generatedLocal->NativeSkinRetained()){bool shared=false;
+    for(const auto &q:result.profiles)if(q!=p)for(const auto &r:p->renderers)for(const auto &other:q->renderers)
+      if(!strcmp(r.name,other.name)&&!strcmp(r.parent?r.parent:"",other.parent?other.parent:"")){
+        const auto a=p->view.generatedLocal,b=q->view.generatedLocal;
+        shared|=!(a&&b&&a->SharedSkin()&&b->SharedSkin()&&!strcmp(a->sharedSkinGroup,b->sharedSkinGroup));}
     if(shared){p->view.generatedLocal=nullptr;result.reports.push_back({p->view.component,p->view.inputAnchorCount?
         "auto-fixed-apron-shared-renderer-original-unchanged":"auto-density-shared-renderer-retains-original-skin-connections-only"});}}
   result.profiles.erase(std::remove_if(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return (p->view.inputAnchorCount||privateGraphRequired.count(&p->view))&&!p->view.generatedLocal;}),result.profiles.end());
+  std::set<const ClothBoneProfile*> incompleteShared;
+  for(const auto &group:sharedGroups){bool complete=group.second.size()==3;int publishers=0,suppliers=0;
+    for(const auto &owner:group.second){const auto *member=&owner->view;const bool present=std::any_of(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return &p->view==member;});
+      const auto r=member->generatedLocal;complete&=present&&r&&r->SharedSkin()&&group.first==r->sharedSkinGroup;
+      if(!r||!r->SharedSkin())continue;if(r->SharedSupplier())++suppliers;else if(!r->sharedSkinSupplier&&!strcmp(member->component,r->sharedPublisher)&&member->dependencyCount==2&&r->meshCount>0)++publishers;else complete=false;}
+    if(!complete||publishers!=1||suppliers!=2)for(const auto &owner:group.second){const auto *member=&owner->view;incompleteShared.insert(member);result.reports.push_back({member->component,"shared-skin-incomplete-group-original-retained"});}
+  }
+  result.profiles.erase(std::remove_if(result.profiles.begin(),result.profiles.end(),[&](const auto &p){return incompleteShared.count(&p->view)!=0;}),result.profiles.end());
   std::set<const ClothBoneProfile*> orphanRibbons;
   for(const auto &p:result.profiles)if(p->view.ribbonSource) {
     int consumers=0;for(const auto &q:result.profiles)if(const auto r=q->view.generatedLocal)
@@ -69,6 +82,9 @@ inline void ResolveGeneratedRenderers(Generated &result) {
 }
 inline BoneKey Key(Scene &s,int64_t id){return {s.Name(id),s.Name(s.Parent(id))};}
 inline std::vector<int64_t> Refs(const Value &v){std::vector<int64_t> out;for(const auto &p:v.List()){const auto id=p.LocalRef();Need(id!=0,"asset-null-list-reference");out.push_back(id);}return out;}
+// Unity serializes unassigned optional collider slots as null references.
+// Keep required bone/root lists strict, and preserve the order of real colliders.
+inline std::vector<int64_t> ColliderRefs(const Value &v){std::vector<int64_t> out;for(const auto &p:v.List()){const auto id=p.LocalRef();if(id)out.push_back(id);}return out;}
 inline bool RootMatch(Scene &s,int64_t id,const LiveCloth &c){const auto &v=s.file.Get(id);if(s.Name(id)!=c.name||!v.At("serializeData").Has("rootBones"))return false;const auto roots=Refs(v.At("serializeData").At("rootBones"));if(roots.size()!=c.roots.size())return false;for(size_t k=0;k<roots.size();++k)if(!(Key(s,roots[k])==c.roots[k]))return false;return true;}
 inline bool RendererMatch(Scene &s,const MeshView &m,const LiveRenderer &r){if(m.name!=r.name||m.parent!=r.parent||m.mesh!=r.mesh||m.root!=r.root||m.vertices!=r.vertices||m.submeshes!=r.submeshes||m.bones.size()!=r.bones.size())return false;
   for(size_t n=0;n<m.bones.size();++n){if(!(Key(s,m.bones[n])==r.bones[n].bone))return false;if(!r.offlineBinding)for(int k=0;k<16;++k)if(!std::isfinite(r.bones[n].bind[k])||std::abs(m.binds[n][k]-r.bones[n].bind[k])>.0001)return false;}return true;}
@@ -87,6 +103,7 @@ inline bool MatchSourceRenderers(Package &package,Scene &scene,const Query &capt
   for(const auto &o:scene.file.objects)if(scene.file.Class(o.first)==137){const auto &r=scene.file.Get(o.first);bool related=false;
     for(auto id:Refs(r.At("m_Bones")))related|=referenced.count(id)!=0;if(!related)continue;
     const auto mesh=DescribeMesh(package,scene,o.first);size_t matches=0;
+    if(captured.reservedRenderers.count({mesh.name,mesh.parent})||captured.reservedRenderers.count({mesh.name,""}))continue;
     for(const auto &live:query.renderers)matches+=RendererMatch(scene,mesh,live);
     if(matches!=1)return reject("auto-source-required-renderer-matches-"+std::to_string(matches)+":"+mesh.name);}
   for(const auto &live:query.renderers){size_t matches=0;
@@ -99,7 +116,7 @@ inline bool Above(Scene &s,int64_t descendant,int64_t ancestor){for(int steps=0;
 inline std::string RelevantSource(Package &package,Scene &s,const std::vector<int64_t> &cloths){std::map<std::string,std::string> parts;std::set<int64_t> transforms,clothBones;
   auto hashValue=[&](SerializedFile &f,int64_t id,const Value &v){const auto &o=f.objects.at(id);Need(v.start<=o.size&&v.length<=o.size-v.start,"auto-evidence-byte-range");return Digest(Bytes(f.bytes.begin()+o.offset+v.start,f.bytes.begin()+o.offset+v.start+v.length));};
   for(auto id:cloths){const auto &v=s.file.Get(id);const auto name=s.Name(id);Need(parts.emplace("bbc-data:"+name,hashValue(s.file,id,v.At("serializeData"))).second,"auto-evidence-duplicate-component");parts["bbc-selection:"+name]=hashValue(s.file,id,v.At("serializeData2"));auto branch=s.Branch(Refs(v.At("serializeData").At("rootBones")));clothBones.insert(branch.begin(),branch.end());transforms.insert(branch.begin(),branch.end());
-    for(auto c:Refs(v.At("serializeData").At("colliderCollisionConstraint").At("colliderList"))){const auto &collider=s.file.Get(c);const auto t=s.TransformId(c);transforms.insert(t);parts["collider:"+s.Name(t)+":"+s.Name(s.Parent(t))]=hashValue(s.file,c,collider);}}
+    for(auto c:ColliderRefs(v.At("serializeData").At("colliderCollisionConstraint").At("colliderList"))){const auto &collider=s.file.Get(c);const auto t=s.TransformId(c);transforms.insert(t);parts["collider:"+s.Name(t)+":"+s.Name(s.Parent(t))]=hashValue(s.file,c,collider);}}
   for(const auto &o:s.file.objects)if(s.file.Class(o.first)==114&&std::find(cloths.begin(),cloths.end(),o.first)==cloths.end()){
     const auto &v=s.file.Get(o.first),&sd=v.At("serializeData");if(!sd.Has("rootBones"))continue;bool related=false;
     for(auto b:s.Branch(Refs(sd.At("rootBones"))))related|=clothBones.count(b)!=0;if(!related)continue;
@@ -145,7 +162,7 @@ inline LegReachPlan SourceLegReach(Scene &s,const Query &q,const Value &sd,const
   auto result=PlanLegReach(garment,origin,up,legs);std::array<std::vector<eiem_collision::Capsule>,4> shapes;
   std::vector<eiem_collision::Capsule> torsoShapes;
   const auto hips=FindBodyKey(s,q.hips),torsoTop=FindBodyKey(s,q.upperChest.name.empty()?q.spine:q.upperChest);
-  for(auto ref:Refs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(ref);const auto &c=s.file.Get(ref);int region=-1;
+  for(auto ref:ColliderRefs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(ref);const auto &c=s.file.Get(ref);int region=-1;
     for(int side=0;side<2;++side)if(Above(s,t,ids[side])&&!Above(s,t,ids[side+4]))region=side+(Above(s,t,ids[side+2])?2:0);
     const bool torso=Above(s,torsoTop,t)&&Above(s,t,hips);
     if(region<0&&!torso)continue;if(region>=0)result.listed|=1u<<region;
@@ -236,7 +253,7 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
       const auto tip=s.children[fixed][0];Need(attrs[tip]==2&&s.children[tip].empty(),"short-source-tip-contract");}}
   auto passive=PassiveSourceLeaves(s,ids,attrs);passive.insert(ownership.foreign.begin(),ownership.foreign.end());
   for(auto b:ownership.foreign)attrs[b]=0;
-  const bool inactiveCoat=s.file.sha==InactiveCoatPrefab&&s.Name(id)=="MC_Lifeng_Coat";
+  const bool inactiveCoat=SourceInactiveCoatIdentity(s.file.sha.c_str())&&s.Name(id)=="MC_Lifeng_Coat";
   if(inactiveCoat) {
     Need(roots.size()==6&&ids.size()==24&&passive.empty()&&ownership.proofs.empty()&&
         branch.ignored.empty()&&branch.excluded.empty()&&!prebuildId.empty(),"inactive-coat-original-closure");
@@ -371,14 +388,14 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
   for(auto b:branch.excluded)out->excludedBranches.push_back({text(s.Name(b)),text(s.Name(s.Parent(b)))});
   for(const auto &m:meshes){std::vector<ClothBoneBinding> binding;for(size_t n=0;n<m.bones.size();++n){const auto bone=m.bones[n];ClothBoneBinding b{text(s.Name(bone)),text(s.Name(s.Parent(bone))),indices.count(bone)?indices[bone]:-1,{}};for(int j=0;j<16;++j)b.bind[j]=float(m.binds[n][j]);binding.push_back(b);}out->bindings.push_back(std::move(binding));out->renderers.push_back({text(m.name),text(m.mesh),text(m.root),int(m.world.size()),m.submeshes,nullptr,0,text(m.parent)});}
   std::set<int64_t> retainedProducers;
-  for(auto collider:Refs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(collider);int64_t producer=0;
+  for(auto collider:ColliderRefs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(collider);int64_t producer=0;
     for(const auto &o:s.file.objects)if(s.file.Class(o.first)==114){const auto &other=s.file.Get(o.first).At("serializeData");if(!other.Has("rootBones"))continue;const auto foreign=s.Branch(Refs(other.At("rootBones")));bool follows=false;
       for(auto b:foreign)follows|=Above(s,t,b);if(!follows)continue;
       Need(o.first!=id&&!producer,"auto-collider-producer-overlap");producer=o.first;
       for(auto b:foreign)Need(!columns.count(b),"auto-collider-producer-shared-output");
       for(auto b:Refs(other.At("rootBones")))for(auto own:roots)Need(!Above(s,b,own),"auto-collider-producer-follows-consumer");
       for(const auto &live:query.cloths)Need(!RootMatch(s,o.first,live),"auto-collider-producer-needs-ordered-batch");
-      for(auto c:Refs(other.At("colliderCollisionConstraint").At("colliderList")))for(auto own:roots)Need(!Above(s,s.TransformId(c),own),"auto-collider-producer-feedback");
+      for(auto c:ColliderRefs(other.At("colliderCollisionConstraint").At("colliderList")))for(auto own:roots)Need(!Above(s,s.TransformId(c),own),"auto-collider-producer-feedback");
     }
     if(producer)retainedProducers.insert(producer);out->colliders.push_back({text(s.Name(collider)),text(s.Name(s.Parent(t))),s.animatorRoot&&s.Parent(t)==s.animatorRoot});
   }
@@ -410,6 +427,8 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
 #include "cloth_asset_coat_graph.h"
 #include "cloth_asset_body_contact.h"
 #include "cloth_asset_unowned.h"
+#include "cloth_asset_jsspsi.h"
+#include "cloth_asset_shared_skin.h"
 namespace eiem_cloth_asset {
 inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &captured){Need(!captured.renderers.empty(),"auto-owner-input-empty");
   for(const auto &r:captured.renderers)Need(!r.offlineBinding||!captured.modelPath.empty(),"offline-binding-requires-exact-model-path");
@@ -440,7 +459,10 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &c
       SelectBodyScope(scene,query);
       if(scene.bodyRoot){int count=0;for(const auto &t:scene.goTransform)count+=Key(scene,t.second)==query.hips;
         result.reports.push_back({"body-reference","auto-Animator-relative-path-confirmed hipsCandidates="+std::to_string(count)+" selectedSkeletons=1"});}
-      for(size_t k=0;k<cloths.size();++k){CheckCancel(vfs.cancel);try{
+      if(JsspsiGroupSource(scene))try{auto group=GenerateJsspsiGroup(package,scene,query);for(auto &part:group){result.profiles.push_back(part.profile);result.dense.push_back(part.recipe);}
+        result.reports.push_back({"MC_jsspsi_Skirt","shared-skin skirt-and-both-sleeves singlePublisher=1 originalSleeveBonesPreserved=14 armCapsules=8 innerBodyCopies=10 nativeAndVisual=pending"});}
+      catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"MC_jsspsi_Skirt",std::string("shared-skin-group-original-retained:")+e.what()});}
+      for(size_t k=0;k<cloths.size();++k){CheckCancel(vfs.cancel);if(JsspsiGroupSource(scene)&&JsspsiGroupComponent(scene.Name(cloths[k])))continue;try{
           if(RibbonSource(scene,cloths[k])){std::shared_ptr<DenseRecipe> dense;auto p=GenerateRibbon(package,scene,cloths[k],query,dense);result.profiles.push_back(p);result.dense.push_back(dense);continue;}
           SurfaceInput surface;auto p=ApronSource(scene,cloths[k])?GenerateApron(package,scene,cloths[k],query,surface):GenerateConnections(package,scene,cloths[k],query,&surface);
           if(!surface.legReport.empty())result.reports.push_back({query.cloths[k].name,surface.legReport});

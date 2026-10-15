@@ -12,7 +12,15 @@ inline bool OriginalCoverageCoatEligible(bool source,unsigned required,unsigned 
   return source&&(required&3)!=0&&(listed&covered&3)==3&&(required&~covered&~12u)==0;
 }
 inline bool SourceForkCoatIdentity(const char *sha,const char *component) {
-  return sha&&component&&!strcmp(sha,"4f8e69c8fc479d98e3a6df946e5c3d2e88cc6fc296669f6ffc5207ae1a63a314")&&!strcmp(component,"MC_Coat");
+  return sha&&component&&(!strcmp(sha,"4f8e69c8fc479d98e3a6df946e5c3d2e88cc6fc296669f6ffc5207ae1a63a314")||
+      !strcmp(sha,"1c2b86d9919d363c8d72477711b93af9e254636486158427821722d6a8d3329a"))&&!strcmp(component,"MC_Coat");
+}
+inline bool SourceForkCoatVersion(const char *sha,const char *signature) {
+  if(!sha||!signature)return false;
+  return (!strcmp(sha,"4f8e69c8fc479d98e3a6df946e5c3d2e88cc6fc296669f6ffc5207ae1a63a314")&&
+      !strcmp(signature,"79c9b9bda399520e61eca22681b4085262ade5e8672e814873a04229908c9131"))||
+      (!strcmp(sha,"1c2b86d9919d363c8d72477711b93af9e254636486158427821722d6a8d3329a")&&
+      !strcmp(signature,"740a9f5738cd108762fb3beeb447a6c6d153122d25e5faa634b1731d136ab367"));
 }
 inline bool SourceCoatThighColliders(const ClothBoneProfile &p) {
   if(!SourceOriginalCoverageCoat(p.prefabSha,p.component)||!p.colliders||p.colliderCount!=5)return false;
@@ -93,12 +101,22 @@ inline bool SourceSeparatedCoat(const ClothBoneProfile &p) {
 }
 inline constexpr const char *InactiveCoatPrefab="956b1a30c1af649b824758d47b397c8d29caacddf7faf0081bb861ce40e4c960";
 inline constexpr const char *InactiveCoatSignature="8444f74cec8f46527eb829435f18dc3267cc9b4a8d4326256280f9234806b2c6";
+inline bool SourceInactiveCoatIdentity(const char *sha) {
+  return sha&&(!strcmp(sha,InactiveCoatPrefab)||
+      !strcmp(sha,"82b810a00ca4e0ca1a143e51451cdc2664627c0a4ea8f811bdfa732ce61021b4"));
+}
+inline bool SourceInactiveCoatVersion(const char *sha,const char *signature) {
+  if(!sha||!signature)return false;
+  return (!strcmp(sha,InactiveCoatPrefab)&&!strcmp(signature,InactiveCoatSignature))||
+      (!strcmp(sha,"82b810a00ca4e0ca1a143e51451cdc2664627c0a4ea8f811bdfa732ce61021b4")&&
+      !strcmp(signature,"f6bfac0858c1312a6af1dcac9099b37c483fdec30ebba187ecf874c5ff261e21"));
+}
 inline bool SourceInactiveCoat(const ClothBoneProfile &p) {
   if(!p.runtimeGenerated||!p.candidateAttributes||p.runtimeFixedForks||p.runtimeForkCoat||p.loop||
       !p.bones||p.boneCount!=24||p.rootCount!=6||p.depth!=4||!p.roots||!p.originalRoots||
       p.inputAnchorCount||p.sourceBranchCount||p.candidateIgnoredCount||p.ownershipCount||
       !p.prefabSha||!p.signature||!p.component||strcmp(p.component,"MC_Lifeng_Coat")||
-      strcmp(p.prefabSha,InactiveCoatPrefab)||strcmp(p.signature,InactiveCoatSignature))return false;
+      !SourceInactiveCoatVersion(p.prefabSha,p.signature))return false;
   const char *names[]{"L_skirtA_01_jnt","L_skirtB_01_jnt","L_skirtC_01_jnt","R_skirtA_01_jnt","R_skirtB_01_jnt","R_skirtC_01_jnt"};
   for(int c=0;c<6;++c) {
     if(p.originalRoots[c]!=c*4||!p.bones[c*4].name||strcmp(p.bones[c*4].name,names[c]))return false;
@@ -115,8 +133,7 @@ inline bool SourceForkCoatFront(const ClothBoneProfile &p) {
       !p.bones||p.boneCount!=70||p.rootCount!=5||p.depth!=6||!p.roots||!p.originalRoots||
       !p.nativeGraphOrder||p.nativeGraphCount<1||p.inputAnchorCount||p.sourceBranchCount||
       !p.prefabSha||!p.signature||!p.component||strcmp(p.component,"MC_Coat")||
-      strcmp(p.prefabSha,"4f8e69c8fc479d98e3a6df946e5c3d2e88cc6fc296669f6ffc5207ae1a63a314")||
-      strcmp(p.signature,"79c9b9bda399520e61eca22681b4085262ade5e8672e814873a04229908c9131"))return false;
+      !SourceForkCoatVersion(p.prefabSha,p.signature))return false;
   const int roots[]{60,44,27,0,17};for(int k=0;k<5;++k)if(p.roots[k]!=roots[k])return false;
   int fixed=0,move=0;for(int n=0;n<70;++n){fixed+=p.bones[n].attribute==1;move+=p.bones[n].attribute==2;}
   if(fixed!=9||move!=27)return false;

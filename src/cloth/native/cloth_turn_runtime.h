@@ -1,6 +1,7 @@
 #pragma once
 #include "math/cloth_turn_motion.h"
 #include "math/cloth_attachment.h"
+#include "math/cloth_sleeve_motion.h"
 #include <chrono>
 
 static bool s_clothTurnEnabled=true;
@@ -21,6 +22,7 @@ struct ClothTurnState {
     double nextReadback=0;int lastReadback=0;
     cloth_turn::Part part=cloth_turn::Part::None;
     cloth_turn::Attachment attachment;cloth_turn::Tracker tracker;cloth_turn::Mailbox motion;
+    cloth_turn::SleeveResponse sleeve;
     ClothRef mounts[8]{};
   };
   ShapeEntry shapes[ClothCapacity+eiem_cloth_rebuild::BatchCapacity]{};
@@ -267,6 +269,9 @@ static bool ClothTurnForce(void *obj,const ClothRef &ref,cloth_turn::Part part,d
   // simulationDeltaTime. Native API's historical velocity label is misleading
   // for this game build. Supply acceleration, not our sample's delta velocity.
   Vec3 force=mailbox.force(part,{center.x,center.y,center.z},strength,now,s_clothLightness,&entry->shape);
+  if(enhanced&&ClothBoneSleevePolicy(*enhanced))
+    force=entry->sleeve.step(mailbox,{center.x,center.y,center.z},strength,now,s_clothLightness,entry->shape);
+  else entry->sleeve.clear();
   const float magnitude=Len(force);
   if(!std::isfinite(magnitude))return false;
   // Zero motion must not erase native wind or another system's force.
@@ -366,8 +371,9 @@ static void ClothTurnSubmit(const Profile &profile,const Bones &bones,double cur
       s.hips.step(hips,now,cursor,epoch,playing));
   for(unsigned n=0;n<s.shapeCount;++n) {
     auto &e=s.shapes[n];cloth_turn::Pose pose;
-    if(!ClothTurnMountPose(e,pose)){e.tracker={};e.motion.clear();continue;}
+    if(!ClothTurnMountPose(e,pose)){e.tracker={};e.motion.clear();e.sleeve.clear();continue;}
     auto motion=e.tracker.step(pose,now,cursor,epoch,playing,cloth_turn::Material(e.part).smoothing);
+    if(motion.dt<=0)e.sleeve.clear();
     e.motion.push(motion,motion,now,motion);
   }
   if(!playing)s.status=u8"已暂停，衣物惯性自然收敛";

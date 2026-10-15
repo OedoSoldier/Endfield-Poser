@@ -68,6 +68,7 @@ inline bool Apply(const Limits &l,const face_mixing::Hierarchy &h,face_mixing::P
     float t=gain[l.side[i]];
     world[i].position=l.neutral[i].position+(world[i].position-l.neutral[i].position)*t;
     world[i].rotation=Quat::Slerp(l.neutral[i].rotation,world[i].rotation,t);
+    world[i].scale=l.neutral[i].scale+(world[i].scale-l.neutral[i].scale)*t;
   }
   auto result=local;
   std::array<mmd::Matrix,face_geometry::MaxBones> matrices;
@@ -79,8 +80,10 @@ inline bool Apply(const Limits &l,const face_mixing::Hierarchy &h,face_mixing::P
       mmd::Matrix inverse;if(!mmd::Inverse(matrix,inverse))return false;
       result[i].position=face_geometry::Vector(inverse,world[i].position)+inverse.position();
       result[i].rotation=NormQ(Conj(rotation)*world[i].rotation);
+      auto unit=matrix*mmd::TRS(result[i].position,result[i].rotation,h.scale[i]);
+      result[i].scale=face_native::Ratio(world[i].scale,face_mixing::AxisLengths(unit));
     }
-    matrices[i]=matrix*mmd::TRS(result[i].position,result[i].rotation,h.scale[i]);
+    matrices[i]=matrix*mmd::TRS(result[i].position,result[i].rotation,face_mixing::Scale(h,i,result[i]));
     rotations[i]=NormQ(rotation*result[i].rotation);
   }
   local=result;return true;

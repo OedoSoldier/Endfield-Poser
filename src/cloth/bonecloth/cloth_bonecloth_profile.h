@@ -66,6 +66,7 @@ struct ClothBoneProfile {
   const int *releasedFixed=nullptr;int releasedFixedCount=0;
   bool ReleasedFixed(int n) const {for(int k=0;k<releasedFixedCount;++k)if(releasedFixed[k]==n)return true;return false;}
   bool runtimeBodyOnly=false;
+  bool runtimeSleeve=false;
   const eiem_cloth_graph::OrderContract *nativeGraphOrder=nullptr;
   const int *candidateAttributes=nullptr;
   int CandidateAttribute(int n) const {return candidateAttributes?candidateAttributes[n]:bones[n].attribute;}

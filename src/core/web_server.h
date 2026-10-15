@@ -15,6 +15,7 @@
 #include "config.h"
 #include "user_agreement.h"
 #include "tool_close_state.h"
+#include "runtime_bootstrap.h"
 #include "game/skeleton.h"
 #include "game/freeze.h"
 #include "math/pose_file.h"
@@ -97,7 +98,14 @@ static void HandleRequest(SOCKET c, const std::string &path,
     return;
   }
   if (path == "/api/status") {
+    // This endpoint can identify the responding host even when another process
+    // loaded the proxy and appended an unrelated startup failure to the log.
+    static const auto exePath = ReadRuntimeModulePath(nullptr).path;
+    static const auto logPath = RuntimePathUtf8(PoserFilePath(L"poser_log.txt"));
+    static const auto gameModulePath = hGA ? ReadRuntimeModulePath(hGA).path : std::string{};
     HttpJson(c, {{"ok", true}, {"frozen", g_frozen},
+                 {"pid", GetCurrentProcessId()}, {"exe_path", exePath},
+                 {"log_path", logPath}, {"game_module_path", gameModulePath},
                  {"agreement_required", !poser_agreement::Allowed()},
                  {"agreement_revision", poser_agreement::kRevision},
                  {"bones", s_humanBoneCount},
@@ -143,7 +151,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
         {"cloth_preparing",cloth.autoPreparing},{"cloth_restoring",s_cloth.releasing||cloth.boneRestoring},
         {"cloth_authored",cloth.authoredApplied},{"cloth_connections",cloth.autoConnectionsApplied},
         {"cloth_skin",cloth.autoSkinApplied},{"cloth_partial",cloth.autoPartialApplied},
-        {"cloth_preserved",cloth.autoPreserved},{"cloth_issue",cloth.boneIssue},
+        {"cloth_preserved",cloth.autoPreserved},{"cloth_compatibility_preserved",cloth.compatibilityPreserved},{"cloth_issue",cloth.boneIssue},
         {"face_ready",a&&a->face&&a->face->smcOwnershipVerified},
         {"face_neutral_source",a&&a->face&&a->face->faceBonesCaptured?"sampled":"pending"},
         {"offset",{slot.offset.x,slot.offset.y,slot.offset.z}}});
@@ -153,6 +161,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"status",s.status},{"roster_status",poser_squad::status},{"roster_valid",s.roster.valid},
       {"terrain_enabled",s.terrain.enabled},{"auto_scale",s.autoScale},{"gaze_camera",poser_gaze::motionLock},
       {"cloth_enhancement_enabled",s_clothSquadAutoEnabled.load()},
+      {"cloth_enhancement_effective",s_clothSquadAutoEnabled.load()&&!s_clothCompatibilityIssue.load()},
+      {"cloth_compatibility_issue",s_clothCompatibilityIssue.load()?s_clothCompatibilityIssue.load():""},
       {"origin",{s.anchor.origin.x,s.anchor.origin.y,s.anchor.origin.z}},{"slots",slots}});
     return;
   }
@@ -197,10 +207,12 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"terrain_contacts",m.session.terrain.contacts},{"terrain_queries",m.session.terrain.queries},
       {"gaze_camera",poser_gaze::motionLock},{"gaze_strength",poser_gaze::motionStrength},
       {"cloth_enhancement",{{"enabled",s_clothAutoEnabled.load()},
+        {"effective",s_clothAutoEnabled.load()&&!s_clothCompatibilityIssue.load()},
+        {"compatibility_issue",s_clothCompatibilityIssue.load()?s_clothCompatibilityIssue.load():""},
         {"preparing",enhancement.autoPreparing},{"restoring",enhancement.boneRestoring},
         {"authored",enhancement.authoredApplied},{"connections",enhancement.autoConnectionsApplied},
         {"skin",enhancement.autoSkinApplied},{"partial",enhancement.autoPartialApplied},
-        {"preserved",enhancement.autoPreserved},{"catalog",enhancement.catalogCount},
+        {"preserved",enhancement.autoPreserved},{"compatibility_preserved",enhancement.compatibilityPreserved},{"catalog",enhancement.catalogCount},
         {"source",enhancement.catalogSource},{"issue",enhancement.boneIssue},
         {"geometry",s_collisionGeometry.load()},{"ribbon_damping",s_clothRibbonDamping.load()},
         {"verbose_diagnostics",s_clothVerboseDiagnostics.load()}}},
@@ -282,15 +294,28 @@ static void HandleRequest(SOCKET c, const std::string &path,
         const auto &rest=s_faceRestPose[i],&evaluated=s_faceBones[i];
         bones.back()["neutral_local"]={rest.px,rest.py,rest.pz};
         bones.back()["neutral_rotation"]={rest.rx,rest.ry,rest.rz,rest.rw};
+        bones.back()["neutral_scale"]={rest.scale.x,rest.scale.y,rest.scale.z};
         bones.back()["evaluated_local"]={evaluated.px,evaluated.py,evaluated.pz};
         bones.back()["evaluated_rotation"]={evaluated.rx,evaluated.ry,evaluated.rz,evaluated.rw};
+        bones.back()["evaluated_scale"]={evaluated.scale.x,evaluated.scale.y,evaluated.scale.z};
+        bones.back()["native_euler_ready"]=s_activeSMC->nativeReference[i].valid;
       }
     }
     if(s_characterProfile)for(int i=0;i<int(s_characterBinding.slots.size());++i)
       if(s_characterBinding.slots[i]<0)missing.push_back(s_characterProfile->bones[i].name);
     const auto blushKey=s_characterProfile?s_characterProfile->key:poser_gaze::editor.modelKey;
     const auto blushInfo=poser_blush::info.find(blushKey);
+    nlohmann::json manual=nlohmann::json::array();
+    if(s_mmdFaceMode) {
+      for(int i=0;i<int(s_manualFace.controls.size());++i)if(s_manualFace.weights[i]!=0)
+        manual.push_back({{"name",s_manualFace.controls[i].name},{"weight",s_manualFace.weights[i]},
+                          {"source",SMCManualSource(s_manualFace.controls[i])}});
+    } else {
+      for(int i=0;i<SMC_NUM_MOUTH+s_extraMorphCount;++i)if(SMCSliderValue(i)!=0)
+        manual.push_back({{"name",SMCSliderLabel(i)},{"weight",SMCSliderValue(i)}});
+    }
     HttpJson(c,{{"model",CurrentCharModelKey()},{"generation",s_faceGeneration},{"ready",s_characterBinding.ready},
+      {"manual",{{"mode",s_mmdFaceMode?"mmd":"game"},{"weights",manual}}},
       {"blush",{{"model",blushKey},{"profile",blush::Write(poser_blush::ProfileFor(blushKey))},
         {"status",blushInfo==poser_blush::info.end()?u8"尚未检查材质":blushInfo->second.status},
         {"materials",blushInfo==poser_blush::info.end()?0:blushInfo->second.materials},

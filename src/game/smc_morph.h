@@ -44,7 +44,7 @@ struct SMCMorphBoneEntry {
   int32_t boneID;
   float deltaPosX, deltaPosY, deltaPosZ;
   float deltaRotX, deltaRotY, deltaRotZ;
-  float pad[3];
+  float deltaScaleX, deltaScaleY, deltaScaleZ;
 };
 #pragma pack(pop)
 static_assert(sizeof(SMCMorphBoneEntry) == 44,
@@ -55,6 +55,7 @@ struct SMCFaceBone {
   float px, py, pz;
   float rx, ry, rz, rw;
   void *transform;
+  Vec3 scale{1,1,1};
 };
 
 struct SMCMouthShape {
@@ -102,6 +103,7 @@ static int s_offSmcEyeLookAt = -1;
 static int s_offPhonemeWeights = -1;    // m_phonemesWeights（口型权重）
 static int s_offMicroExprWeights = -1;  // m_microExpressionWeights（微表情权重）
 static int s_offMainEmotion = -1;       // m_mainEmotion（当前表情 Pose）
+static int s_offBaseBonePose = -1;
 
 #include "game/smc_actor_state.h"
 
@@ -206,6 +208,36 @@ static void ResolveSMCMouthShapes(void *smcBase);
 static void SMCCaptureBigList(void *smcBase);
 static void SMCRestoreBigList();
 static void SMCWriteTouchedBones();
+static Vec3 SMCFaceScale(void *transform);
+using SMCMotionNativeDelta=face_native::Delta;
+using SMCMotionNativeDeltaArray=std::array<SMCMotionNativeDelta,SMC_MAX_FACE_BONES>;
+static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray &deltas);
+static Quat SMCNativeCorrection(int index,Vec3 delta) {
+  const auto &rest=s_faceRestPose[index];
+  return face_native::Correction(s_activeSMC->nativeReference[index],
+      {rest.rx,rest.ry,rest.rz,rest.rw},delta);
+}
+// The native baseline keeps the authored Euler branch. The actual Transform
+// snapshot remains the zero pose and also preserves any prefab rest offset.
+static void SMCCaptureNativeReference(void *core) {
+  s_activeSMC->nativeReference={};
+  if(!core||s_offBaseBonePose<0)return;
+  struct NativePose {Vec3 position,euler,scale;uint32_t dirty;};
+  static_assert(sizeof(NativePose)==40,"SMC native pose layout");
+  __try {
+    auto header=static_cast<char *>(core)+s_offBaseBonePose;
+    auto data=*reinterpret_cast<NativePose **>(header);
+    int count=*reinterpret_cast<int *>(header+8);
+    if(!data||count!=s_faceBoneCount||count>SMC_MAX_FACE_BONES)return;
+    int captured=0;
+    for(int i=0;i<count;++i) {
+      const auto &v=data[i];
+      if(!std::isfinite(Len(v.euler))||Len(v.euler)>10000||!std::isfinite(Len(v.scale)))continue;
+      s_activeSMC->nativeReference[i]={v.euler,true};++captured;
+    }
+    Log("[SMC] native Euler baseline: %d/%d bones",captured,count);
+  } __except(1) {s_activeSMC->nativeReference={};}
+}
 
 // ---- SMC 实例归属判定 ----
 // 摄影模式里场上每个角色都有自己的 SkeletalMorphCore，而且都会调用
@@ -686,6 +718,7 @@ static void SMCDropLockKeepWeights() {
   s_capturedLen = 0;
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
+  s_activeSMC->nativeReference={};
   s_faceBonesCaptured = false;
   s_captureNeutral = false;
   s_neutralFrames = 0;
@@ -721,95 +754,39 @@ static void SMCRejectInstanceAndDropLock(void *smc) {
 
 // 把某个滑条（0..4 口型，5.. 表情）的"单位权重增量"按骨累加；返回触及骨骼数
 static int SMCCollectSliderUnit(int idx, float (*uPos)[3], float (*uRot)[3],
-                                int *touched, int maxTouched) {
-  int n = 0;
-  if (idx < 0 || idx >= SMC_MAX_SLIDERS)
-    return 0;
-  if (idx < SMC_NUM_MOUTH) {
-    if (!s_mouthShapes[idx].resolved)
-      return 0;
-    int start = s_mouthShapes[idx].jobStartIdx;
-    int cnt = s_mouthShapes[idx].jobCount;
-    if (start < 0 || cnt <= 0 || start + cnt > s_capturedLen)
-      return 0;
-    for (int i = start; i < start + cnt; i++) {
-      const SMCMorphBoneEntry &e = s_capturedExpression[i];
-      int b = (e.boneID >= 0 && e.boneID < SMC_BONE_MAP_SIZE)
-                  ? s_boneIDToIdx[e.boneID]
-                  : -1;
-      if (b < 0 || b >= s_faceBoneCount)
-        continue;
-      if (fabsf(e.deltaPosX) > 1.0f || fabsf(e.deltaPosY) > 1.0f ||
-          fabsf(e.deltaPosZ) > 1.0f)
-        continue;
-      bool first = (uPos[b][0] == 0.0f && uPos[b][1] == 0.0f &&
-                    uPos[b][2] == 0.0f && uRot[b][0] == 0.0f &&
-                    uRot[b][1] == 0.0f && uRot[b][2] == 0.0f);
-      uPos[b][0] += e.deltaPosX;
-      uPos[b][1] += e.deltaPosY;
-      uPos[b][2] += e.deltaPosZ;
-      if (fabsf(e.deltaRotX) < 30.0f && fabsf(e.deltaRotY) < 30.0f &&
-          fabsf(e.deltaRotZ) < 30.0f) {
-        uRot[b][0] += e.deltaRotX;
-        uRot[b][1] += e.deltaRotY;
-        uRot[b][2] += e.deltaRotZ;
-      }
-      if (first && n < maxTouched)
-        touched[n++] = b;
-    }
-    return n;
+                                float (*uScale)[3], int *touched, int maxTouched) {
+  if(idx<0||idx>=SMC_NUM_MOUTH+s_extraMorphCount)return 0;
+  float weights[SMC_MAX_SLIDERS]={};weights[idx]=1;
+  SMCMotionNativeDeltaArray deltas{};
+  if(!SMCMotionNativeDeltas(weights,deltas))return 0;
+  int count=0;
+  for(int i=0;i<s_faceBoneCount;++i) {
+    const auto &d=deltas[i];
+    uPos[i][0]=d.position.x;uPos[i][1]=d.position.y;uPos[i][2]=d.position.z;
+    uRot[i][0]=d.rotation.x;uRot[i][1]=d.rotation.y;uRot[i][2]=d.rotation.z;
+    uScale[i][0]=d.scale.x;uScale[i][1]=d.scale.y;uScale[i][2]=d.scale.z;
+    if(Len(d.position)+Len(d.rotation)+Len(d.scale)>0&&count<maxTouched)touched[count++]=i;
   }
-  int em = idx - SMC_NUM_MOUTH;
-  if (em >= s_extraMorphCount)
-    return 0;
-  for (int t = 0; t < s_extraMorphs[em].targetCount; t++) {
-    const SMCExtraTarget &tgt = s_extraMorphs[em].targets[t];
-    if (!tgt.resolved || tgt.startIdx < 0 ||
-        tgt.startIdx + tgt.count > s_capturedLen)
-      continue;
-    bool isEye = (strncmp(tgt.endfieldName, "eye_", 4) == 0);
-    for (int i = tgt.startIdx; i < tgt.startIdx + tgt.count; i++) {
-      const SMCMorphBoneEntry &e = s_capturedExpression[i];
-      int b = (e.boneID >= 0 && e.boneID < SMC_BONE_MAP_SIZE)
-                  ? s_boneIDToIdx[e.boneID]
-                  : -1;
-      if (b < 0 || b >= s_faceBoneCount)
-        continue;
-      if (fabsf(e.deltaPosX) > 1.0f || fabsf(e.deltaPosY) > 1.0f ||
-          fabsf(e.deltaPosZ) > 1.0f)
-        continue;
-      bool first = (uPos[b][0] == 0.0f && uPos[b][1] == 0.0f &&
-                    uPos[b][2] == 0.0f && uRot[b][0] == 0.0f &&
-                    uRot[b][1] == 0.0f && uRot[b][2] == 0.0f);
-      uPos[b][0] += e.deltaPosX;
-      uPos[b][1] += e.deltaPosY;
-      uPos[b][2] += e.deltaPosZ;
-      if (!isEye && fabsf(e.deltaRotX) < 30.0f && fabsf(e.deltaRotY) < 30.0f &&
-          fabsf(e.deltaRotZ) < 30.0f) {
-        uRot[b][0] += e.deltaRotX;
-        uRot[b][1] += e.deltaRotY;
-        uRot[b][2] += e.deltaRotZ;
-      }
-      if (first && n < maxTouched)
-        touched[n++] = b;
-    }
-  }
-  return n;
+  return count;
 }
 
 // 目标总增量（相对中性脸）：位移向量 + 欧拉角向量
 static void SMCTargetDelta(int b, const SMCFaceBone *target, const SMCFaceBone *base,
-                           float *outPos, float *outEuler) {
+                           float *outPos, float *outEuler,float *outScale) {
   outPos[0] = target[b].px - base[b].px;
   outPos[1] = target[b].py - base[b].py;
   outPos[2] = target[b].pz - base[b].pz;
   Quat bq(base[b].rx, base[b].ry, base[b].rz, base[b].rw);
   Quat tq(target[b].rx, target[b].ry, target[b].rz, target[b].rw);
-  Quat d = NormQ(tq * Conj(bq));
-  Vec3 e = d.ToEulerDeg();
+  const auto &reference=s_activeSMC->nativeReference[b];
+  Vec3 native=reference.valid?reference.euler:face_native::ToMaya(bq);
+  auto authored=NormQ(tq*Conj(bq)*face_native::FromMaya(native));
+  Vec3 e=face_native::ToMayaNear(authored,native)-native;
   outEuler[0] = e.x;
   outEuler[1] = e.y;
   outEuler[2] = e.z;
+  auto scale=target[b].scale-base[b].scale;
+  outScale[0]=scale.x;outScale[1]=scale.y;outScale[2]=scale.z;
 }
 
 static float SMCPoseResidual(const SMCFaceBone *a, const SMCFaceBone *b, int count) {
@@ -834,15 +811,19 @@ static void SMCHoldPoseAsWeights(const SMCFaceBone *target) {
     return;
   static float uPos[SMC_MAX_FACE_BONES][3];
   static float uRot[SMC_MAX_FACE_BONES][3];
+  static float uScale[SMC_MAX_FACE_BONES][3];
   static int touched[SMC_MAX_FACE_BONES];
   static float sumPos[SMC_MAX_FACE_BONES][3];
   static float sumRot[SMC_MAX_FACE_BONES][3];
+  static float sumScale[SMC_MAX_FACE_BONES][3];
   static float reqPos[SMC_MAX_FACE_BONES][3];
   static float reqRot[SMC_MAX_FACE_BONES][3];
+  static float reqScale[SMC_MAX_FACE_BONES][3];
   memset(sumPos, 0, sizeof(sumPos));
   memset(sumRot, 0, sizeof(sumRot));
+  memset(sumScale, 0, sizeof(sumScale));
   for (int b = 0; b < s_faceBoneCount; b++)
-    SMCTargetDelta(b, target, s_faceRestPose, reqPos[b], reqRot[b]);
+    SMCTargetDelta(b, target, s_faceRestPose, reqPos[b], reqRot[b],reqScale[b]);
   for (int i = 0; i < nSliders; i++)
     s_fitW[i] = 0.0f;
   // 坐标下降：每次把残差投影到该滑条的影响方向上
@@ -850,7 +831,8 @@ static void SMCHoldPoseAsWeights(const SMCFaceBone *target) {
     for (int idx = 0; idx < nSliders; idx++) {
       memset(uPos, 0, sizeof(uPos));
       memset(uRot, 0, sizeof(uRot));
-      int nt = SMCCollectSliderUnit(idx, uPos, uRot, touched, SMC_MAX_FACE_BONES);
+      memset(uScale, 0, sizeof(uScale));
+      int nt = SMCCollectSliderUnit(idx, uPos, uRot, uScale,touched, SMC_MAX_FACE_BONES);
       if (nt <= 0)
         continue;
       float num = 0.0f, den = 0.0f;
@@ -861,14 +843,16 @@ static void SMCHoldPoseAsWeights(const SMCFaceBone *target) {
         for (int c = 0; c < 3; c++) {
           float othersP = sumPos[b][c] - s_fitW[idx] * uPos[b][c];
           float othersR = sumRot[b][c] - s_fitW[idx] * uRot[b][c];
+          float othersS = sumScale[b][c] - s_fitW[idx] * uScale[b][c];
           num += (reqPos[b][c] - othersP) * uPos[b][c];
           num += (reqRot[b][c] - othersR) * uRot[b][c];
-          den += uPos[b][c] * uPos[b][c] + uRot[b][c] * uRot[b][c];
+          num += (reqScale[b][c] - othersS) * uScale[b][c];
+          den += uPos[b][c] * uPos[b][c] + uRot[b][c] * uRot[b][c]+uScale[b][c]*uScale[b][c];
         }
       }
       if (den < 1e-8f)
         continue;
-      float nw = s_fitW[idx] + num / den;
+      float nw = num / den;
       if (nw < 0.0f)
         nw = 0.0f;
       if (nw > 1.0f)
@@ -883,6 +867,7 @@ static void SMCHoldPoseAsWeights(const SMCFaceBone *target) {
           for (int c = 0; c < 3; c++) {
             sumPos[b][c] += dw * uPos[b][c];
             sumRot[b][c] += dw * uRot[b][c];
+            sumScale[b][c] += dw * uScale[b][c];
           }
         }
       }
@@ -890,13 +875,15 @@ static void SMCHoldPoseAsWeights(const SMCFaceBone *target) {
   }
   // 残差折进基准位姿：base = P − Σ w₀×增量（旋转用逆作用）
   int nz = 0;
+  SMCMotionNativeDeltaArray held{};
+  SMCMotionNativeDeltas(s_fitW,held);
   for (int b = 0; b < s_faceBoneCount; b++) {
     s_driveBase[b] = target[b];
-    s_driveBase[b].px -= sumPos[b][0];
-    s_driveBase[b].py -= sumPos[b][1];
-    s_driveBase[b].pz -= sumPos[b][2];
-    Quat back = Conj(Quat::FromEulerDeg(
-        Vec3(sumRot[b][0], sumRot[b][1], sumRot[b][2])));
+    s_driveBase[b].px -= held[b].position.x;
+    s_driveBase[b].py -= held[b].position.y;
+    s_driveBase[b].pz -= held[b].position.z;
+    s_driveBase[b].scale=target[b].scale-held[b].scale;
+    Quat back = Conj(SMCNativeCorrection(b,held[b].rotation));
     Quat tq(target[b].rx, target[b].ry, target[b].rz, target[b].rw);
     Quat bq = NormQ(back * tq);
     s_driveBase[b].rx = bq.x;
@@ -944,7 +931,7 @@ static void SMCSnapshotFacePose() {
     Vec3 p = GetBoneLocalPos(s_faceBoneRefs[i]);
     Quat r = GetBoneLocalRot(s_faceBoneRefs[i]);
     s_lastFacePoseBuf[i] = {p.x, p.y, p.z, r.x, r.y, r.z, r.w,
-                            s_faceBoneRefs[i]};
+                            s_faceBoneRefs[i],SMCFaceScale(s_faceBoneRefs[i])};
   }
   s_lastFacePoseValid = true;
 }
@@ -977,6 +964,7 @@ static void ResolveSMCOffsets(void *cls) {
     s_offPhonemeWeights = getOff("m_phonemesWeights");
     s_offMicroExprWeights = getOff("m_microExpressionWeights");
     s_offMainEmotion = getOff("m_mainEmotion");
+    s_offBaseBonePose = getOff("m_baseBonePose");
     if (s_offSmcEyeLookAt < 0)
       s_offSmcEyeLookAt = getOff("enableEyeLookAtIK");
     if (s_offSmcEyeLookAt < 0)
@@ -1054,7 +1042,7 @@ static void SMCRestoreBigList() {
 static void SMCReleaseFreeze() {
   poser_gaze::Release(true,nullptr,SMCGazeContext());
   SMCAutomation().release();
-  if (s_wasFrozen && CharAnimatorAlive()) SMCRestoreBigList();
+  if (s_wasFrozen && UnityObjAlive(SMCAnimator())) SMCRestoreBigList();
   s_wasFrozen=false;
 }
 
@@ -1251,6 +1239,7 @@ static void SMCMorphJobBefore(void *param1) {
         for (int i = 0; i < bigLen; i++) {
           live[i].deltaPosX = live[i].deltaPosY = live[i].deltaPosZ = 0;
           live[i].deltaRotX = live[i].deltaRotY = live[i].deltaRotZ = 0;
+          live[i].deltaScaleX = live[i].deltaScaleY = live[i].deltaScaleZ = 0;
         }
       }
     } __except (1) {
@@ -1277,6 +1266,7 @@ static void SMCMorphJobBefore(void *param1) {
             continue;
           live[i].deltaPosX = live[i].deltaPosY = live[i].deltaPosZ = 0;
           live[i].deltaRotX = live[i].deltaRotY = live[i].deltaRotZ = 0;
+          live[i].deltaScaleX = live[i].deltaScaleY = live[i].deltaScaleZ = 0;
         }
       }
     } __except (1) {
@@ -1409,6 +1399,7 @@ static void SMCMotionConsume() {
   if(s_motionFaceSaved && (!active || s_motionSavedCore!=s_smcCore || s_motionSavedGeneration!=s_faceGeneration)) {
     if(s_motionSavedCore==s_smcCore && s_motionSavedGeneration==s_faceGeneration) {
       s_driving=s_motionSavedDriving; s_driveBaseReady=s_motionSavedBaseReady;
+      if(!s_driving)SMCRestoreBigList();
       memcpy(s_driveBase,s_motionSavedBase,sizeof(s_driveBase));
       for(int i=0;i<SMC_NUM_MOUTH;i++)s_mouthWeights[i]=s_motionSavedWeights[i];
       for(int i=0;i<s_extraMorphCount;i++)s_extraMorphs[i].weight=s_extraMorphs[i].prevWeight=s_motionSavedWeights[i+SMC_NUM_MOUTH];
@@ -1608,7 +1599,7 @@ static void SMCFaceBind() {
         }
         nodes[i].parentNeutral=it->second;
       }
-      scales[i]=SMCFaceScale(t);
+      scales[i]=s_faceRestPose[i].scale;
     }
     std::vector<int> state(count,0);
     std::function<bool(int)> visit=[&](int i) {
@@ -1659,26 +1650,24 @@ static bool SMCMotionActive() {
 // Same fixed EIEM channel table as the manual SMC panel. Normalize the raw
 // vowel mix first, then apply regional strength to the resulting bone deltas;
 // otherwise 200% mouth strength would be normalized back to 100%.
-struct SMCMotionNativeDelta {Vec3 position,rotation;};
-using SMCMotionNativeDeltaArray=std::array<SMCMotionNativeDelta,SMC_MAX_FACE_BONES>;
 static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray &deltas) {
   if(!s_boneMapReady||s_boneIDMapCount<=0||s_capturedLen<=0||!s_mouthResolved)return false;
   __try {
     float total=0;for(int c=0;c<SMC_NUM_MOUTH;++c)total+=face_geometry::Clamp(weights[c],0,1);
     float norm=1.f/(std::max)(1.f,total);
-    Vec3 positions[SMC_MAX_FACE_BONES]={},rotations[SMC_MAX_FACE_BONES]={};
+    Vec3 positions[SMC_MAX_FACE_BONES]={},rotations[SMC_MAX_FACE_BONES]={},scales[SMC_MAX_FACE_BONES]={};
     for(int c=0;c<SMC_NUM_MOUTH+s_extraMorphCount;++c) {
       bool mouth=c<SMC_NUM_MOUTH;
       float weight=face_geometry::Clamp(weights[c],0,1)*(mouth?norm:1.f);
       if(weight<.001f||(!mouth&&!s_extraMorphsResolved))continue;
       int targets=mouth?1:s_extraMorphs[c-SMC_NUM_MOUTH].targetCount;
       for(int t=0;t<targets;++t) {
-        int start,count;bool eye=false;
+        int start,count;
         if(mouth) {start=s_mouthShapes[c].jobStartIdx;count=s_mouthShapes[c].jobCount;}
         else {
           const auto &target=s_extraMorphs[c-SMC_NUM_MOUTH].targets[t];
           if(!target.resolved)continue;
-          start=target.startIdx;count=target.count;eye=strncmp(target.endfieldName,"eye_",4)==0;
+          start=target.startIdx;count=target.count;
         }
         if(start<0||count<0||start>s_capturedLen||count>s_capturedLen-start)continue;
         for(int j=start;j<start+count;++j) {
@@ -1688,8 +1677,10 @@ static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray
           Vec3 p{entry.deltaPosX,entry.deltaPosY,entry.deltaPosZ},r{entry.deltaRotX,entry.deltaRotY,entry.deltaRotZ};
           if(!std::isfinite(Len(p))||fabsf(p.x)>1||fabsf(p.y)>1||fabsf(p.z)>1)continue;
           positions[i]=positions[i]+p*weight;
-          if(!eye&&std::isfinite(Len(r))&&(!mouth||(fabsf(r.x)<30&&fabsf(r.y)<30&&fabsf(r.z)<30)))
+          if(std::isfinite(Len(r))&&Len(r)<10000)
             rotations[i]=rotations[i]+r*weight;
+          Vec3 scale{entry.deltaScaleX,entry.deltaScaleY,entry.deltaScaleZ};
+          if(std::isfinite(Len(scale))&&Len(scale)<16)scales[i]=scales[i]+scale*weight;
         }
       }
     }
@@ -1698,9 +1689,17 @@ static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray
       // Preserve Euler increments until regional strength is applied, as in
       // the original game mapping (not a quaternion component scale).
       deltas[i].rotation=rotations[i];
+      deltas[i].scale=scales[i];
     }
     return true;
   } __except(1) {return false;}
+}
+static void SMCApplyNativeDelta(int i,const SMCMotionNativeDelta &delta,float amount,face_mixing::Transform &pose) {
+  pose.position=pose.position+delta.position*amount;
+  pose.rotation=NormQ(SMCNativeCorrection(i,delta.rotation*amount)*pose.rotation);
+  const auto neutral=s_faceRestPose[i].scale;
+  auto scale=face_native::AddScale(face_native::Product(neutral,pose.scale),delta.scale*amount);
+  pose.scale=face_native::Ratio(scale,neutral);
 }
 static const face_eyelid::Limits &SMCEyelidLimits(bool characterReady,bool native,bool mixed) {
   auto &cache=s_activeSMC->eyelids;
@@ -1738,10 +1737,7 @@ static const face_eyelid::Limits &SMCEyelidLimits(bool characterReady,bool nativ
       SMCMotionNativeDeltaArray deltas{};
       if(!SMCMotionNativeDeltas(weights,deltas))continue;
       auto pose=s_faceHierarchy.rest;
-      for(int i=0;i<s_faceHierarchy.count;++i) {
-        pose[i].position=pose[i].position+deltas[i].position;
-        pose[i].rotation=NormQ(Quat::FromEulerDeg(deltas[i].rotation)*pose[i].rotation);
-      }
+      for(int i=0;i<s_faceHierarchy.count;++i)SMCApplyNativeDelta(i,deltas[i],1,pose[i]);
       face_eyelid::Include(cache.native,s_faceHierarchy,pose);
     }
     cache.combined=face_eyelid::Merge(cache.character,cache.native);
@@ -1773,19 +1769,13 @@ static void SMCMotionEvaluate() {
     if(settings.driver[r]==face_mixing::Driver::Character&&characterReady)
       if(!character_face::Evaluate(*frame.profile,s_characterBinding,s_faceHierarchy,frame.expressions,amount,complete[r]))return;
     const auto &deltas=settings.driver[r]==face_mixing::Driver::Game?nativeDeltas:fallbackDeltas;
-    for(int i=0;i<s_faceBoneCount;++i) {
-      const auto &d=deltas[i];complete[r][i].position=complete[r][i].position+d.position*amount;
-      complete[r][i].rotation=NormQ(Quat::FromEulerDeg(d.rotation*amount)*complete[r][i].rotation);
-    }
+    for(int i=0;i<s_faceBoneCount;++i)SMCApplyNativeDelta(i,deltas[i],amount,complete[r][i]);
   }
   face_mixing::Pose output;
   if(identical)output=complete[0];
   else {
     auto fallback=rest;float amount=settings.amount(-1);
-    for(int i=0;i<s_faceBoneCount;++i) {
-      fallback[i].position=rest[i].position+nativeDeltas[i].position*amount;
-      fallback[i].rotation=NormQ(Quat::FromEulerDeg(nativeDeltas[i].rotation*amount)*rest[i].rotation);
-    }
+    for(int i=0;i<s_faceBoneCount;++i)SMCApplyNativeDelta(i,nativeDeltas[i],amount,fallback[i]);
     if(!face_mixing::Compose(s_faceHierarchy,complete,fallback,output))return;
   }
   const auto eyeDriver=settings.driver[face_mixing::Eyes];
@@ -1799,6 +1789,7 @@ static void SMCMotionEvaluate() {
   for(int i=0;i<s_faceBoneCount;++i) {
     const auto &v=output[i];auto &bone=s_faceBones[i];bone.px=v.position.x;bone.py=v.position.y;bone.pz=v.position.z;
     bone.rx=v.rotation.x;bone.ry=v.rotation.y;bone.rz=v.rotation.z;bone.rw=v.rotation.w;
+    bone.scale=face_native::Product(s_faceRestPose[i].scale,v.scale);
   }
   s_faceBoneEvalOk=true;
 }
@@ -1817,7 +1808,6 @@ static void SMCWriteTouchedBones() {
             Invoke(g_transform_set_localRotation,s_faceBones[i].transform,args);
           motionEye=true;break;
         }
-      if(motionEye)continue;
       // This hook runs on the game's SMC thread. Automatic facial writes must
       // not invoke the editor's manual-write observers: those traverse and edit
       // the GUI-owned humanoid/accessory vectors while Stop can replace them.
@@ -1826,8 +1816,10 @@ static void SMCWriteTouchedBones() {
       Quat q{s_faceBones[i].rx,s_faceBones[i].ry,s_faceBones[i].rz,s_faceBones[i].rw};
       void *pp[] = {&p};
       void *qp[] = {&q};
+      void *sp[] = {&s_faceBones[i].scale};
       Invoke(g_transform_set_localPosition,s_faceBones[i].transform,pp);
-      Invoke(g_transform_set_localRotation,s_faceBones[i].transform,qp);
+      if(!motionEye)Invoke(g_transform_set_localRotation,s_faceBones[i].transform,qp);
+      if(g_transform_set_localScale)Invoke(g_transform_set_localScale,s_faceBones[i].transform,sp);
     }
   } __except (1) {
   }
@@ -1947,38 +1939,19 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
       int biOff = SafeOff(s_offBoneIDToIdx, 0xE0, "smc.boneIDToIdx");
       void *buf = *(void **)((char *)__this + biOff);
       int len = *(int *)((char *)__this + biOff + 8);
-      if (buf && len > 0 && len < 500) {
+      if (buf && len > 0 && len <= SMC_BONE_MAP_SIZE) {
         int *data = (int *)buf;
-        bool allNeg = true;
-        for (int i = 0; i < 8 && i < len * 2; i++) {
-          if (data[i] != -1) {
-            allNeg = false;
-            break;
-          }
-        }
         int mapped = 0;
-        if (!allNeg) { // 成对数组：boneID, arrIdx
-          for (int i = 0; i < len; i++) {
-            int boneID = data[i * 2];
-            int arrIdx = data[i * 2 + 1];
-            if (boneID >= 0 && boneID < SMC_BONE_MAP_SIZE && arrIdx >= 0 &&
-                arrIdx < SMC_MAX_FACE_BONES) {
-              s_boneIDToIdx[boneID] = arrIdx;
-              mapped++;
-            }
-          }
-        } else { // 扁平查找数组：idx → arrIdx
-          for (int i = 0; i < len; i++) {
-            if (data[i] >= 0 && data[i] < SMC_MAX_FACE_BONES) {
-              s_boneIDToIdx[i] = data[i];
-              mapped++;
-            }
+        // m_boneIDToIdx is NativeArray<int>, indexed by avatar bone ID.
+        // Looking for a non-negative prefix must not reinterpret it as pairs.
+        for(int i=0;i<len&&i<SMC_BONE_MAP_SIZE;++i) {
+          if(data[i]>=0&&data[i]<s_faceBoneCount) {
+            s_boneIDToIdx[i]=data[i];++mapped;
           }
         }
         s_boneIDMapCount = mapped;
         s_boneMapReady = (mapped > 0);
-        Log("[SMC] Bone map: mapped %d bones (%s)", mapped,
-            allNeg ? "flat" : "pair");
+        Log("[SMC] Bone map: mapped %d bones (avatar ID lookup)", mapped);
         if (!s_boneMapReady) {
           if (s_offAllMorphBoneDirty > 0)
             *(bool *)((char *)__this + s_offAllMorphBoneDirty) = true;
@@ -1992,127 +1965,22 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
   SMCMotionConsume();
   s_faceBoneEvalOk=false;
   if(SMCMotionActive())SMCMotionEvaluate();
-  // 按面板权重累加 morph 增量到静息位姿
-  else if (s_driving && s_boneMapReady && s_boneIDMapCount > 0 &&
-      s_capturedLen > 0 && s_mouthResolved) {
-    s_faceBoneEvalOk = false;
-    __try {
-      float totalMouth = 0;
-      for (int s = 0; s < SMC_NUM_MOUTH; s++)
-        totalMouth += s_mouthWeights[s];
-      if (totalMouth > 1.0f) {
-        float scale = 1.0f / totalMouth;
-        for (int s = 0; s < SMC_NUM_MOUTH; s++)
-          s_mouthWeights[s] *= scale;
+  else if(s_driving) {
+    float weights[SMC_MAX_SLIDERS]={};
+    for(int i=0;i<SMC_NUM_MOUTH;++i)weights[i]=s_mouthWeights[i];
+    for(int i=0;i<s_extraMorphCount;++i)weights[SMC_NUM_MOUTH+i]=s_extraMorphs[i].weight;
+    SMCMotionNativeDeltaArray deltas{};
+    if(SMCMotionNativeDeltas(weights,deltas)) {
+      const auto *base=s_driveBaseReady?s_driveBase:s_faceRestPose;
+      memcpy(s_faceBones,base,sizeof(s_faceBones));
+      for(int i=0;i<s_faceBoneCount;++i) {
+        auto &v=s_faceBones[i];const auto &d=deltas[i];
+        v.px+=d.position.x;v.py+=d.position.y;v.pz+=d.position.z;
+        auto q=NormQ(SMCNativeCorrection(i,d.rotation)*Quat{v.rx,v.ry,v.rz,v.rw});
+        v.rx=q.x;v.ry=q.y;v.rz=q.z;v.rw=q.w;
+        v.scale=face_native::AddScale(v.scale,d.scale);
       }
-
-      const SMCFaceBone *basePose = s_driveBaseReady ? s_driveBase : s_faceRestPose;
-      memcpy(s_faceBones, basePose, sizeof(s_faceBones));
-      float deltaPosAccum[SMC_MAX_FACE_BONES][3] = {};
-      float deltaRotAccum[SMC_MAX_FACE_BONES][3] = {};
-      memset(s_faceBoneTouched, 0, sizeof(s_faceBoneTouched));
-      int applied = 0;
-
-      for (int s = 0; s < SMC_NUM_MOUTH; s++) {
-        float w = s_mouthWeights[s];
-        if (w < 0.001f)
-          continue;
-        int start = s_mouthShapes[s].jobStartIdx;
-        int cnt = s_mouthShapes[s].jobCount;
-        if (start < 0 || start + cnt > s_capturedLen)
-          continue;
-        for (int i = start; i < start + cnt; i++) {
-          const SMCMorphBoneEntry &e = s_capturedExpression[i];
-          int arrIdx =
-              (e.boneID >= 0 && e.boneID < SMC_BONE_MAP_SIZE)
-                  ? s_boneIDToIdx[e.boneID]
-                  : -1;
-          if (arrIdx < 0 || arrIdx >= s_faceBoneCount)
-            continue;
-          if (fabsf(e.deltaPosX) > 1.0f || fabsf(e.deltaPosY) > 1.0f ||
-              fabsf(e.deltaPosZ) > 1.0f)
-            continue;
-          deltaPosAccum[arrIdx][0] += e.deltaPosX * w;
-          deltaPosAccum[arrIdx][1] += e.deltaPosY * w;
-          deltaPosAccum[arrIdx][2] += e.deltaPosZ * w;
-          if (fabsf(e.deltaRotX) < 30.0f && fabsf(e.deltaRotY) < 30.0f &&
-              fabsf(e.deltaRotZ) < 30.0f) {
-            deltaRotAccum[arrIdx][0] += e.deltaRotX * w;
-            deltaRotAccum[arrIdx][1] += e.deltaRotY * w;
-            deltaRotAccum[arrIdx][2] += e.deltaRotZ * w;
-          }
-          s_faceBoneTouched[arrIdx] = true;
-          applied++;
-        }
-      }
-
-      if (s_extraMorphsResolved) {
-        for (int em = 0; em < s_extraMorphCount; em++) {
-          float w = s_extraMorphs[em].weight;
-          if (w < 0.001f)
-            continue;
-          for (int t = 0; t < s_extraMorphs[em].targetCount; t++) {
-            const SMCExtraTarget &tgt = s_extraMorphs[em].targets[t];
-            if (!tgt.resolved || tgt.startIdx < 0 ||
-                tgt.startIdx + tgt.count > s_capturedLen)
-              continue;
-            bool isEyeMorph = (strncmp(tgt.endfieldName, "eye_", 4) == 0);
-            for (int i = tgt.startIdx; i < tgt.startIdx + tgt.count; i++) {
-              const SMCMorphBoneEntry &e = s_capturedExpression[i];
-              int arrIdx =
-                  (e.boneID >= 0 && e.boneID < SMC_BONE_MAP_SIZE)
-                      ? s_boneIDToIdx[e.boneID]
-                      : -1;
-              if (arrIdx < 0 || arrIdx >= s_faceBoneCount)
-                continue;
-              if (fabsf(e.deltaPosX) > 1.0f || fabsf(e.deltaPosY) > 1.0f ||
-                  fabsf(e.deltaPosZ) > 1.0f)
-                continue;
-              deltaPosAccum[arrIdx][0] += e.deltaPosX * w;
-              deltaPosAccum[arrIdx][1] += e.deltaPosY * w;
-              deltaPosAccum[arrIdx][2] += e.deltaPosZ * w;
-              if (!isEyeMorph) { // 眼部 morph 只做位移，避免眼珠旋转打架
-                deltaRotAccum[arrIdx][0] += e.deltaRotX * w;
-                deltaRotAccum[arrIdx][1] += e.deltaRotY * w;
-                deltaRotAccum[arrIdx][2] += e.deltaRotZ * w;
-              }
-              s_faceBoneTouched[arrIdx] = true;
-              applied++;
-            }
-          }
-        }
-      }
-
-      for (int b = 0; b < s_faceBoneCount; b++) {
-        if (!s_faceBoneTouched[b])
-          continue;
-        s_faceBones[b].px = basePose[b].px + deltaPosAccum[b][0];
-        s_faceBones[b].py = basePose[b].py + deltaPosAccum[b][1];
-        s_faceBones[b].pz = basePose[b].pz + deltaPosAccum[b][2];
-        Quat dq = Quat::FromEulerDeg(
-            Vec3(deltaRotAccum[b][0], deltaRotAccum[b][1],
-                 deltaRotAccum[b][2]));
-        Quat rq(basePose[b].rx, basePose[b].ry, basePose[b].rz,
-                basePose[b].rw);
-        Quat res = dq * rq;
-        float len = sqrtf(res.x * res.x + res.y * res.y + res.z * res.z +
-                          res.w * res.w);
-        if (len > 1e-6f) {
-          res.x /= len;
-          res.y /= len;
-          res.z /= len;
-          res.w /= len;
-        }
-        s_faceBones[b].rx = res.x;
-        s_faceBones[b].ry = res.y;
-        s_faceBones[b].rz = res.z;
-        s_faceBones[b].rw = res.w;
-      }
-      if (applied > 0 && s_frame % 600 == 0)
-        Log("[SMC] Applied %d bone deltas (frame %d)", applied, s_frame);
-      s_faceBoneEvalOk = true;
-    } __except (1) {
-      Log("[SMC] delta accumulation exception");
+      s_faceBoneEvalOk=true;
     }
   }
 
@@ -2135,10 +2003,11 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
         Vec3 p = GetBoneLocalPos(s_faceBoneRefs[i]);
         Quat r = GetBoneLocalRot(s_faceBoneRefs[i]);
         s_faceBones[i] = {p.x, p.y, p.z, r.x, r.y, r.z, r.w,
-                          s_faceBoneRefs[i]};
+                          s_faceBoneRefs[i],SMCFaceScale(s_faceBoneRefs[i])};
         captured++;
       }
       memcpy(s_faceRestPose, s_faceBones, sizeof(s_faceBones));
+      SMCCaptureNativeReference(__this);
       // 默认脸 = 中性脸；驱动基准复位到默认（「全部归零」的目标就是它）
       memcpy(s_driveBase, s_faceRestPose, sizeof(s_driveBase));
       s_driveBaseReady = true;
@@ -2319,6 +2188,7 @@ static void ResetSMCState(bool restoreOriginal = true) {
   s_capturedLen = 0;
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
+  s_activeSMC->nativeReference={};
   s_faceBonesCaptured = false;
   s_charBoneXformCount = 0;
   s_charBoneXformRev = -1;

@@ -1,4 +1,5 @@
 #pragma once
+#include "cloth_binding_reads.h"
 #include "cloth_bonecloth_partner.h"
 static bool ClothBoneRootNames(ClothInstance &i,const ClothBoneProfile &p,void *animator=nullptr) {
   if(!animator)animator=ClothTarget(s_cloth.animator);
@@ -16,32 +17,32 @@ static bool ClothBoneRootNames(ClothInstance &i,const ClothBoneProfile &p,void *
 }
 static bool ClothBoneRendererAssetCheck(ClothBoneRendererRef &r,const ClothBoneRendererAsset &p,bool capture,int slot=-1) {
   auto &s=ClothBoneState();
-  auto renderer=ClothTarget(r.renderer); void *mesh=nullptr,*root=nullptr;
+  auto renderer=ClothBindingTarget(r.renderer); void *mesh=nullptr,*root=nullptr;
   if(p.parent) {
     if(!renderer)return false;
-    auto object=CollisionParent(CollisionTransform(renderer));char parent[128]{};CollisionName(object,parent,sizeof(parent));
-    if(strcmp(parent,p.parent)||!ClothAnchorUnderOwner(object))return false;
+    auto object=ClothBindingParent(CollisionTransform(renderer));char parent[128]{};CollisionName(object,parent,sizeof(parent));
+    if(strcmp(parent,p.parent)||!ClothBindingUnderOwner(object))return false;
     if(capture)r.qualifiedParent=ClothProtect(object);
-    if(!r.qualifiedParent.handle||ClothTarget(r.qualifiedParent)!=object)return false;
+    if(!r.qualifiedParent.handle||ClothBindingTarget(r.qualifiedParent)!=object)return false;
   }
-  if(!renderer || !ClothAnchorUnderOwner(CollisionTransform(renderer)) ||
+  if(!renderer || !ClothBindingUnderOwner(CollisionTransform(renderer)) ||
       !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_sharedMesh","UnityEngine.Mesh"),renderer,nullptr,mesh) || !mesh ||
       !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_rootBone","UnityEngine.Transform"),renderer,nullptr,root) || !root) return false;
   if(capture) {
     char name[128]{},rootName[128]{}; CollisionName(mesh,name,sizeof(name)); CollisionName(root,rootName,sizeof(rootName));
     int vertices=0,submeshes=0;
-    if(strcmp(name,p.mesh) || strcmp(rootName,p.root) || !ClothAnchorUnderOwner(root) ||
+    if(strcmp(name,p.mesh) || strcmp(rootName,p.root) || !ClothBindingUnderOwner(root) ||
         !ClothValue(SurfaceMethod(il2cpp_object_get_class(mesh),"get_vertexCount","System.Int32"),mesh,vertices) || vertices!=p.vertices ||
         !ClothValue(SurfaceMethod(il2cpp_object_get_class(mesh),"get_subMeshCount","System.Int32"),mesh,submeshes) || submeshes!=p.submeshes) return false;
     r.mesh=ClothProtect(mesh); r.root=ClothProtect(root);
     if(!r.mesh.handle || !r.root.handle ||
         !SurfaceRenderReferences(renderer,"get_bones","UnityEngine.Transform[]",p.boneCount,p.boneCount,r.bones)) return false;
     for(int n=0;n<p.boneCount;++n) {
-      auto t=ClothTarget(r.bones[n]); auto parent=CollisionParent(t); char bn[128]{},pn[128]{};
+      auto t=ClothBindingTarget(r.bones[n]); auto parent=ClothBindingParent(t); char bn[128]{},pn[128]{};
       CollisionName(t,bn,sizeof(bn)); CollisionName(parent,pn,sizeof(pn));
       const auto &b=p.bones[n];
-      if(!t || !parent || !ClothAnchorUnderOwner(t) || strcmp(bn,b.name) || strcmp(pn,b.parent) ||
-          (b.cloth>=0 && (size_t(b.cloth)>=s.bones.size() || t!=ClothTarget(s.bones[b.cloth].bone)))) return false;
+      if(!t || !parent || !ClothBindingUnderOwner(t) || strcmp(bn,b.name) || strcmp(pn,b.parent) ||
+          (b.cloth>=0 && (size_t(b.cloth)>=s.bones.size() || t!=ClothBindingTarget(s.bones[b.cloth].bone)))) return false;
       auto ref=ClothProtect(parent); if(!ref.handle) return false; r.parents.push_back(ref);
     }
     // Bind poses come from the version-checked installed assets/catalog. The
@@ -51,12 +52,12 @@ static bool ClothBoneRendererAssetCheck(ClothBoneRendererRef &r,const ClothBoneR
       for(int k=0;k<16;++k)if(!std::isfinite(p.bones[n].bind[k]))return false;
   }
   if(!capture && slot>=0 && s.local.OwnsRenderer(size_t(slot)))
-    return root==ClothTarget(r.root) && ClothBoneLocalRendererIdentity(slot,renderer,mesh);
-  if(!capture && mesh!=ClothTarget(r.mesh))return ClothBonePartnerRenderer(r,renderer,mesh,root);
-  if(mesh!=ClothTarget(r.mesh) || root!=ClothTarget(r.root) ||
-      !SurfaceRenderSameReferences(renderer,"get_bones","UnityEngine.Transform[]",r.bones) || r.parents.size()!=r.bones.size()) return false;
+    return root==ClothBindingTarget(r.root) && ClothBoneLocalRendererIdentity(slot,renderer,mesh);
+  if(!capture && mesh!=ClothBindingTarget(r.mesh))return ClothBonePartnerRenderer(r,renderer,mesh,root);
+  if(mesh!=ClothBindingTarget(r.mesh) || root!=ClothBindingTarget(r.root) ||
+      !ClothBindingSameBones(renderer,r.bones) || r.parents.size()!=r.bones.size()) return false;
   for(size_t n=0;n<r.bones.size();++n)
-    if(CollisionParent(ClothTarget(r.bones[n]))!=ClothTarget(r.parents[n])) return false;
+    if(ClothBindingParent(ClothBindingTarget(r.bones[n]))!=ClothBindingTarget(r.parents[n])) return false;
   return true;
 }
 static bool ClothBoneRendererCheck(size_t slot,bool capture) {
@@ -155,9 +156,9 @@ static bool ClothBonePassiveAttachments() {
 }
 static bool ClothBoneAttachmentsIdentity() {
   for(auto &a:ClothBoneState().attachments) {
-    auto bbc=ClothTarget(a.bbc),root=ClothTarget(a.root);
+    auto bbc=ClothBindingTarget(a.bbc),root=ClothBindingTarget(a.root);
     void *data=nullptr,*process=nullptr,*roots=nullptr;
-    if(!bbc || !root || CollisionParent(root)!=ClothTarget(a.parent) ||
+    if(!bbc || !root || ClothBindingParent(root)!=ClothBindingTarget(a.parent) ||
         !CollisionField(bbc,"process","BeyondDynamicBone.ClothProcess",process) || process!=CollisionGc(a.process) ||
         !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(bbc),"get_SerializeData","BeyondDynamicBone.ClothSerializeData"),bbc,nullptr,data) ||
         data!=CollisionGc(a.data) || !CollisionField(data,"rootBones","System.Collections.Generic.List<UnityEngine.Transform>",roots) ||
@@ -182,6 +183,7 @@ static bool ClothBoneCaptureAttachment(void *bbc,void *process,void *data,void *
   return true;
 }
 static bool ClothBoneBindingIdentity() {
+  ClothBindingReadScope reads;
   auto &s=ClothBoneState();
   const auto reject=[&](const char *part,int index=-1) {
     Log("[CLOTH-BONE-BINDING] component=%s actorSlot=%u frame=%d part=%s index=%d identity=0 restoring=1",
@@ -193,7 +195,7 @@ static bool ClothBoneBindingIdentity() {
   if(!ClothBoneOriginalExcludedIdentity())return reject("excluded");
   for(size_t n=0;n<s.renderers.size();++n) if(!ClothBoneRendererCheck(n,false)) return reject("renderer",int(n));
   for(size_t n=0;n<s.bones.size();++n) {auto &b=s.bones[n];
-    if(!ClothTarget(b.bone) || CollisionParent(ClothTarget(b.bone))!=ClothTarget(b.parent))return reject("bone-parent",int(n));}
+    if(!ClothBindingTarget(b.bone) || ClothBindingParent(ClothBindingTarget(b.bone))!=ClothBindingTarget(b.parent))return reject("bone-parent",int(n));}
   if(!ClothBoneBodyBindingIdentity())return reject("body-collider");
   return ClothBoneSideIdentity()||reject("side-collider");
 }
@@ -485,6 +487,15 @@ static bool ClothBoneCaptureColliders(void *process,void *list,int team) {
   for(int k=0;k<s_clothBoneCount;++k)if((s.dependencies&(1u<<k))&&(ClothBoneRibbonPair(s_clothBoneSlots[k],s)||ClothBoneGeneratedPair(s_clothBoneSlots[k],s))) {
     const auto &peer=s_clothBoneSlots[k];
     if(!ClothBonePair(peer,s)||!peer.lease||!peer.teamModeConfirmed||peer.tx.phase!=eiem_cloth_rebuild::Phase::Active||peer.stopRequested)return fail("surface-dependency-not-active");
+    linkedDependencies|=1u<<k;
+  }
+  for(int k=0;k<s_clothBoneCount;++k)if(s.dependencies&(1u<<k)){
+    const auto &peer=s_clothBoneSlots[k];if(!ClothBoneSharedMember(s,peer))continue;
+    void *bbc=ClothTarget(peer.bbc),*liveProcess=nullptr,*liveData=nullptr;
+    if(!peer.local.recipe->SharedSupplier()||!ClothBoneSharedGroupValid(s,true)||!bbc||
+        !CollisionField(bbc,"process","BeyondDynamicBone.ClothProcess",liveProcess)||liveProcess!=CollisionGc(peer.process[1])||
+        !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(bbc),"get_SerializeData","BeyondDynamicBone.ClothSerializeData"),bbc,nullptr,liveData)||
+        liveData!=CollisionGc(peer.candidateData)||!ClothBoneTeamRegistered(liveProcess,peer.team[1]))return fail("shared-skin-dependency-not-active");
     linkedDependencies|=1u<<k;
   }
   if(linkedDependencies!=s.dependencies)return fail("dependency-collider-links");

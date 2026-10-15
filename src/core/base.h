@@ -20,11 +20,11 @@ static CRITICAL_SECTION g_logLock;
 
 static void OpenLog(const wchar_t *path) {
   InitializeCriticalSection(&g_logLock);
-  g_logHandle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+  // A proxy may be loaded by more than one host process. Each complete Log()
+  // line is one append-only WriteFile, without a shared seek position or an
+  // exclusive writer handle that can silently disable the game's logging.
+  g_logHandle = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (g_logHandle != INVALID_HANDLE_VALUE) {
-    SetFilePointer(g_logHandle, 0, nullptr, FILE_END);
-  }
 }
 
 void Log(const char *fmt, ...) {

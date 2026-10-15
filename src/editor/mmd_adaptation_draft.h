@@ -24,7 +24,10 @@ static bool MmdCommitAdaptationDraft(const std::string &onlyTrack={}) {
   auto &edit=MmdEditAdaptation();auto next=edit.value;
   try {
     std::set<std::string> destinations;
+    std::set<int> roles;
     for(const auto &v:edit.choices)if(v.second.dirty&&(onlyTrack.empty()||onlyTrack==v.first)) {
+      if(v.second.value.action==6&&!roles.insert(v.second.value.role).second)
+        throw std::runtime_error(u8"多个待处理轨道选择了同一个角色部位，请分别选择");
       if(v.second.value.action==0&&!destinations.insert(v.second.value.destination).second)
         throw std::runtime_error(u8"多个待处理轨道选择了同一个目标骨；请分别选择目标，或使用多段父级叠加动作");
       mmd::ApplyMotionIssueResolution(next,v.first,v.second.value);

@@ -67,6 +67,7 @@ if(WIN32)
       src/cloth/native/cloth_ribbon_response.h src/math/cloth_turn_motion.h
     src/cloth/native/cloth_attachment_contacts.h src/math/cloth_attachment.h
     src/cloth/native/cloth_calf_colliders.h src/cloth/native/cloth_calf_contacts.h
+    src/cloth/native/cloth_si_envelope.h src/cloth/bonecloth/cloth_bonecloth_sleeve_policy.h
     src/cloth/collision/cloth_calf_math.h
     src/core/build_features.h
     src/core/game_hooks.h
@@ -190,6 +191,7 @@ add_poser_test(test_mmd tests/test_mmd.cpp)
 add_poser_test(test_mmd_recording tests/test_mmd_recording.cpp)
 add_poser_test(test_mmd_secondary tests/test_mmd_secondary.cpp)
 add_poser_test(test_cloth_turn tests/test_cloth_turn.cpp)
+add_poser_test(test_cloth_sleeve_motion tests/test_cloth_sleeve_motion.cpp)
 add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
 add_poser_test(test_mmd_avatar tests/test_mmd_avatar.cpp)
 add_poser_test(test_mmd_terrain tests/test_mmd_terrain.cpp)
@@ -235,6 +237,7 @@ if(MSVC)
   target_compile_options(test_runtime_shutdown PRIVATE /EHa)
   target_link_libraries(test_runtime_shutdown PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_runtime_bootstrap tests/test_runtime_bootstrap.cpp)
+  add_poser_test(test_log_append tests/test_log_append.cpp)
   target_include_directories(test_runtime_bootstrap PRIVATE deps/minhook_lib/include)
   target_compile_options(test_runtime_bootstrap PRIVATE /EHa)
   target_link_libraries(test_runtime_bootstrap PRIVATE
@@ -253,6 +256,16 @@ if(MSVC)
   add_poser_test(test_mmd_audio tests/test_mmd_audio.cpp)
   target_compile_options(test_mmd_audio PRIVATE /EHa)
   add_poser_test(test_cloth_runtime tests/test_cloth_runtime.cpp)
+  add_poser_test(test_cloth_shared_skin tests/test_cloth_shared_skin.cpp)
+  target_include_directories(test_cloth_shared_skin PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_cloth_shared_skin PRIVATE /EHa)
+  target_link_libraries(test_cloth_shared_skin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  add_poser_test(test_cloth_vfs tests/test_cloth_vfs.cpp)
+  add_poser_test(test_cloth_input_boundary tests/test_cloth_input_boundary.cpp)
+  add_poser_test(test_cloth_native_profile tests/test_cloth_native_profile.cpp)
+  target_include_directories(test_cloth_input_boundary PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_cloth_input_boundary PRIVATE /EHa)
+  target_link_libraries(test_cloth_input_boundary PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_cloth_enhancement tests/test_cloth_enhancement.cpp)
   target_include_directories(test_cloth_enhancement PRIVATE deps/minhook_lib/include)
   target_compile_options(test_cloth_enhancement PRIVATE /EHa)

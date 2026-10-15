@@ -117,7 +117,7 @@ static void ClothShoulderContactDisable(const char *reason){
 static bool ClothShoulderDriverIdentity(bool audit,std::array<void*,10> *resolved=nullptr) {
   auto &s=s_clothShoulderDriver;ClothShoulderFrameRefs refs;
   auto animator=refs.Get(s.animator),renderer=refs.Get(s.renderer);void *avatar=nullptr,*mesh=nullptr;int scene=0;
-  if(!ClothOwns(s.owner)||!ClothEnhancementSetting().load(std::memory_order_acquire)||!s_cloth.bodyGuard||
+  if(!ClothOwns(s.owner)||!ClothEnhancementEnabled()||!s_cloth.bodyGuard||
       !animator||animator!=refs.Get(s_cloth.animator)||!ClothScene(animator,scene)||scene!=s.scene||scene!=s_cloth.scene||
       !renderer||!ClothInvoke(s.getAvatar,animator,nullptr,avatar)||avatar!=refs.Get(s.avatar)||
       CollisionTransform(animator)!=refs.Get(s.root)||!ClothInvoke(s.getMesh,renderer,nullptr,mesh)||!mesh)return false;

@@ -6,8 +6,13 @@
 
 namespace character_face {
 constexpr int MaxMorphs=512;
-struct Bone {std::string name;Vec3 rest;};
-struct Delta {int bone=-1;Vec3 position,rotation;}; // rotation vector, source global radians
+struct Bone {
+  std::string name;Vec3 rest;
+  // Optional neutral game-bone axes expressed in source coordinates. Scale
+  // fits are used only when these axes also match the current character.
+  std::array<Vec3,3> scaleAxes{};bool hasScaleAxes=false;
+};
+struct Delta {int bone=-1;Vec3 position,rotation,scale;}; // global rotvec radians; local relative scale delta
 struct Morph {
   std::string name,reason;
   float residual=1;
@@ -78,6 +83,17 @@ inline Profile Read(const nlohmann::json &j) {
     if(n.name.empty()||n.name.size()>128||!unique.insert(n.name).second)throw std::runtime_error("Duplicate facial bone");
     // Never allow a fitted expression to translate the whole skull/model.
     if(face_mixing::BoneRegion(n.name)<0)throw std::runtime_error("Non-facial bone in character profile");
+    if(b.contains("scale_axes")) {
+      const auto &axes=b.at("scale_axes");
+      if(!axes.is_array()||axes.size()!=3)throw std::runtime_error("Invalid facial scale axes");
+      for(int a=0;a<3;++a) {
+        n.scaleAxes[a]=ReadVec(axes.at(a),1.01f);
+        if(std::fabs(Len(n.scaleAxes[a])-1)>.001f)throw std::runtime_error("Invalid facial scale axis length");
+        for(int k=0;k<a;++k)if(std::fabs(Dot(n.scaleAxes[a],n.scaleAxes[k]))>.001f)
+          throw std::runtime_error("Invalid facial scale axis basis");
+      }
+      n.hasScaleAxes=true;
+    }
     p.bones.push_back(n);
   }
   for(const auto &v:morphs) {
@@ -95,6 +111,11 @@ inline Profile Read(const nlohmann::json &j) {
       Delta out;out.bone=d.at("bone").get<int>();
       if(out.bone<0||out.bone>=int(p.bones.size())||!used.insert(out.bone).second)throw std::runtime_error("Invalid facial delta bone");
       out.position=ReadVec(d.at("position"),5);out.rotation=ReadVec(d.at("rotation"),1.6f);
+      if(d.contains("scale")) {
+        out.scale=ReadVec(d.at("scale"),4);
+        if(!p.bones[out.bone].hasScaleAxes||out.scale.x<-.99f||out.scale.y<-.99f||out.scale.z<-.99f)
+          throw std::runtime_error("Invalid facial scale calibration");
+      }
       m.deltas.push_back(out);
     }
     if(m.supported&&m.deltas.empty())throw std::runtime_error("Empty supported facial morph");
@@ -166,9 +187,20 @@ inline Binding Bind(const Profile &p,const std::string &model,
   b.error=float(std::sqrt(error/(std::max)(span,1e-20)));
   if(b.error>.06f){b.status=u8"中性脸形状不匹配，请重新校准";return b;}
   b.neutral=face_mixing::Globals(h,h.rest);
+  std::vector<bool> scaleMatches(p.bones.size(),false);
+  for(int i=0;i<int(p.bones.size());++i)if(b.slots[i]>=0&&p.bones[i].hasScaleAxes) {
+    const auto &matrix=nodes[b.slots[i]].neutral;bool match=true;
+    for(int a=0;a<3;++a) {
+      Vec3 expected=Norm(face_geometry::Vector(b.basis,p.bones[i].scaleAxes[a]));
+      Vec3 actual=Norm({matrix.m[4*a],matrix.m[4*a+1],matrix.m[4*a+2]});
+      if(std::fabs(Dot(expected,actual))<.995f)match=false;
+    }
+    scaleMatches[i]=match;
+  }
   for(int i=0;i<int(p.morphs.size());++i) {
     bool usable=p.morphs[i].supported;
-    for(const auto &d:p.morphs[i].deltas)if(b.slots[d.bone]<0)usable=false;
+    for(const auto &d:p.morphs[i].deltas)
+      if(b.slots[d.bone]<0||(Len(d.scale)>1e-8f&&!scaleMatches[d.bone]))usable=false;
     b.usable[i]=usable;b.usableCount+=usable;
   }
   b.ready=b.usableCount>0;b.status=b.ready?u8"角色专属映射已就绪":u8"该模型没有可用的骨骼表情校准";
@@ -177,11 +209,24 @@ inline Binding Bind(const Profile &p,const std::string &model,
 inline bool Evaluate(const Profile &p,const Binding &b,const face_mixing::Hierarchy &h,
                      const std::array<float,MaxMorphs> &weights,float strength,face_mixing::Pose &out) {
   if(!b.ready||!h.ready)return false;
-  std::array<Vec3,face_geometry::MaxBones> move{},turn{};
+  std::array<Vec3,face_geometry::MaxBones> move{},turn{},scale{};
+  // Tongue shapes describe alternatives of one deforming surface. Summing
+  // two full shrink/roll poses can invert that surface; budget this chain only,
+  // leaving the same expressions' lip, eye and eyebrow motion independent.
+  bool scaledTongue=false;float tongueWeight=0;
+  for(int i=0;i<int(p.morphs.size());++i)if(b.usable[i]) {
+    bool tongue=false;
+    for(const auto &d:p.morphs[i].deltas)if(p.bones[d.bone].name.find("tongue")==0) {
+      tongue=true;scaledTongue|=Len(d.scale)>1e-8f;
+    }
+    if(tongue)tongueWeight+=face_geometry::Clamp(weights[i],0,1)*face_geometry::Clamp(strength,0,4);
+  }
+  float tongueGain=scaledTongue?1.f/(std::max)(1.f,tongueWeight):1.f;
   for(int i=0;i<int(p.morphs.size());++i)if(b.usable[i]) {
     float w=face_geometry::Clamp(weights[i],0,1)*face_geometry::Clamp(strength,0,4);
     if(w==0)continue;
-    for(const auto &d:p.morphs[i].deltas){int slot=b.slots[d.bone];move[slot]=move[slot]+d.position*w;turn[slot]=turn[slot]+d.rotation*w;}
+    for(const auto &d:p.morphs[i].deltas){int slot=b.slots[d.bone];float amount=w*(p.bones[d.bone].name.find("tongue")==0?tongueGain:1.f);
+      move[slot]=move[slot]+d.position*amount;turn[slot]=turn[slot]+d.rotation*amount;scale[slot]=scale[slot]+d.scale*amount;}
   }
   face_mixing::Pose desired=b.neutral;
   std::array<bool,face_geometry::MaxBones> controlled{};
@@ -203,8 +248,9 @@ inline bool Evaluate(const Profile &p,const Binding &b,const face_mixing::Hierar
       mmd::Matrix inverse;if(!mmd::Inverse(matrix,inverse))return false;
       out[i].position=face_geometry::Vector(inverse,desired[i].position)+inverse.position();
       out[i].rotation=NormQ(Conj(rotation)*desired[i].rotation);
+      out[i].scale=face_native::BoundedScale(Vec3{1,1,1}+scale[i]);
     }
-    matrices[i]=matrix*mmd::TRS(out[i].position,out[i].rotation,h.scale[i]);
+    matrices[i]=matrix*mmd::TRS(out[i].position,out[i].rotation,face_mixing::Scale(h,i,out[i]));
     rotations[i]=NormQ(rotation*out[i].rotation);
   }
   return true;

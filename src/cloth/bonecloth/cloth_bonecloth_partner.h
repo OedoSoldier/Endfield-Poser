@@ -1,4 +1,5 @@
 #pragma once
+#include "cloth_bonecloth_shared_skin.h"
 static bool ClothBoneRibbonPartner(const ClothBoneRuntime &s) {
   return s.profile&&s.profile->ribbonSource&&s.profile->runtimeGenerated&&s.local.requested&&s.local.recipe&&
       s.local.recipe==s.profile->generatedLocal&&s.local.recipe->ribbonSurface;
@@ -29,6 +30,7 @@ static bool ClothBonePair(const ClothBoneRuntime &partner,const ClothBoneRuntime
       partner.owner==consumer.owner && partner.command==consumer.command;
 }
 static bool ClothBonePartnerNeedsRestore(const ClothBoneRuntime &partner) {
+  if(partner.local.requested&&partner.local.recipe&&partner.local.recipe->SharedSkin())return !ClothBoneSharedGroupValid(partner);
   if(partner.contactConsumer<0)return false;
   if(partner.contactConsumer>=s_clothBoneCount)return true;
   const auto &consumer=s_clothBoneSlots[partner.contactConsumer];
@@ -139,17 +141,17 @@ static bool ClothBoneCaptureOriginalExcluded() {
   return ClothBoneOriginalExcludedIdentity();
 }
 static bool ClothBonePartnerRenderer(const ClothBoneRendererRef &r,void *renderer,void *mesh,void *root) {
-  const auto &s=ClothBoneState();const int consumer=s.contactConsumer;
+  const auto &s=ClothBoneState();const bool shared=s.local.recipe&&s.local.recipe->SharedSupplier();const int consumer=shared?ClothBoneSharedPublisher(s):s.contactConsumer;
   if(consumer<0||consumer>=s_clothBoneCount)return false;
   const auto &p=s_clothBoneSlots[consumer];
-  if(!ClothBonePair(s,p)||!p.pending||!p.lease||!p.local.published||root!=ClothTarget(r.root))return false;
+  if(!(shared?ClothBoneSharedMember(s,p):ClothBonePair(s,p))||!p.pending||!p.lease||!p.local.published||root!=ClothBindingTarget(r.root))return false;
   int match=-1;
-  for(size_t n=0;n<p.renderers.size();++n)if(ClothTarget(p.renderers[n].renderer)==renderer) {
+  for(size_t n=0;n<p.renderers.size();++n)if(ClothBindingTarget(p.renderers[n].renderer)==renderer) {
     if(match>=0)return false;match=int(n);
     const auto &other=p.renderers[n];
-    if(ClothTarget(other.mesh)!=ClothTarget(r.mesh)||other.bones.size()!=r.bones.size())return false;
+    if(ClothBindingTarget(other.mesh)!=ClothBindingTarget(r.mesh)||other.bones.size()!=r.bones.size())return false;
     for(size_t b=0;b<r.bones.size();++b)
-      if(ClothTarget(other.bones[b])!=ClothTarget(r.bones[b])||ClothTarget(other.parents[b])!=ClothTarget(r.parents[b]))return false;
+      if(ClothBindingTarget(other.bones[b])!=ClothBindingTarget(r.bones[b])||ClothBindingTarget(other.parents[b])!=ClothBindingTarget(r.parents[b]))return false;
   }
   if(match<0)return false;
   const int previous=s_clothBoneContext;s_clothBoneContext=consumer;bool valid=false;

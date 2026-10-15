@@ -96,17 +96,19 @@ static bool ClothBoneLocalIndexData(const ClothBoneLocalMeshConfig &config,const
   for(size_t n=0;n<count;++n) if(indices[n]<0 || indices[n]>=config.candidateVertices) return false;
   return eiem_cloth_surface::RenderHash(indices,count*sizeof(int))==config.candidateIndexHash;
 }
-static bool ClothBoneLocalBindingMapValid(const ClothBoneLocalMeshConfig &config,const ClothBoneRendererAsset &source,int nativeCount,int partnerFirst=0,int partnerCount=0,bool retainedBindings=false) {
+static bool ClothBoneLocalBindingMapValid(const ClothBoneLocalMeshConfig &config,const ClothBoneRendererAsset &source,int nativeCount,int partnerFirst=0,int partnerCount=0,bool retainedBindings=false,int sharedCount=0) {
   if(config.bindingCount<0 || (config.bindingCount==0?!retainedBindings:(!config.bindingNativeIndices || !config.bindings)) || nativeCount<1 || nativeCount>ClothBoneMaxIdentities ||
       source.boneCount!=config.sourceBones || source.boneCount<1 || source.boneCount+config.bindingCount>256 || !source.bones) return false;
-  if(partnerFirst<0 || partnerCount<0 || partnerFirst+partnerCount>128) return false;
+  if(partnerFirst<0 || partnerCount<0 || partnerFirst+partnerCount>128||sharedCount<0||sharedCount>ClothSharedSkinMaxRefs) return false;
+  std::array<bool,ClothSharedSkinMaxRefs> shared{};
   std::array<bool,ClothBoneMaxIdentities> seen{};std::array<bool,128> paired{};
   for(int n=0;n<source.boneCount;++n) if(source.bones[n].cloth>=0) {
     const int id=source.bones[n].cloth;if(id>=nativeCount || seen[id]) return false;seen[id]=true;
   }
   for(int n=0;n<config.bindingCount;++n) {
     const int id=config.bindingNativeIndices[n];
-    if(id<0) {
+    if(id<=-ClothSharedSkinBase){const int k=-id-ClothSharedSkinBase;if(k>=sharedCount||shared[k])return false;shared[k]=true;
+    }else if(id<0) {
       if(id < -128) return false;const int p=-id-1;
       if(!partnerCount || p<partnerFirst || p>=partnerFirst+partnerCount || paired[p])return false;paired[p]=true;
     } else {if(id>=nativeCount || seen[id])return false;seen[id]=true;}
@@ -166,6 +168,8 @@ struct ClothBoneLocalState {
   int colliderInputWaitFrame=-1;
   uint64_t colliderInputWaitStart=0;
   std::vector<std::array<int,2>> colliderInputPopulated;
+  std::vector<std::array<int,6>> colliderInputIdentities;
+  std::vector<std::array<float,6>> colliderInputGeometry;
   bool panelReturnCaptured=false;
   int panelReturnCount=0;
   std::array<int,32> panelReturnIndices{};
@@ -247,7 +251,7 @@ static bool ClothBoneResponseCaptureOutputs(const ClothBoneNativeProducer &);
 struct ClothBoneRuntime;
 static bool ClothBoneResponseLayerPrepare(ClothBoneRuntime &);
 static bool ClothBoneSolverAccess(void *,uintptr_t &,int &,void *&);
-static bool ClothBoneLocalPublish();
+static bool ClothBoneLocalPublish(bool *bindingChecked);
 static bool ClothBoneLocalRendererIdentity(size_t slot,void *renderer,void *mesh);
 static bool ClothBoneBodyCreate();
 static bool ClothBoneBodyBindingIdentity();

@@ -3,6 +3,7 @@
 #include "../bonecloth/cloth_bonecloth_profile.h"
 #include "../bonecloth/cloth_bonecloth_coat_source.h"
 #include "../bonecloth/cloth_bonecloth_body_source.h"
+#include "../bonecloth/cloth_bonecloth_sleeve_source.h"
 #include "../bonecloth/cloth_bonecloth_graph_order.h"
 #include <algorithm>
 #include <cmath>
@@ -99,7 +100,9 @@ inline void Validate(const Profile &s) {
       !p.candidateIgnoredCount&&!p.ownershipCount&&p.nativeGraphCount==1));
   const bool ribbon=p.ribbonSource&&p.runtimeGenerated&&!p.loop&&p.rootCount==1&&p.boneCount==9&&p.depth==5&&p.prefabSha&&p.component&&
       !strcmp(p.prefabSha,"d911c12a646d6f4c3f5068b63768c38b6a6a13c6fa2d58710c2b42ead69beda4")&&!strcmp(p.component,"MC_Seraph_Skirt_Ribbon");
-  Require(!p.ribbonSource||ribbon);Require((p.rootCount>=2||ribbon) && (!p.loop||p.rootCount>=3) && p.EffectiveCount()<=128 && p.EffectiveCount()<=p.boneCount);
+  const bool sleeve=eiem_cloth_asset::JsspsiSleeveSource(p);
+  Require(!p.runtimeSleeve||sleeve);
+  Require(!p.ribbonSource||ribbon);Require((p.rootCount>=2||ribbon||sleeve) && (!p.loop||p.rootCount>=3) && p.EffectiveCount()<=128 && p.EffectiveCount()<=p.boneCount);
   Require(s.inputAnchors.size()<=16&&p.inputAnchorCount==int(s.inputAnchors.size())&&(s.inputAnchors.empty()||p.runtimeGenerated));
   Require(p.sourceBranchCount==int(s.sourceBranches.size())&&(s.sourceBranches.empty()||eiem_cloth_asset::SourceShortSides(p)));
   Require(s.roots.size()==size_t(p.rootCount)&&s.originalRoots.size()==s.roots.size()&&s.bones.size()==size_t(p.boneCount));
@@ -177,7 +180,7 @@ inline void Validate(const Profile &s) {
   if(p.nativeGraphCount) {
     Require(activeCount==p.EffectiveCount());
     for(const auto &g:s.graphs) {
-      Require((g.faceCount>0||(ribbon&&g.faceCount==0&&g.lineCount==4)||(p.runtimeBodyOnly&&g.faceCount==0&&g.lineCount==25))&&g.faceCount<=256&&g.lineCount<=128);
+      Require((g.faceCount>0||(ribbon&&g.faceCount==0&&g.lineCount==4)||(sleeve&&g.faceCount==0&&g.lineCount==6)||(p.runtimeBodyOnly&&g.faceCount==0&&g.lineCount==25))&&g.faceCount<=256&&g.lineCount<=128);
       std::set<std::array<int,3>> faces;std::set<std::array<int,2>> edges,lines;
       for(int n=0;n<g.faceCount;++n) {
         auto f=g.faces[n];std::sort(f.begin(),f.end());

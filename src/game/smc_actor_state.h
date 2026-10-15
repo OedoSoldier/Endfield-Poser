@@ -44,6 +44,7 @@ struct SMCActorState {
   bool bigListCaptured = false;
   SMCFaceBone faceBones[SMC_MAX_FACE_BONES]{};
   SMCFaceBone faceRestPose[SMC_MAX_FACE_BONES]{};
+  std::array<face_native::Reference,SMC_MAX_FACE_BONES> nativeReference{};
   int faceBoneCount = 0;
   bool faceBonesCaptured = false;
   bool faceBoneTouched[SMC_MAX_FACE_BONES] = {};

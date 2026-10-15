@@ -6,8 +6,8 @@ inline bool ApronSource(Scene &s,int64_t id) {
 inline void ApronLayerSource(Scene &s,const Value &inner,int64_t outer,const std::vector<int64_t> &ids) {
   Need(ids.size()==6&&s.Name(outer)=="MC_frontCloth","apron-layer-source-identity");
   const auto &other=s.file.Get(outer).At("serializeData");
-  const auto incoming=Refs(inner.At("colliderCollisionConstraint").At("colliderList"));
-  const auto response=Refs(other.At("colliderCollisionConstraint").At("colliderList"));
+  const auto incoming=ColliderRefs(inner.At("colliderCollisionConstraint").At("colliderList"));
+  const auto response=ColliderRefs(other.At("colliderCollisionConstraint").At("colliderList"));
   Need(incoming.size()==6&&response.size()==7&&other.At("clothType").Int()==1&&
        other.At("colliderCollisionConstraint").At("mode").Int()==1,"apron-layer-source-policy");
   for(const auto *d:{&inner,&other}){
@@ -57,7 +57,7 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateApron(Package &package
     out->bindings.push_back(std::move(bindings));out->renderers.push_back({text(m.name),text(m.mesh),text(m.root),int(m.world.size()),m.submeshes,nullptr,0,text(m.parent)});surface.meshes.push_back(std::move(m));}
   Need(fixedSkin>0&&!surface.meshes.empty()&&surface.meshes.size()<=16,"apron-visible-source-coverage");
   std::set<int64_t> producers;
-  for(auto c:Refs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(c);out->colliders.push_back({text(s.Name(c)),text(s.Name(s.Parent(t)))});
+  for(auto c:ColliderRefs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(c);out->colliders.push_back({text(s.Name(c)),text(s.Name(s.Parent(t)))});
     for(const auto &o:s.file.objects)if(o.first!=id&&s.file.Class(o.first)==114){const auto &other=s.file.Get(o.first).At("serializeData");if(!other.Has("rootBones"))continue;
       for(auto root:Refs(other.At("rootBones")))if(Above(s,t,root))producers.insert(o.first);}}
   Need(out->colliders.size()==6&&producers.size()==1,"apron-body-collider-source-count");

@@ -9,7 +9,7 @@ struct ClothCalfContacts {
 static ClothActorBank<ClothCalfContacts> s_clothCalfActors;
 #define s_clothCalves (s_clothCalfActors.Get())
 static bool ClothCalfPending(){return !s_clothCalves.leases.empty();}
-static bool ClothCalfNeeded(){return ClothCalfPending()||(s_cloth.active&&!s_cloth.releasing&&s_clothRequested&&ClothEnhancementSetting().load());}
+static bool ClothCalfNeeded(){return ClothCalfPending()||(s_cloth.active&&!s_cloth.releasing&&s_clothRequested&&ClothEnhancementEnabled());}
 static void ClothCalfContactsRelease(){s_clothCalves.releasing=true;for(auto &s:s_clothCalves.leases)s.lease.retiring=true;}
 static bool ClothCalfRetiring(){for(auto &s:s_clothCalves.leases)if(s.lease.retiring)return true;return false;}
 static void ClothCalfDiscover(int index) {
@@ -40,7 +40,7 @@ static void ClothCalfDiscover(int index) {
 static void ClothCalfBoundary() {
   if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1)return;
   auto &state=s_clothCalves;const auto command=s_clothBoneRequest.load();
-  const bool enabled=s_cloth.active&&!s_cloth.releasing&&s_clothRequested&&ClothOwns(s_cloth.owner)&&ClothEnhancementSetting().load();
+  const bool enabled=s_cloth.active&&!s_cloth.releasing&&s_clothRequested&&ClothOwns(s_cloth.owner)&&ClothEnhancementEnabled();
   if(!enabled||!(state.owner==s_cloth.owner)||state.command!=command||!ClothAttachmentStable())ClothCalfContactsRelease();
   for(auto it=state.leases.begin();it!=state.leases.end();){auto &entry=*it;auto &l=entry.lease;
     if(!l.retiring&&(!ClothAttachmentIdentity(l)||ClothAttachmentLeased(ClothTarget(l.receiver))))l.retiring=true;

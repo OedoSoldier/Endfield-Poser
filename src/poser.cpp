@@ -963,6 +963,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   OpenLog(PoserFilePath(L"poser_log.txt").c_str());
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
       POSER_VERSION, __DATE__, __TIME__);
+  LogRuntimeModulePath("attached-host", nullptr);
   Log("[BUILD] %s", POSER_BUILD_FEATURES);
   LoadPoserConfig();
   poser_gaze::LoadProfiles();
@@ -988,16 +989,10 @@ static DWORD WINAPI InitThread(LPVOID) {
   SetGuiShutdownFn(OnGuiShutdownRestore);
   g_poseCaptureExtras = PoseCaptureExtras;
   g_poseApplyExtras = PoseApplyExtras;
-  ULONGLONG start = GetTickCount64();
-  while (!GetModuleHandleW(L"GameAssembly.dll")) {
-    if (GetTickCount64() - start >= 180000) {
-      Log("[BOOT] GameAssembly.dll load timed out; plugin initialization skipped");
-      return 0;
-    }
-    Sleep(100);
-  }
+  HMODULE runtimeModule = WaitForRuntimeModule();
+  if (!runtimeModule) return 0;
   Log("[POSER] Resolving IL2CPP...");
-  if (!Resolve()) {
+  if (!Resolve(runtimeModule)) {
     Log("[POSER] ERROR: GameAssembly.dll not found or exports missing");
     return 0;
   }

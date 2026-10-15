@@ -61,6 +61,12 @@ D(void, il2cpp_gchandle_free, uint32_t);
 #undef D
 
 static HMODULE hGA = nullptr;
+using RuntimeModuleLookup = HMODULE (WINAPI *)(LPCWSTR);
+using RuntimeExportLookup = FARPROC (WINAPI *)(HMODULE, LPCSTR);
+static constexpr wchar_t RuntimeModuleName[] = L"GameAssembly.dll";
+static HMODULE FindRuntimeModule(RuntimeModuleLookup lookup = GetModuleHandleW) {
+  return lookup ? lookup(RuntimeModuleName) : nullptr;
+}
 struct MInfo {
   void *mp;
 };
@@ -106,18 +112,29 @@ static int ReadStrUtf8(void *s, char *b, int sz) {
   }
 }
 
-static bool Resolve() {
-  hGA = GetModuleHandleW(L"GameAssembly.dll");
-  if (!hGA)
-    return false;
-#define R(n) n = (t_##n)GetProcAddress(hGA, #n)
+// Resolve the same module observed by startup. Never load a game DLL ourselves.
+// Required exports cover thread admission, metadata traversal and retained
+// object identities. Optional feature APIs keep their existing local guards.
+static bool Resolve(HMODULE module, RuntimeExportLookup lookup = GetProcAddress) {
+  hGA = module;
+  unsigned requiredMissing = 0, optionalMissing = 0;
+  char requiredNames[2048]{}, optionalNames[1024]{};
+  auto missing = [](char *buffer, size_t size, const char *name) {
+    const size_t used = strlen(buffer);
+    if (used < size - 1) _snprintf_s(buffer + used, size - used, _TRUNCATE,
+                                    "%s%s", used ? "," : "", name);
+  };
+#define R(n) do { n = module && lookup ? (t_##n)lookup(module, #n) : nullptr; \
+  if (!n) { ++requiredMissing; missing(requiredNames, sizeof(requiredNames), #n); } } while (0)
+#define O(n) do { n = module && lookup ? (t_##n)lookup(module, #n) : nullptr; \
+  if (!n) { ++optionalMissing; missing(optionalNames, sizeof(optionalNames), #n); } } while (0)
   R(il2cpp_domain_get);
   R(il2cpp_thread_attach);
   R(il2cpp_thread_current);
   R(il2cpp_thread_detach);
   R(il2cpp_domain_get_assemblies);
   R(il2cpp_assembly_get_image);
-  R(il2cpp_image_get_name);
+  O(il2cpp_image_get_name);
   R(il2cpp_image_get_class_count);
   R(il2cpp_image_get_class);
   R(il2cpp_class_get_methods);
@@ -128,7 +145,7 @@ static bool Resolve() {
   R(il2cpp_class_get_name);
   R(il2cpp_class_get_namespace);
   R(il2cpp_object_get_class);
-  R(il2cpp_class_from_name);
+  O(il2cpp_class_from_name);
   R(il2cpp_method_get_param);
   R(il2cpp_type_get_name);
   R(il2cpp_class_get_fields);
@@ -137,28 +154,34 @@ static bool Resolve() {
   R(il2cpp_field_get_flags);
   R(il2cpp_runtime_invoke);
   R(il2cpp_class_get_parent);
-  R(il2cpp_class_get_declaring_type);
-  R(il2cpp_class_get_nested_types);
-  R(il2cpp_field_set_value_object);
+  O(il2cpp_class_get_declaring_type);
+  O(il2cpp_class_get_nested_types);
+  O(il2cpp_field_set_value_object);
   R(il2cpp_field_static_get_value);
-  R(il2cpp_field_static_set_value);
+  O(il2cpp_field_static_set_value);
   R(il2cpp_field_get_type);
   R(il2cpp_type_get_type);
   R(il2cpp_method_get_return_type);
   R(il2cpp_class_from_type);
-  R(il2cpp_resolve_icall);
-  R(il2cpp_string_new);
+  O(il2cpp_resolve_icall);
+  O(il2cpp_string_new);
   R(il2cpp_class_get_type);
   R(il2cpp_type_get_object);
-  R(il2cpp_object_new);
-  R(il2cpp_array_new_specific);
-  R(il2cpp_array_new);
+  O(il2cpp_object_new);
+  O(il2cpp_array_new_specific);
+  O(il2cpp_array_new);
   R(il2cpp_gchandle_new);
   R(il2cpp_gchandle_get_target);
   R(il2cpp_gchandle_free);
 #undef R
-  return il2cpp_domain_get && il2cpp_class_get_methods &&
-         il2cpp_method_get_name;
+#undef O
+  if (requiredMissing)
+    Log("[BOOT] Required IL2CPP exports missing: count=%u hGA=%p names=%s; plugin initialization skipped",
+        requiredMissing, module, requiredNames);
+  if (optionalMissing)
+    Log("[BOOT] Optional IL2CPP exports missing: count=%u hGA=%p names=%s; affected features unavailable",
+        optionalMissing, module, optionalNames);
+  return module && !requiredMissing;
 }
 
 static void *FindMethod(void *k, const char *n, int pc) {

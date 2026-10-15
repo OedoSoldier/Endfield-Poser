@@ -465,23 +465,7 @@ public:
     bool bodyMotion = false;
     for (const auto &track : clip.bones)
       bodyMotion = bodyMotion || !EyeBone(track.first);
-    for (int r = 0; r < 55; r++)
-      sourceRole_[r] = source.find(RoleNames()[r]);
-    if (sourceRole_[0] < 0)
-      sourceRole_[0] = source.find(u8"センター");
-    if (sourceRole_[8] < 0)
-      sourceRole_[8] = sourceRole_[7];
-    if (sourceRole_[54] < 0)
-      sourceRole_[54] = sourceRole_[8];
-    for (int side = 0; side < 2; side++) {
-      int role = side ? 39 : 24;
-      std::string s = side ? u8"右" : u8"左";
-      if (sourceRole_[role] < 0) {
-        sourceRole_[role] = source.find(s + u8"親指1");
-        sourceRole_[role + 1] = source.find(s + u8"親指2");
-        sourceRole_[role + 2] = -1;
-      }
-    }
+    sourceRole_ = DefaultSourceRoles(source);
     auto geometryRoles = sourceRole_;
     for (const auto &kv : roleBindings) {
       if (kv.first < 0 || kv.first >= 55)

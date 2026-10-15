@@ -304,6 +304,92 @@ inline const std::array<const char *, 55> &RoleNames() {
        u8"右薬指3",  u8"右小指1", u8"右小指2", u8"右小指3", u8"上半身3"}};
   return n;
 }
+// Only explicit naming equivalents are automatic. A name containing "hand"
+// or "parent" does not establish a control's purpose or its rotation centre.
+inline std::string MotionBoneKey(std::string name) {
+  name=Name(std::move(name));std::string key;
+  for(unsigned char c:name) {
+    if(c==' '||c=='_'||c=='-'||c=='.')continue;
+    key+=char(c>='A'&&c<='Z'?c+('a'-'A'):c);
+  }
+  for(const auto &pair:{std::pair<const char *,const char *>{u8"肘",u8"ひじ"},{u8"膝",u8"ひざ"}}) {
+    size_t at=0;while((at=key.find(pair.first,at))!=key.npos){key.replace(at,std::strlen(pair.first),pair.second);at+=std::strlen(pair.second);}
+  }
+  return key;
+}
+inline std::string NativeRoleBone(int role) {
+  static const char *body[]={"Pelvis","L_Thigh","R_Thigh","L_Calf","R_Calf","L_Foot","R_Foot",
+    "Spine","Spine1","Neck","Head","L_Clavicle","R_Clavicle","L_UpperArm","R_UpperArm",
+    "L_Forearm","R_Forearm","L_Hand","R_Hand","L_Toe0","R_Toe0","L_Eye","R_Eye","Jaw"};
+  if(role<24)return std::string("Bip001_")+body[role];
+  if(role==54)return "Bip001_Spine2";
+  int joint=(role-24)%15,finger=joint/3,segment=joint%3;
+  return std::string(role<39?"Bip001_L_Finger":"Bip001_R_Finger")+std::to_string(finger)+(segment?std::to_string(segment):"");
+}
+inline std::array<std::string,3> SourceRoleKeys(int role) {
+  static const char *body[]={"Hips","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot",
+    "Spine","Chest","Neck","Head","LeftShoulder","RightShoulder","LeftUpperArm","RightUpperArm",
+    "LeftLowerArm","RightLowerArm","LeftHand","RightHand","LeftToes","RightToes","LeftEye","RightEye","Jaw"};
+  std::string human;
+  if(role<24)human=body[role];
+  else if(role==54)human="UpperChest";
+  else {
+    const char *fingers[]={"Thumb","Index","Middle","Ring","Little"};
+    const char *segments[]={"Proximal","Intermediate","Distal"};int k=(role-24)%15;
+    human=std::string(role<39?"Left":"Right")+fingers[k/3]+segments[k%3];
+  }
+  return {MotionBoneKey(RoleNames()[role]),MotionBoneKey(NativeRoleBone(role)),MotionBoneKey(human)};
+}
+inline int FindSourceRole(const RigDefinition &rig,int role) {
+  int exact=rig.find(RoleNames()[role]);if(exact>=0)return exact;
+  const auto keys=SourceRoleKeys(role);int found=-1;
+  for(int i=0;i<int(rig.bones.size());++i) {
+    auto candidate=MotionBoneKey(rig.bones[i].name);
+    if(std::find(keys.begin(),keys.end(),candidate)==keys.end())continue;
+    if(found>=0)return -1; // An ambiguous role remains a manual choice.
+    found=i;
+  }
+  return found;
+}
+inline std::array<int,55> DefaultSourceRoles(const RigDefinition &rig) {
+  std::array<int,55> roles;for(int r=0;r<55;++r)roles[r]=FindSourceRole(rig,r);
+  if(roles[0]<0)roles[0]=rig.find(u8"センター");
+  if(roles[8]<0)roles[8]=roles[7];if(roles[54]<0)roles[54]=roles[8];
+  for(int side=0;side<2;++side)if(roles[24+side*15]<0) {
+    const auto prefix=std::string(side?u8"右":u8"左");
+    roles[24+side*15]=rig.find(prefix+u8"親指1");roles[25+side*15]=rig.find(prefix+u8"親指2");roles[26+side*15]=-1;
+  }
+  return roles;
+}
+inline std::string MotionBindingKey(const std::string &name) {
+  const auto key=MotionBoneKey(name);
+  static const auto aliases=[] {
+    std::map<std::string,std::string> result;
+    for(int role=0;role<55;++role)for(const auto &alias:SourceRoleKeys(role))result[alias]=MotionBoneKey(RoleNames()[role]);
+    return result;
+  }();
+  auto found=aliases.find(key);return found==aliases.end()?key:found->second;
+}
+inline std::map<std::string,std::string> ResolvedTrackBindings(const RigDefinition &rig,const MotionClip &clip,
+                                                           const std::map<std::string,std::string> &manual) {
+  auto bindings=manual;
+  std::map<std::string,std::vector<std::string>> bones,tracks;
+  std::set<std::string> reserved;
+  for(const auto &b:rig.bones) {
+    bones[MotionBindingKey(b.name)].push_back(b.name);
+    auto m=manual.find(b.name);
+    if(m!=manual.end())reserved.insert(m->second);
+    else if(clip.bones.count(b.name)||clip.ik.count(b.name))reserved.insert(b.name);
+  }
+  std::set<std::string> names;for(const auto &v:clip.bones)names.insert(v.first);for(const auto &v:clip.ik)names.insert(v.first);
+  for(const auto &name:names)if(!rig.ignoredTracks.count(name))tracks[MotionBindingKey(name)].push_back(name);
+  for(const auto &v:bones)if(v.second.size()==1) {
+    const auto &bone=v.second[0];auto found=tracks.find(v.first);
+    if(manual.count(bone)||clip.bones.count(bone)||clip.ik.count(bone)||found==tracks.end()||found->second.size()!=1)continue;
+    const auto &track=found->second[0];if(!reserved.count(track)) {bindings[bone]=track;reserved.insert(track);}
+  }
+  return bindings;
+}
 // The source rest pose is selected manually; a VMD contains no rest skeleton.
 inline RigDefinition StandardRig(BuiltinRigPreset preset = BuiltinRigPreset::StandardMmd) {
   RigDefinition r;
@@ -511,6 +597,7 @@ public:
   RigPose pose;
   std::vector<std::string> unmapped;
   std::vector<std::string> unmappedIk;
+  std::map<std::string,std::vector<std::string>> mappedTracks;
   void bind(const RigDefinition &rig, const MotionClip &clip,
             const std::map<std::string, std::string> &bindings = {},
             const std::vector<int> &outputs = {}) {
@@ -527,9 +614,11 @@ public:
     pose.localRot.resize(rig.bones.size());
     needed_.assign(rig.bones.size(), false);
     unmapped.clear();
+    mappedTracks.clear();
+    const auto resolved=ResolvedTrackBindings(rig,clip,bindings);
     for (size_t i = 0; i < rig.bones.size(); ++i) {
-      auto binding = bindings.find(rig.bones[i].name);
-      trackNames_[i] = binding == bindings.end() ? rig.bones[i].name : binding->second;
+      auto binding = resolved.find(rig.bones[i].name);
+      trackNames_[i] = binding == resolved.end() ? rig.bones[i].name : binding->second;
       auto track = clip.bones.find(trackNames_[i]);
       if (!trackNames_[i].empty() && !rig.ignoredTracks.count(trackNames_[i]) && track != clip.bones.end()) tracks_[i] = &track->second;
     }
@@ -552,7 +641,7 @@ public:
       for (const auto &d : rig.bones[i].drivers) scalarInputs.insert(d.source);
     };
     if (outputs.empty()) {
-      for (const char *n : RoleNames()) need(rig.find(n));
+      for (int i : DefaultSourceRoles(rig)) need(i);
     } else {
       for (int i : outputs) need(i);
     }
@@ -579,12 +668,21 @@ public:
         [&](int a, int b) { return rig.bones[a].layer < rig.bones[b].layer; });
     std::set<std::string> used;
     for (size_t i = 0; i < rig.bones.size(); ++i)
-      if ((needed_[i] || scalarInputs.count(int(i))) && tracks_[i]) used.insert(trackNames_[i]);
+      if ((needed_[i] || scalarInputs.count(int(i))) && tracks_[i]) {
+        used.insert(trackNames_[i]);mappedTracks[trackNames_[i]].push_back(rig.bones[i].name);
+      }
     for (const auto &kv : clip.bones)
       if (!used.count(kv.first)) unmapped.push_back(kv.first);
     std::set<std::string> usedIk;
-    for(int c:controllers_)usedIk.insert(trackNames_[c]);
-    for(const auto &a:rig.aims)if(needed_[a.bone])usedIk.insert(trackNames_[a.source]);
+    auto useIk=[&](int c) {
+      const auto &name=trackNames_[c];usedIk.insert(name);
+      if(clip.ik.count(name)&&!rig.ignoredTracks.count(name)) {
+        auto &destinations=mappedTracks[name];const auto &bone=rig.bones[c].name;
+        if(std::find(destinations.begin(),destinations.end(),bone)==destinations.end())destinations.push_back(bone);
+      }
+    };
+    for(int c:controllers_)useIk(c);
+    for(const auto &a:rig.aims)if(needed_[a.bone])useIk(a.source);
     unmappedIk.clear();
     for(const auto &kv:clip.ik)if(!usedIk.count(kv.first)&&!rig.ignoredTracks.count(kv.first))unmappedIk.push_back(kv.first);
   }

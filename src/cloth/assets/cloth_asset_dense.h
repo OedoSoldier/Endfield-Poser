@@ -42,8 +42,10 @@ struct DenseRecipe {
   std::vector<ClothBoneResponsePoint> responsePoints;
   std::vector<ClothBoneResponseFace> responseFaces;
   std::vector<ClothBoneResponseFace> layerFaces;
+  std::vector<ClothBoneSharedBinding> sharedBindings;
+  std::vector<int> bindingParts;
   const char *String(const std::string &s){Need(!s.empty()&&s.size()<128,"auto-dense-name-budget");strings.push_back(s);return strings.back().c_str();}
-  void Link(){view.nativeGraphOrder=graphOrder.source.empty()?nullptr:&graphOrder;view.added=added.data();view.addedCount=int(added.size());view.columns=columns.data();view.roots=roots.data();view.rootCount=int(roots.size());view.parents=parents.data();view.radii=radii.data();view.radiusCurve=radiusCurve.data();view.distanceCurve=distanceCurve.data();view.cross=cross.data();view.crossCount=int(cross.size());
+  void Link(){view.sharedBindings=sharedBindings.data();view.sharedBindingCount=int(sharedBindings.size());view.nativeGraphOrder=graphOrder.source.empty()?nullptr:&graphOrder;view.added=added.data();view.addedCount=int(added.size());view.columns=columns.data();view.roots=roots.data();view.rootCount=int(roots.size());view.parents=parents.data();view.radii=radii.data();view.radiusCurve=radiusCurve.data();view.distanceCurve=distanceCurve.data();view.cross=cross.data();view.crossCount=int(cross.size());
     if(!bodySpheres.empty()){bodyAsset.bones=bodyBindings.data();bodyAsset.boneCount=int(bodyBindings.size());view.bodyAsset=&bodyAsset;view.bodySpheres=bodySpheres.data();view.bodySphereCount=int(bodySpheres.size());}
     view.responses=responses.data();view.responseCount=int(responses.size());
     view.responsePoints=responsePoints.data();view.responsePointCount=int(responsePoints.size());view.responseFaces=responseFaces.data();view.responseFaceCount=int(responseFaces.size());
@@ -175,10 +177,14 @@ inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh
   const auto positions=Channel(source,0);Point low{1e100,1e100,1e100},high{-1e100,-1e100,-1e100};
   for(const auto &p:positions){Need(p.size()==3,"auto-dense-position-dimension");for(int k=0;k<3;++k){low[k]=(std::min)(low[k],p[k]);high[k]=(std::max)(high[k],p[k]);}}
   std::vector<int> ids;std::map<int,int> bindings;Matrix common{};bool commonKnown=false;
+  std::array<Matrix,3> partCommon{};std::array<bool,3> partKnown{};
+  const bool multipart=!recipe.bindingParts.empty();Need(!multipart||recipe.bindingParts.size()==bones.size(),"shared-skin-binding-part-count");
   for(size_t k=0;k<mesh.bones.size();++k){int native=-1;for(int n=0;n<base.view.boneCount;++n)if(scene.Name(mesh.bones[k])==base.bones[n].name&&scene.Name(scene.Parent(mesh.bones[k]))==base.bones[n].parentName)native=n;ids.push_back(native);if(native<0||base.view.Foreign(native))continue;Need(bindings.emplace(native,int(k)).second,"auto-dense-aliased-source-binding");
-    const auto m=Mul(scene.World(mesh.bones[k]),mesh.binds[k]);if(!commonKnown){common=m;commonKnown=true;}else if(!recipe.view.sourceCoatWaist)Need(CompatibleNaturalBind(m,common,low,high),"auto-dense-incompatible-natural-bind-families");}
+    const auto m=Mul(scene.World(mesh.bones[k]),mesh.binds[k]);if(multipart){const int p=recipe.bindingParts[native];Need(p>=0&&p<3,"shared-skin-binding-part");
+      if(!partKnown[p]){partCommon[p]=m;partKnown[p]=true;}else Need(CompatibleNaturalBind(m,partCommon[p],low,high),("shared-skin-incompatible-bind-part-"+std::to_string(p)).c_str());}
+    if(!commonKnown){common=m;commonKnown=true;}else if(!multipart&&!recipe.view.sourceCoatWaist)Need(CompatibleNaturalBind(m,common,low,high),"auto-dense-incompatible-natural-bind-families");}
   Need(commonKnown,"auto-dense-no-cloth-binding");
-  auto bindTarget=[&](int n){if(bindings.count(n))return;Need(ids.size()<256,"auto-dense-packed-index-overflow");bindings[n]=int(ids.size());ids.push_back(n);out.bindingIds.push_back(n);auto bind=Mul(Inverse(world[n]),common);std::array<float,16> value{};for(int k=0;k<16;++k)value[k]=float(bind[k]);out.binds.push_back(value);};
+  auto bindTarget=[&](int n){if(bindings.count(n))return;Need(ids.size()<256,"auto-dense-packed-index-overflow");bindings[n]=int(ids.size());ids.push_back(n);out.bindingIds.push_back(n);if(multipart)Need(partKnown[recipe.bindingParts[n]],"shared-skin-part-without-source-bind");auto bind=Mul(Inverse(world[n]),multipart?partCommon[recipe.bindingParts[n]]:common);std::array<float,16> value{};for(int k=0;k<16;++k)value[k]=float(bind[k]);out.binds.push_back(value);};
   CoatWaistChart waist;
   if(recipe.view.sourceCoatWaist) {
     Need(SourceInactiveCoat(base.view)&&world.size()==24&&bones.size()==24,"coat-waist-source-contract");
@@ -217,8 +223,9 @@ inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh
       if(owned){coordinate=panel->Coordinate(reference);panelVertex=coordinate[1]<panel->WaistHeight(coordinate[0])-1e-6;}}
     PreciseSkin protectedTerms;double total=0;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1)))total+=term.second;else protectedTerms.insert(term);}
     if(!total||(selected&&!(*selected)[n])||(panel&&!panelVertex)){newSkin.push_back(original);continue;}++moving;const size_t capacity=4-protectedTerms.size();SurfaceWeight best;
-    std::set<int> sourceColumns;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1)))sourceColumns.insert(recipe.view.resampledPanel?recipe.columns[id]:bones[id].column);}
-    auto permitted=[&](int id){if(recipe.view.ribbonSurface)return bones[id].column>=0&&bones[id].column<5&&
+    int sourcePart=-1;std::set<int> sourceColumns;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1))){sourceColumns.insert(recipe.view.resampledPanel?recipe.columns[id]:bones[id].column);
+      if(multipart){Need(sourcePart<0||sourcePart==recipe.bindingParts[id],"shared-skin-vertex-multiple-parts");sourcePart=recipe.bindingParts[id];}}}
+    auto permitted=[&](int id){if(multipart&&recipe.bindingParts[id]!=sourcePart)return false;if(recipe.view.ribbonSurface)return bones[id].column>=0&&bones[id].column<5&&
         (!bindings.count(id)||!protectedTerms.count(bindings.at(id)));for(int c:sourceColumns){int d=std::abs(bones[id].column-c);if(recipe.view.loop)d=(std::min)(d,int(recipe.roots.size())-d);if(d<=(panel?2:sourceSpan))return true;}return false;};
     if(panel)best=PanelSupport(*panel,coordinate,capacity,permitted);
     else {
@@ -444,7 +451,7 @@ inline void LongPanelContactFaces(DenseRecipe &out,const std::vector<Point> &poi
 #include "cloth_asset_strip_width.h"
 namespace eiem_cloth_asset {
 inline std::shared_ptr<DenseRecipe> GenerateDenseCandidate(Package &package,Scene &scene,int64_t component,eiem_cloth_cache::Profile &base,const std::vector<int64_t> &ids,const std::vector<MeshView> &meshes,
-    const std::vector<std::vector<unsigned char>> &selected,const std::vector<int> &groups,int refinement=2,bool allowStripWidth=true) {
+    const std::vector<std::vector<unsigned char>> &selected,const std::vector<int> &groups,int refinement=2,bool allowStripWidth=true,bool deferredSkin=false) {
   Need(selected.empty()||selected.size()==meshes.size(),"auto-density-region-input");
   Need(!base.view.runtimeFixedForks,"auto-density-fixed-fork-requires-surface-recipe");
   Need(!base.view.candidateAttributes,"auto-density-source-selection-needs-surface-recipe");
@@ -522,9 +529,9 @@ inline std::shared_ptr<DenseRecipe> GenerateDenseCandidate(Package &package,Scen
   }
   if(longPanel){LongPanelContactFaces(*out,points,panel);Need(base.nativeProducers.empty(),"long-response-existing-producer");}
   for(size_t c=0;c<dense.size();++c){if(!p.loop&&c+1==dense.size())break;const auto &next=dense[(c+1)%dense.size()];for(size_t d=1;d<(std::min)(dense[c].size(),next.size());++d){std::array<int,2> e{dense[c][d],next[d]};if(bones[e[0]].attribute==1&&bones[e[1]].attribute==1)continue;std::sort(e.begin(),e.end());for(const auto &fs:out->faces){bool found=false;for(auto f:fs)found|=std::find(f.begin(),f.end(),e[0])!=f.end()&&std::find(f.begin(),f.end(),e[1])!=f.end();Need(found,"auto-density-missing-native-cross-connection");}out->cross.push_back(e);}}
-  Graph graph{out->faces[0],out->lines[0]};size_t resultBytes=0;if((groups.empty()||stripWidth)&&!shortSkin)for(size_t k=0;k<meshes.size();++k){auto mesh=DenseBinding(package,scene,meshes[k],base,*out,world,points,bones,graph,stripWidth?&stripSelected[k]:selected.empty()?nullptr:&selected[k],fitted?&panel:nullptr,stripWidth?2:divisions-1);if(!mesh.view.skinVertices)continue;out->meshes.push_back(std::move(mesh));const auto &m=out->meshes.back();resultBytes+=m.payload.size()+m.samples.size()*sizeof(eiem_cloth_skin::Sample)+m.edges.size()*sizeof(eiem_cloth_skin::Edge)+m.seams.size()*sizeof(eiem_cloth_skin::Seam)+m.weights.size()*8+m.floatWeights.size()*16+m.indices.size()*4;Need(resultBytes<=16*1024*1024,"auto-density-result-byte-budget");}
+  Graph graph{out->faces[0],out->lines[0]};size_t resultBytes=0;if(!deferredSkin&&(groups.empty()||stripWidth)&&!shortSkin)for(size_t k=0;k<meshes.size();++k){auto mesh=DenseBinding(package,scene,meshes[k],base,*out,world,points,bones,graph,stripWidth?&stripSelected[k]:selected.empty()?nullptr:&selected[k],fitted?&panel:nullptr,stripWidth?2:divisions-1);if(!mesh.view.skinVertices)continue;out->meshes.push_back(std::move(mesh));const auto &m=out->meshes.back();resultBytes+=m.payload.size()+m.samples.size()*sizeof(eiem_cloth_skin::Sample)+m.edges.size()*sizeof(eiem_cloth_skin::Edge)+m.seams.size()*sizeof(eiem_cloth_skin::Seam)+m.weights.size()*8+m.floatWeights.size()*16+m.indices.size()*4;Need(resultBytes<=16*1024*1024,"auto-density-result-byte-budget");}
   Need(!stripWidth||!out->meshes.empty(),"strip-width-no-private-skin");
-  Need(shortSkin||!groups.empty()||!out->meshes.empty(),"auto-density-no-private-mesh");
+  Need(deferredSkin||shortSkin||!groups.empty()||!out->meshes.empty(),"auto-density-no-private-mesh");
   if(longPanel){Need(std::isfinite(r.contactRadiusScale)&&r.contactRadiusScale>0&&r.contactRadiusScale<1,"long-panel-contact-envelope-missing");
     for(auto &v:out->radiusCurve)v*=r.contactRadiusScale;for(auto &v:out->radii)v*=r.contactRadiusScale;
     r.fittedContactRadius=*std::max_element(out->radiusCurve.begin(),out->radiusCurve.end());

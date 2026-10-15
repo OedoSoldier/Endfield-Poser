@@ -5,6 +5,8 @@
 /plugin/
 /debug/
 /dist/
+# Local previous-game cloth catalog for compatibility investigations.
+/assets/cloth/legacy/
 /deps/winsdk/
 /deps/winsdkcpp/
 *.obj

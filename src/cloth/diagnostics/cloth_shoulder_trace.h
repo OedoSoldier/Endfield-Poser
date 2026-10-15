@@ -26,7 +26,7 @@ static void ClothShoulderEvidenceClear() {
 }
 static bool ClothShoulderEvidenceWatching() {
   const auto &s=s_clothShoulderEvidence;
-  return s.prepared&&ClothEnhancementSetting().load(std::memory_order_acquire)&&ClothOwns(s.owner);
+  return s.prepared&&ClothEnhancementEnabled()&&ClothOwns(s.owner);
 }
 static void ClothShoulderEvidencePrepare(const eiem_cloth_asset::Generated &generated,
     const eiem_cloth_asset::Query &query,const std::vector<ClothAutoMeshRef> &meshes) {

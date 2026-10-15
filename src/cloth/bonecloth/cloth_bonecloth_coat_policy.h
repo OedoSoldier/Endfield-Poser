@@ -31,7 +31,7 @@ static bool ClothBoneLongPanelBending(const ClothBoneRuntime &s) {
 }
 static bool ClothBoneSurfaceBendingRequested(const ClothBoneRuntime &s) {
   return s.profile&&(ClothBoneOriginalCoverageCoat(s)||s.profile->runtimeForkCoat||s.profile->runtimeSeparatedCoat||s.profile->candidateAttributes||
-      (s.local.requested&&s.local.recipe&&s.local.recipe->resampledPanel));
+      (s.local.requested&&s.local.recipe&&s.local.recipe->resampledPanel)||ClothBoneSleevePolicy(s));
 }
 struct ClothBoneBendingParameters { int method=0;float stiffness=0; };
 static bool ClothBoneBendingRead(void *box,ClothBoneBendingParameters &value,int &none) {
@@ -62,7 +62,7 @@ static bool ClothBoneSurfaceBendingConfigure(void *data,void *original) {
   if(!ClothOnMainThread())return false;
   auto &s=ClothBoneState();
   if(!ClothBoneSurfaceBendingRequested(s))return !s.surfaceBending&&!s.surfaceSourceBending;
-  if((!ClothBoneForkCoat(s)&&!ClothBoneLongPanelBending(s))||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||
+  if((!ClothBoneForkCoat(s)&&!ClothBoneLongPanelBending(s)&&!ClothBoneSleevePolicy(s))||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||
       !ClothOwns(s.owner)||s.stopRequested||s.surfaceBending||s.surfaceSourceBending||
       !data||!original||data==original||data!=CollisionGc(s.candidateData)||original!=CollisionGc(s.data))return false;
   constexpr auto type="BeyondDynamicBone.TriangleBendingConstraint.SerializeData";
@@ -95,7 +95,7 @@ static bool ClothBoneSurfaceBendingConfigure(void *data,void *original) {
 static bool ClothBoneSurfaceBendingMatches(const ClothBoneRuntime &s,int slot,void *box) {
   if(!ClothOnMainThread()||slot<0||slot>2)return false;
   if(!ClothBoneSurfaceBendingRequested(s))return !s.surfaceBending&&!s.surfaceSourceBending;
-  if(!ClothBoneForkCoat(s)&&!ClothBoneLongPanelBending(s))return false;
+  if(!ClothBoneForkCoat(s)&&!ClothBoneLongPanelBending(s)&&!ClothBoneSleevePolicy(s))return false;
   if(!s.surfaceBending||!s.surfaceSourceBending)return slot!=1;
   if(slot==1&&!ClothOwns(s.owner))return false;
   const auto data=CollisionGc(slot==1?s.candidateData:s.data);

@@ -44,8 +44,14 @@ inline bool ClothGeneratedSkinMatches(const float *weights,const int *indices,co
 }
 struct ClothBoneBodySphere {int bone;Vector3 center;float radius;float endRadius=0,length=0;
   Quaternion rotation{0,0,0,1};
+  // Some render palettes contain a limb twist but omit its animated parent.
+  // Use that verified direct-parent frame for contacts, never the twist output.
+  bool parentFrame=false;
   bool Capsule() const {return length>0;}
 };
+// One publisher owns the private mesh; bounded suppliers retain their native teams.
+constexpr int ClothSharedSkinBase=1024,ClothSharedSkinMaxRefs=128;
+struct ClothBoneSharedBinding {const char *component=nullptr;int bone=-1;};
 struct ClothBoneResponseFrame {
   eiem_cloth_response::Frame frame{};
   Vector3 center{},size{};
@@ -54,6 +60,10 @@ struct ClothBoneResponseFrame {
 struct ClothBoneResponsePoint {const char *name=nullptr,*parent=nullptr;int attribute=0;};
 struct ClothBoneResponseFace {std::array<int,3> ids{};int outside=0;};
 constexpr float ClothLongPanelDistanceStiffness=.3f,ClothLongPanelTetherStretch=1.f;
+// A wide sleeve needs limited differential length across its two edges to bend
+// in its own plane. Keep a bounded root reach instead of widening the cone or
+// increasing forces; the three roots and the collision graph stay unchanged.
+constexpr float ClothSleeveDistanceStiffness=.3f,ClothSleeveTetherStretch=.15f;
 constexpr int ClothLongPanelColumns=20,ClothLongPanelRows=11;
 constexpr int ClothLongPanelParticles=ClothLongPanelColumns*ClothLongPanelRows;
 constexpr int ClothLongPanelIdentities=40+ClothLongPanelParticles;
@@ -75,6 +85,15 @@ struct ClothBoneLocalRecipe {
   float rootRotation=-1;
   const float *distanceCurve=nullptr;
   bool runtimeGenerated=false;
+  const char *sharedSkinGroup=nullptr,*sharedPublisher=nullptr;
+  const ClothBoneSharedBinding *sharedBindings=nullptr;int sharedBindingCount=0;
+  bool sharedSkinSupplier=false,sourceSleeve=false;
+  bool SharedSkin() const {return runtimeGenerated&&sharedSkinGroup&&sharedPublisher&&
+      sharedBindingCount>=0&&sharedBindingCount<=ClothSharedSkinMaxRefs&&
+      (!sharedBindingCount||sharedBindings);}
+  bool SharedSupplier() const {return SharedSkin()&&sharedSkinSupplier&&sourceSleeve&&meshCount==0&&
+      originalCount==7&&originalRoots==1&&depth==7&&addedCount==14&&rootCount==3&&
+      !loop&&multipleLod&&crossCount==12&&graphCount>0&&bodyCoverage&&bodyAsset&&bodySphereCount==9;}
   bool ribbonSurface=false;
   int separatedPanels=0;
   bool separatedWidth=false;
@@ -148,7 +167,7 @@ struct ClothBoneLocalRecipe {
   bool NativeRibbonWidth() const {return runtimeGenerated&&separatedWidth&&separatedPanels==3&&!loop&&
       originalCount==45&&originalRoots==7&&depth==6&&addedCount==74&&rootCount==23&&meshCount>0&&meshCount<=8&&
       !bodyCoverage&&!nativeLayer&&!FittedSkin()&&!sourceShortSkin&&!resampledPanel&&!ribbonSurface;}
-  bool NativeSkinRetained() const {return NativeBodyOnly()||ForkCoatGraphOnly()||NativePanelsOnly()||(sourceShortSkin&&runtimeGenerated&&(!loop||sourceShortSides)&&
+  bool NativeSkinRetained() const {return SharedSupplier()||NativeBodyOnly()||ForkCoatGraphOnly()||NativePanelsOnly()||(sourceShortSkin&&runtimeGenerated&&(!loop||sourceShortSides)&&
       separatedPanels>=0&&separatedPanels<=3&&meshCount==0&&!bodyCoverage&&!FittedSkin()&&!resampledPanel&&!ribbonSurface);}
   bool SourcePoseLease() const {return FittedSkin()||sourceShortSkin;}
   size_t fixedSkinVertices=0;

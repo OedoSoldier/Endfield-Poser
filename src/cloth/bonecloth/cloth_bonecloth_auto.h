@@ -131,7 +131,7 @@ static bool ClothAutoCaptureInput(void *entity,void *animator,ClothInstance *ins
   for(const auto p:authored)for(int n=0;n<p->rendererCount;++n)out.reservedRenderers.insert({p->renderers[n].name,p->renderers[n].parent?p->renderers[n].parent:""});
   for(int n=0;n<instanceCount;++n){if(reserved.count(n))continue;auto &i=instances[n];auto bbc=ClothTarget(i.ref);void *data=nullptr,*list=nullptr;
     if(!bbc||!ClothInvoke(i.api.serialize,bbc,nullptr,data)||!holds.Add(data)||!CollisionField(data,"rootBones","System.Collections.Generic.List<UnityEngine.Transform>",list)||!holds.Add(list))return false;
-    const int count=CollisionCount(list);if(count<0||count>128)return false;if(count>16||count<1||(count==1&&strcmp(i.name,"MC_Seraph_Skirt_Ribbon")))continue;
+    const int count=CollisionCount(list);if(count<0||count>128)return false;if(count>16||count<1||(count==1&&strcmp(i.name,"MC_Seraph_Skirt_Ribbon")&&!eiem_cloth_asset::JsspsiSleeveName(i.name)))continue;
     if(!hips||!left||!right||!spine)return false;
     bool waist=true;for(int k=0;k<count;++k){auto t=CollisionItem(list,k,"UnityEngine.Transform");bool attached=false;
       for(int depth=0;t&&depth<128;++depth){if(t==left||t==right)break;if(t==hips){attached=depth>0;break;}t=CollisionParent(t);}waist&=attached;}

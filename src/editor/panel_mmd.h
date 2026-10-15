@@ -157,6 +157,8 @@ static void DrawMmdCloth() {
     ImGui::TextWrapped(u8"衣物已冻结：取消“冻结头发 / 衣物”后启用动态模拟。");
   else if (ui.boneRestoring || s_cloth.releasing)
     ImGui::TextWrapped(u8"正在恢复原有衣物，请稍候。");
+  else if (s_clothCompatibilityIssue.load())
+    ImGui::TextWrapped(u8"衣物增强暂不可用，使用原有物理。动作与镜头仍可播放，增强开关设置已保留。");
   else if (ui.autoPreparing)
     ImGui::TextWrapped(u8"正在准备当前服装，期间保留原有物理。");
   else if (s_cloth.failed)
@@ -165,6 +167,8 @@ static void DrawMmdCloth() {
     const int applied =
         ui.authoredApplied + ui.autoConnectionsApplied + ui.autoSkinApplied + ui.autoPartialApplied;
     ImGui::Text(u8"已增强 %d 个部位；保留原有物理 %d 个部位", applied, ui.autoPreserved);
+    if(ui.compatibilityPreserved)
+      ImGui::TextWrapped(u8"%d 个特殊部位暂用原有物理，等待新版游戏适配。",ui.compatibilityPreserved);
     if (enabled && !applied && !ui.boneBusy)
       ImGui::TextWrapped(u8"暂无可用增强，使用角色原有物理。");
   } else

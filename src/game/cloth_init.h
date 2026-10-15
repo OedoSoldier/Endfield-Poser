@@ -9,6 +9,87 @@ static void ClothInstallWeightWriterMainThread(void *method) {
   Log("[CLOTH-WRITER-HOOK] installed=%d tid=%lu gameAssembly=%p target=%p policy=observe-two-frames-before-owner-only-override fallback=normal-startup-readback",
       ok, GetCurrentThreadId(), hGA, ((MInfo *)method)->mp);
 }
+static bool ClothInputCodeRange(void *method,poser_cloth_boundary::CodeRange check) {
+  auto base=method?(unsigned char*)((MInfo*)method)->mp:nullptr;
+  return poser_cloth_boundary::MappedCodeRange(hGA,base,check);
+}
+template<size_t N> static bool ClothInputCodeRanges(void *method,const poser_cloth_boundary::CodeRange (&ranges)[N]) {
+  for(auto range:ranges)if(!ClothInputCodeRange(method,range))return false;
+  return true;
+}
+static bool ClothInput163Reject(const char *reason) {
+  ClothInputIssue(reason);ClothRejectCompatibility(reason);return false;
+}
+static bool ClothInstallInputBoundary163(void *update,void *read,void *write,void *valid,void *transforms,void **asms,size_t count) {
+  using namespace poser_cloth_boundary;
+  auto teamClass=FindClass("BeyondDynamicBone","TeamManager",asms,count);
+  auto teamMethod=ClothMethod(teamClass,"AlwaysTeamUpdate","System.Void");
+  auto getTeam=ClothMethod(s_clothInputManagerClass,"get_Team","BeyondDynamicBone.TeamManager",nullptr,true);
+  auto getBone=ClothMethod(s_clothInputManagerClass,"get_Bone","BeyondDynamicBone.DynamicBoneTransformManager",nullptr,true);
+  if(!ClothInputCodeRanges(update,Update163)||!ClothInputCodeRanges(read,Read163)||
+      !ClothInputCodeRanges(write,Write163)||!ClothInputCodeRanges(valid,Valid163)||
+      !ClothInputCodeRanges(teamMethod,TeamUpdate163)||!ClothInputCodeRanges(getTeam,GetTeam163)||
+      !ClothInputCodeRanges(getBone,GetBone163))return ClothInput163Reject("native-1.6.3-boundary-code-unconfirmed");
+  void *fields[3]{};
+  const char *names[]{"s_Cloth","s_Team","s_Bone"};
+  const char *types[]{"BeyondDynamicBone.ClothManager","BeyondDynamicBone.TeamManager","BeyondDynamicBone.DynamicBoneTransformManager"};
+  const size_t offsets[]{32,24,48};
+  for(unsigned n=0;n<3;++n) {
+    fields[n]=CollisionFieldInfo(s_clothInputManagerClass,names[n],types[n]);
+    if(!fields[n]||!(il2cpp_field_get_flags(fields[n])&0x10)||
+        il2cpp_field_get_offset(fields[n])!=offsets[n])return ClothInput163Reject("native-1.6.3-manager-identity-layout-unconfirmed");
+  }
+  auto readByteConstant=[&](const char *name) {
+    void *field=CollisionFieldInfo(transforms,name,"System.Byte");
+    if(!field||(il2cpp_field_get_flags(field)&0x50)!=0x50)return -1;
+    unsigned char value[8]{};il2cpp_field_static_get_value(field,value);return int(value[0]);
+  };
+  const int readMask=readByteConstant("Flag_Read"),enableMask=readByteConstant("Flag_Enable");
+  if(readMask<=0||enableMask<=0||(readMask&enableMask))
+    return ClothInput163Reject("native-1.6.3-transform-flags-unconfirmed");
+  auto code=(unsigned char*)((MInfo*)update)->mp;
+  auto getTeamCode=(unsigned char*)((MInfo*)getTeam)->mp;
+  auto getBoneCode=(unsigned char*)((MInfo*)getBone)->mp;
+  auto teamCode=(unsigned char*)((MInfo*)teamMethod)->mp;
+  const size_t bytes=Update163[0].bytes;
+  if(!DirectCallAt(code,bytes,EarlyTeam163,getTeamCode)||!DirectCallAt(code,bytes,CompletedTeam163,getTeamCode)||
+      !DirectCallAt(code,bytes,Bone163,getBoneCode)||!DirectCallAt(code,bytes,BeforeTeam163,teamCode)||
+      !DirectCallAt(code,bytes,0x2b7,((MInfo*)read)->mp)||
+      DirectCallCount(code,bytes,getTeamCode)!=3||DirectCallCount(code,bytes,getBoneCode)!=1||
+      DirectCallCount(code,bytes,teamCode)!=1||DirectCallCount(code,bytes,((MInfo*)read)->mp)!=2||
+      DirectCallCount(code,bytes,((MInfo*)write)->mp)!=0||DirectCallCount(code,bytes,((MInfo*)valid)->mp)!=0)
+    return ClothInput163Reject("native-1.6.3-exact-boundary-calls-unconfirmed");
+  // Observation alone does not certify private cloth creation. Each build must
+  // explicitly certify that chain; runtime method profiles still gate mutation.
+  if(!RequiredChain163Certified)return ClothInput163Reject("native-1.6.3-required-chain-unverified");
+  void *targets[]{code,getTeamCode,getBoneCode,teamCode};
+  void *detours[]{(void*)ClothInputNativeUpdate,(void*)ClothInputNativeGetTeam,
+      (void*)ClothInputNativeGetBone,(void*)ClothSurfaceNativeTeamUpdate};
+  void **originals[]{(void**)&s_clothInputOriginalUpdate,(void**)&s_clothInputOriginalGetTeam,
+      (void**)&s_clothInputOriginalGetBone,(void**)&s_clothSurfaceOriginalTeamUpdate};
+  const HookFunctions hooks{
+      [](void *target,void *detour,void **original){return int(MH_CreateHook(target,detour,original));},
+      [](void *target){return int(MH_QueueEnableHook(target));},
+      [](){return int(MH_ApplyQueued());},
+      [](void *target){return int(MH_DisableHook(target));},
+      [](void *target){return int(MH_RemoveHook(target));}};
+  unsigned rollbackFailed=0;
+  if(!InstallHooks(targets,detours,originals,std::size(targets),hooks,rollbackFailed)) {
+    if(rollbackFailed)Log("[CLOTH-INPUT-HOOK] installFailed=1 rollbackFailed=%u retainedTrampolines=1 observationEnabled=0",rollbackFailed);
+    return ClothInput163Reject("native-1.6.3-boundary-hook-install-failed");
+  }
+  s_clothInputStaticCloth=fields[0];s_clothInputStaticTeam=fields[1];s_clothInputStaticBone=fields[2];
+  s_clothInputReadMask=readMask;s_clothInputEnableMask=enableMask;
+  s_clothInputUpdateCode=code;s_clothInputAuditedBytes=bytes;
+  s_clothInputEarlyTeamCallsite=code+EarlyTeam163+5;s_clothInputBoneCallsite=code+Bone163+5;
+  s_clothInputCallsite=code+CompletedTeam163+5;
+  s_clothInputPatchedFingerprint=eiem_cloth_input::Fingerprint(code,bytes);
+  s_clothSurfaceTeamCallsite=code+BeforeTeam163+5;s_clothSurfaceTeamCode=teamCode;
+  s_clothSurfaceTeamFingerprint=eiem_cloth_input::Fingerprint(teamCode,128);
+  s_clothInputBoundary163=true;s_clothInputHooks=true;s_clothSurfaceHook=true;
+  Log("[CLOTH-INPUT-HOOK] installed=1 profile=1.6.3-inline-valid exactCaller=1 identity=Cloth-Team-Bone sameUpdate=1 reentrant=0 forcedComplete=0");
+  return true;
+}
 static void ClothInstallInputTraceMainThread() {
   static bool attempted = false;
   if (attempted || !ClothOnMainThread() || (!s_cloth.active&&!ClothPrefetchNeedsHooks())) return;
@@ -28,7 +109,11 @@ static void ClothInstallInputTraceMainThread() {
       il2cpp_class_value_size(job, &alignment) != sizeof(ClothInputJobHandle) ||
       ClothValueOffset(job, "jobGroup", "System.UInt64", 16, 8) != 0 ||
       ClothValueOffset(job, "jobType", "System.Int32", 16, 4) != 8) {
-    ClothInputIssue("native-schedule-signature-or-JobHandle-ABI-unavailable"); return;
+    ClothInputIssue("native-schedule-signature-or-JobHandle-ABI-unavailable");
+    ClothRejectCompatibility("native-schedule-signature-or-JobHandle-ABI-unavailable"); return;
+  }
+  if(ClothInputCodeRanges(update,poser_cloth_boundary::Update163)) {
+    ClothInstallInputBoundary163(update,read,write,valid,transforms,asms,count);return;
   }
   const struct { void *method; size_t bytes; uint64_t hash; } checks[] = {
       {update, ClothInputAuditedBytes, 0x193870b55e754196ULL},
@@ -41,7 +126,8 @@ static void ClothInstallInputTraceMainThread() {
     if (!code || !VirtualQuery(code, &region, sizeof(region)) || region.AllocationBase != hGA ||
         region.State != MEM_COMMIT || code + check.bytes > (unsigned char *)region.BaseAddress + region.RegionSize ||
         eiem_cloth_input::Fingerprint(code, check.bytes) != check.hash) {
-      ClothInputIssue("native-completion-path-fingerprint-mismatch"); return;
+      ClothInputIssue("native-completion-path-fingerprint-mismatch");
+      ClothRejectCompatibility("native-completion-path-fingerprint-mismatch"); return;
     }
   }
   auto code = (unsigned char *)((MInfo *)update)->mp;
@@ -52,10 +138,10 @@ static void ClothInstallInputTraceMainThread() {
     if (code[n] != 0xe8) continue;
     memcpy(&relative, code + n + 1, sizeof(relative));
     if (code + n + 5 + relative != destination) continue;
-    if (callsite) { ClothInputIssue("completion-callsite-ambiguous"); return; }
+    if (callsite) { ClothInputIssue("completion-callsite-ambiguous"); ClothRejectCompatibility("completion-callsite-ambiguous"); return; }
     callsite = code + n + 5;
   }
-  if (!callsite) { ClothInputIssue("completion-callsite-missing"); return; }
+  if (!callsite) { ClothInputIssue("completion-callsite-missing"); ClothRejectCompatibility("completion-callsite-missing"); return; }
   auto teamClass = FindClass("BeyondDynamicBone", "TeamManager", asms, count);
   auto teamMethod = ClothMethod(teamClass, "AlwaysTeamUpdate", "System.Void");
   auto teamCode = teamMethod ? (unsigned char *)((MInfo *)teamMethod)->mp : nullptr;
@@ -78,7 +164,7 @@ static void ClothInstallInputTraceMainThread() {
             (void *)ClothInputNativeValid, (void **)&s_clothInputOriginalValid) ||
       !Hook(update, "ClothManager.ClothUpdate(input observer)",
             (void *)ClothInputNativeUpdate, (void **)&s_clothInputOriginalUpdate)) {
-    ClothInputIssue("native-input-hook-install-failed"); return;
+    ClothInputIssue("native-input-hook-install-failed"); ClothRejectCompatibility("native-input-hook-install-failed"); return;
   }
   s_clothInputUpdateCode = code;
   s_clothInputCallsite = callsite;
@@ -100,6 +186,7 @@ static void ClothInstallInputTraceMainThread() {
   }
   Log("[CLOTH-SURFACE-HOOK] installed=%d teamFingerprint=%d exactCallsite=%d boundary=previous-master-completed-before-AlwaysTeamUpdate crossFrame=1 forcedComplete=0",
       s_clothSurfaceHook, teamVerified, teamCallsite != nullptr);
+  if(!s_clothSurfaceHook)ClothRejectCompatibility("native-pre-team-boundary-unavailable");
   Log("[CLOTH-INPUT-HOOK] installed=1 mainThread=%lu branch=Transform-cross-frame boundary=native-completed-read-and-double-buffer-before-ValidPosition traceReadOnly=1 visibleAPose=separate-exclusive-lease workerHook=0 forcedComplete=0",
       GetCurrentThreadId());
 }

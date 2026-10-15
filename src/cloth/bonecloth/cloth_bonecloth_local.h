@@ -65,6 +65,8 @@ static bool ClothBoneLocalProfile(ClothBoneRuntime &s) {
   if(r.separatedWidth&&(!r.NativeRibbonWidth()||!eiem_cloth_asset::SourceLegRibbonWidth(*s.profile)))return false;
   if(r.sourceCoatWaist&&(!r.CoatWaistSkinOnly()||!eiem_cloth_asset::SourceInactiveCoat(*s.profile)))return false;
   if(r.sourceBodyOnly&&(!r.NativeBodyOnly()||!s.profile->runtimeBodyOnly||!eiem_cloth_asset::SourceBodyContact(s.profile->prefabSha,s.profile->component)))return false;
+  if(r.sourceSleeve&&(!r.SharedSupplier()||!eiem_cloth_asset::JsspsiSleeveSource(*s.profile)))return false;
+  if(s.profile->runtimeSleeve&&!r.sourceSleeve)return false;
   if(s.profile->runtimeBodyOnly&&!r.NativeBodyOnly())return false;
   if(s.profile->runtimeSeparatedCoat&&(!r.NativePanelsOnly()||!eiem_cloth_asset::SourceSeparatedCoat(*s.profile)))return false;
   if(eiem_cloth_asset::SourceOriginalCoverageCoat(s.profile->prefabSha,s.profile->component)&&
@@ -169,6 +171,7 @@ static bool ClothBoneLocalCreate() {
   return true;
   }
   if(l.createStage==2 && l.createLayer<l.layers.size()) {
+    if(recipe.SharedSkin()&&!ClothBoneSharedTeamsValid(s))return false;
     auto &layer=l.layers[l.createLayer];const auto &config=recipe.meshes[l.createLayer];
     const auto &source=s.profile->renderers[layer.renderer];
     auto renderer=ClothTarget(s.renderers[layer.renderer].renderer);void *old=nullptr;
@@ -176,7 +179,7 @@ static bool ClothBoneLocalCreate() {
     if(!layer.oldArray) {
       const bool paired=s.contactPartner>=0&&s_clothBoneSlots[s.contactPartner].supportCreated;
       if(!ClothBoneLocalBindingMapValid(config,source,recipe.Total(),paired?ClothPartnerSurfaceOriginal:0,
-          paired?int(std::size(ClothPartnerSurfaceBones)):0,recipe.RetainsBindings()) ||
+          paired?int(std::size(ClothPartnerSurfaceBones)):0,recipe.RetainsBindings(),recipe.SharedSkin()?recipe.sharedBindingCount:0) ||
           !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(renderer),"get_bones","UnityEngine.Transform[]"),renderer,nullptr,old) || !old) return false;
       layer.oldArray=ClothBoneHold(old);
       void *array=recipe.RetainsBindings()?old:il2cpp_array_new(g_transformClass,config.sourceBones+config.bindingCount);
@@ -353,15 +356,15 @@ static bool ClothBoneLocalRendererIdentity(size_t slot,void *renderer,void *mesh
   auto &s=ClothBoneState();const ClothBoneLocalMeshState *layer=nullptr;
   for(auto &candidate:s.local.layers) if(candidate.renderer==int(slot)) {if(layer) return false;layer=&candidate;}
   if(!layer) return false;auto &l=*layer;
-  if(!l.published || mesh!=ClothTarget(l.mesh) ||
-      !SurfaceRenderSameReferences(renderer,"get_bones","UnityEngine.Transform[]",l.rendererBones)) return false;
+  if(!l.published || mesh!=ClothBindingTarget(l.mesh) ||
+      !ClothBindingSameBones(renderer,l.rendererBones)) return false;
   const auto &r=s.renderers[slot];
-  for(size_t n=0;n<r.bones.size();++n) if(CollisionParent(ClothTarget(r.bones[n]))!=ClothTarget(r.parents[n])) return false;
+  for(size_t n=0;n<r.bones.size();++n) if(ClothBindingParent(ClothBindingTarget(r.bones[n]))!=ClothBindingTarget(r.parents[n])) return false;
   const ClothBoneLocalMeshConfig *config=nullptr;
   for(size_t k=0;k<s.local.layers.size();++k)if(&s.local.layers[k]==layer)config=&s.local.recipe->meshes[k];
   if(!config||!ClothBoneLocalBindingMapFor(s,*config,s.profile->renderers[slot]))return false;
   for(int n=0;n<config->bindingCount;++n)
-    if(ClothTarget(l.rendererBones[config->sourceBones+n])!=ClothTarget(ClothBoneLocalBindingRef(s,config->bindingNativeIndices[n])))return false;
+    if(ClothBindingTarget(l.rendererBones[config->sourceBones+n])!=ClothBindingTarget(ClothBoneLocalBindingRef(s,config->bindingNativeIndices[n])))return false;
   return true;
 }
 static bool ClothBoneLocalMeshRestore(ClothBoneLocalMeshState &l) {
@@ -413,11 +416,17 @@ static bool ClothBoneLocalCommitMeshes() {
   }
   return true;
 }
-static bool ClothBoneLocalPublish() {
+static bool ClothBoneLocalPublish(bool *bindingChecked) {
+  if(bindingChecked)*bindingChecked=false;
   auto &s=ClothBoneState();auto &l=s.local;
   if(!l.requested) return true;
   if(!l.ready || s.stopRequested || !ClothOwns(s.owner)) return false;
-  if(l.published) return ClothBoneBindingIdentity();
+  if(l.recipe->SharedSkin()&&!l.recipe->sharedSkinSupplier&&!ClothBoneSharedTeamsValid(s))return false;
+  if(l.published) {
+    const bool valid=ClothBoneBindingIdentity();
+    if(bindingChecked)*bindingChecked=valid;
+    return valid;
+  }
   if(l.apronLayer.configured && !ClothBoneApronLayerReadback(s,nullptr))return false;
   if(!ClothBoneLocalVisible()) return false;
   if(l.contactLayered && !ClothBoneBindingIdentity())return false;
@@ -428,6 +437,7 @@ static bool ClothBoneLocalPublish() {
   if(l.contactLayered && l.contactStart.phase!=ClothBoneContactStart::Phase::Ready)return GetTickCount64()<s.modeDeadline;
   if(!ClothBoneBindingIdentity() || !ClothBoneLocalCommitMeshes()) return false;
   if(!ClothBoneBindingIdentity()) {ClothBoneLocalRestore();return false;}
+  if(bindingChecked)*bindingChecked=true;
   l.published=true;
   if(l.recipe->CoatWaistSkinOnly())Log("[CLOTH-AUTO] stage=coat-waist-active component=%s Process=%p team=%d meshes=%d nativeOutputFrames=%u originalBBC=1 same24Particles=1 sourceTrunkField=1 MoveWeightsUnchanged=1 sourceBodyCapsulesUnchanged=1 visualVerified=0",s.profile->component,CollisionGc(s.process[1]),s.team[1],l.recipe->meshCount,l.solverFrames);
   if(l.recipe->sourceForkCoat)Log("[CLOTH-AUTO] stage=coat-graph-active component=%s team=%d addedTorso=0 calfSupplement=%zu nativeOutputFrames=%u originalSkinRetained=1 visualVerified=0",s.profile->component,s.team[1],s.calfColliders.size(),l.solverFrames);
@@ -485,6 +495,7 @@ static bool ClothBoneLocalMeshCleanup(size_t layer) {
 }
 static bool ClothBoneLocalCleanup() {
   auto &s=ClothBoneState();auto &l=s.local;
+  if(!ClothBoneSharedReleaseReady(s))return ClothBoneLocalCleanupWait("shared-renderer-publisher-still-holds-bones");
   if(!ClothBoneLocalRestore()) return ClothBoneLocalCleanupWait("renderer-still-references-owned-bones");
   if(l.registryScan){il2cpp_gchandle_free(l.registryScan);l.registryScan=0;}
   const bool sidesReleased=ClothBoneSideReleaseReady();

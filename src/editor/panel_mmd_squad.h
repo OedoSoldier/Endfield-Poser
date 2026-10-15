@@ -224,6 +224,8 @@ static void DrawMmdSquadPanel() {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(u8"物理")) {
+      if(s_clothCompatibilityIssue.load())
+        ImGui::TextWrapped(u8"衣物增强暂不可用，全队使用原有物理。动作与镜头仍可播放，增强开关设置已保留。");
       ImGui::BeginDisabled(s.loading || g_mmd.loading || g_mmd.session.active || g_mmd.preview);
       bool clothEnabled = s_clothSquadAutoEnabled.load();
       DrawMmdSecondaryControls();
@@ -249,6 +251,8 @@ static void DrawMmdSquadPanel() {
                             s_cloth.failed ? u8"未能启用增强" :
                             cloth.autoPreparing || cloth.boneBusy ? u8"准备中" : u8"使用原有物理";
         ImGui::Text(u8"第 %u 位衣物：%s", i + 1, state);
+        if(cloth.compatibilityPreserved)
+          ImGui::Text(u8"  %d 个特殊部位暂用原有物理",cloth.compatibilityPreserved);
       }
       ImGui::TextWrapped(u8"按各自角色处理，不包含队员之间的碰撞。惯性与第二骨骼参数和单人共用。");
       ImGui::EndDisabled();

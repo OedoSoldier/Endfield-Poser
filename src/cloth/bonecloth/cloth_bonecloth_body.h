@@ -1,8 +1,8 @@
 #pragma once
 static bool ClothBoneBodyGeometry() {
   auto &l=ClothBoneState().local;
-  auto c=ClothTarget(l.bodyCollider),t=ClothTarget(l.bodyTransform),p=ClothTarget(l.bodyParent);
-  if(!c || !t || !p || CollisionTransform(c)!=t || CollisionParent(t)!=p || !ClothAnchorUnderOwner(p)) return false;
+  auto c=ClothBindingTarget(l.bodyCollider),t=ClothBindingTarget(l.bodyTransform),p=ClothBindingTarget(l.bodyParent);
+  if(!c || !t || !p || CollisionTransform(c)!=t || ClothBindingParent(t)!=p || !ClothBindingUnderOwner(p)) return false;
   Vector3 position{},scale{};Quaternion rotation{};
   if(!SurfaceVisiblePose(t,position,rotation,scale) ||
       !ClothSameLocal(position,rotation,Vector3{},Quaternion{0,0,0,1}) ||
@@ -13,7 +13,7 @@ static bool ClothBoneBodyGeometry() {
       std::isfinite(g.size.x) && fabsf(g.size.x-ClothBodyContactRadius)<1e-6f;
 }
 static bool ClothBoneBodySourceIdentity() {
-  auto &l=ClothBoneState().local;auto &r=l.bodyRenderer;auto renderer=ClothTarget(r.renderer);
+  auto &l=ClothBoneState().local;auto &r=l.bodyRenderer;auto renderer=ClothBindingTarget(r.renderer);
   // An LOD renderer can be disabled while its skeleton and fitted capsules
   // remain in use. Validate the source identity, not its rendering switch.
   return renderer &&
@@ -25,7 +25,7 @@ static bool ClothBoneBodyBindingIdentity() {
   if(l.recipe->bodyAsset)return ClothBoneFittedBodyIdentity();
   if(!l.bodyCreated) return true;
   return ClothBodyContactBone>=0 && size_t(ClothBodyContactBone)<l.bodyRenderer.bones.size() &&
-      ClothTarget(l.bodyParent)==ClothTarget(l.bodyRenderer.bones[ClothBodyContactBone]) &&
+      ClothBindingTarget(l.bodyParent)==ClothBindingTarget(l.bodyRenderer.bones[ClothBodyContactBone]) &&
       ClothBoneBodySourceIdentity() && ClothBoneBodyGeometry();
 }
 static bool ClothBoneBodyRegistration(void *process,int team,bool restoring) {

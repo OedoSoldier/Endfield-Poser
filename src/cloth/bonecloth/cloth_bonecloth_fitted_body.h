@@ -1,11 +1,28 @@
 #pragma once
+static void *ClothBoneFittedBodyParent(size_t n) {
+  auto &s=ClothBoneState();auto &l=s.local;
+  if(!l.recipe||!l.recipe->bodySpheres||n>=size_t(l.recipe->bodySphereCount))return nullptr;
+  const auto &fit=l.recipe->bodySpheres[n];
+  if(fit.bone<0||size_t(fit.bone)>=l.bodyRenderer.bones.size())return nullptr;
+  auto bone=ClothBindingTarget(l.bodyRenderer.bones[fit.bone]);
+  if(!fit.parentFrame)return bone;
+  // This opt-in is currently limited to Si's exact two missing palette parents.
+  const auto asset=l.recipe->bodyAsset;
+  if(!s.profile||!eiem_cloth_asset::JsspsiSleeveSource(*s.profile)||!l.recipe->SharedSupplier()||
+      n<7||n>8||!asset||fit.bone>=asset->boneCount||size_t(fit.bone)>=l.bodyRenderer.parents.size())return nullptr;
+  const auto &binding=asset->bones[fit.bone];const bool left=n==7;
+  if(!binding.name||!binding.parent||strcmp(binding.name,left?"Bip001_LThighTwist":"Bip001_RThighTwist")||
+      strcmp(binding.parent,left?"Bip001_L_Thigh":"Bip001_R_Thigh"))return nullptr;
+  auto parent=ClothBindingTarget(l.bodyRenderer.parents[fit.bone]);
+  return bone&&parent&&ClothBindingParent(bone)==parent?parent:nullptr;
+}
 static bool ClothBoneFittedBodyGeometry(size_t n) {
   auto &l=ClothBoneState().local;const auto &recipe=*l.recipe;
   if(n>=l.fittedBody.size()||n>=size_t(recipe.bodySphereCount)||!recipe.bodySpheres)return false;
   const auto &r=l.fittedBody[n];const auto &fit=recipe.bodySpheres[n];
-  auto c=ClothTarget(r.collider),t=ClothTarget(r.transform),p=ClothTarget(r.parent);Vector3 position{},scale{};Quaternion rotation{};
+  auto c=ClothBindingTarget(r.collider),t=ClothBindingTarget(r.transform),p=ClothBindingTarget(r.parent);Vector3 position{},scale{};Quaternion rotation{};
   if(fit.bone<0||size_t(fit.bone)>=l.bodyRenderer.bones.size()||!c||!t||!p||
-      p!=ClothTarget(l.bodyRenderer.bones[fit.bone])||CollisionTransform(c)!=t||CollisionParent(t)!=p||!ClothAnchorUnderOwner(p)||
+      p!=ClothBoneFittedBodyParent(n)||CollisionTransform(c)!=t||ClothBindingParent(t)!=p||!ClothBindingUnderOwner(p)||
       !SurfaceVisiblePose(t,position,rotation,scale)||!ClothSameLocal(position,rotation,fit.center,fit.rotation)||
       fabsf(scale.x-1)>1e-5f||fabsf(scale.y-1)>1e-5f||fabsf(scale.z-1)>1e-5f)return false;
   const auto g=CollisionReadGeometry(c);
@@ -30,20 +47,21 @@ static bool ClothBoneFittedBodyCreate() {
   const bool thighs=s.profile&&s.profile->runtimeBodyOnly&&eiem_cloth_asset::SourceBodyContact(s.profile->prefabSha,s.profile->component)&&r.NativeBodyOnly();
   const bool coat=s.profile&&eiem_cloth_asset::SourceOriginalCoverageCoat(s.profile->prefabSha,s.profile->component)&&
       r.NativePanelsOnly()&&r.CoatLegCoverage();
-  if(!l.requested||!s.profile||!r.runtimeGenerated||!r.bodyCoverage||(!panels&&!longSkirt&&!thighs&&!coat)||
+  const bool sleeve=s.profile&&eiem_cloth_asset::JsspsiSleeveSource(*s.profile)&&r.SharedSupplier();
+  if(!l.requested||!s.profile||!r.runtimeGenerated||!r.bodyCoverage||(!panels&&!longSkirt&&!thighs&&!coat&&!sleeve)||
       !r.bodyAsset||!r.bodySpheres||l.fittedBodyCreated||!l.fittedBody.empty()||
       !ClothOwns(s.owner)||s.stopRequested||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||!ClothBoneBodySourceIdentity())return false;
   auto ctor=ClothMethod(g_gameObjectClass,".ctor","System.Void","System.String"),add=ClothMethod(g_gameObjectClass,"AddComponent","UnityEngine.Component","System.Type");
   if(!ctor||!add)return false;
   for(int n=0;n<r.bodySphereCount;++n){const auto &fit=r.bodySpheres[n];
     if(fit.bone<0||size_t(fit.bone)>=l.bodyRenderer.bones.size()||!ClothFinitePosition(fit.center)||!std::isfinite(fit.radius)||fit.radius<=0||fit.radius>.25f)return false;
-    const bool capsule=fit.Capsule();if(capsule&&((longSkirt&&n<12)||!std::isfinite(fit.endRadius)||fit.endRadius<=0||fit.endRadius>.25f||(!thighs&&!(coat&&n>=2)&&fit.endRadius>=fit.radius)||
+    const bool capsule=fit.Capsule();if(capsule&&((longSkirt&&n<12)||!std::isfinite(fit.endRadius)||fit.endRadius<=0||fit.endRadius>.25f||(!thighs&&!(coat&&n>=2)&&!(sleeve&&n>=4)&&fit.endRadius>=fit.radius)||
         !std::isfinite(fit.length)||fit.length<=fit.radius+fit.endRadius||fit.length>1))return false;
     if(!capsule&&(panels||thighs||coat||n>=12||fit.endRadius!=0||fit.length!=0))return false;
     auto cls=SurfaceClass("BeyondDynamicBone",capsule?"BeyondBoneCapsuleCollider":"BeyondBoneSphereCollider");
     auto size=capsule?CollisionCapsuleSizeMethod(cls):ClothMethod(cls,"SetSize","System.Void","System.Single"),update=ClothMethod(cls,"UpdateParameters","System.Void");
     if(!cls||!size||!update)return false;
-    auto parent=ClothTarget(l.bodyRenderer.bones[fit.bone]);Vector3 scale{};
+    auto parent=ClothBoneFittedBodyParent(size_t(n));Vector3 scale{};
     if(!parent||!ClothAnchorUnderOwner(parent)||!CollisionScale(parent,scale)||!eiem_collision::UniformPositive(CollisionV(scale))||!CollisionUniformFrame(parent,scale.x))return false;
     char name[96]{};snprintf(name,sizeof(name),"EIEM_BoneCloth_FittedBody_%d",n);
     void *go=il2cpp_object_new(g_gameObjectClass),*label=il2cpp_string_new(name),*unused=nullptr,*args[]{label};
@@ -65,7 +83,9 @@ static bool ClothBoneFittedBodyCreate() {
     if(!ClothInvoke(update,component,nullptr,unused)||!ClothBoneFittedBodyGeometry(n)||
         !CollisionTeams(component,s.team[0],member,count)||member||count!=0)return false;
     Log("[CLOTH-BONE-FITTED-BODY] stage=created generation=%llu index=%d collider=%d parent=%d center=%g,%g,%g radius=%g endRadius=%g length=%g shape=%s scale=%g originalCapsuleWrites=0 nativeRegistration=pending",
-        s.owner.generation,n,shape.collider.id.instance,shape.parent.id.instance,fit.center.x,fit.center.y,fit.center.z,radius,endRadius,length,capsule?((thighs||(coat&&n>=2))?"thigh-capsule":"calf-capsule"):"proximal-sphere",scale.x);
+        s.owner.generation,n,shape.collider.id.instance,shape.parent.id.instance,fit.center.x,fit.center.y,fit.center.z,radius,endRadius,length,
+        sleeve?(n<4?"arm-capsule":n<7?"torso-capsule":"thigh-capsule"):
+        capsule?((thighs||(coat&&n>=2))?"thigh-capsule":"calf-capsule"):"proximal-sphere",scale.x);
   }
   l.fittedBodyCreated=true;return ClothBoneFittedBodyIdentity();
 }
@@ -78,8 +98,8 @@ static bool ClothBoneFittedBodyRegistration(void *process,int team,bool restorin
     if(life!=ClothLife::Alive||!process||team<=0||!CollisionTeams(c,team,member,count)||!CollisionProcessContains(process,c,listed)||
         member!=candidate||listed!=candidate||(!restoring&&count!=int(candidate)))return false;}
   if(candidate&&!l.fittedBodyRegistered){l.fittedBodyRegistered=true;int capsules=0;for(int n=0;n<l.recipe->bodySphereCount;++n)capsules+=l.recipe->bodySpheres[n].Capsule();
-    const int thighs=l.recipe->NativeBodyOnly()?capsules:l.recipe->CoatLegCoverage()?2:0;
-    Log("[CLOTH-BONE-FITTED-BODY] stage=registered generation=%llu Process=%p team=%d shapes=%zu spheres=%d calfCapsules=%d thighCapsules=%d listAndTeamReadback=1 contactVerified=0 visualVerified=0",s.owner.generation,process,team,l.fittedBody.size(),int(l.fittedBody.size())-capsules,capsules-thighs,thighs);}
+    const bool sleeve=l.recipe->SharedSupplier();const int thighs=l.recipe->NativeBodyOnly()?capsules:(l.recipe->CoatLegCoverage()||sleeve)?2:0;
+    Log("[CLOTH-BONE-FITTED-BODY] stage=registered generation=%llu Process=%p team=%d shapes=%zu spheres=%d calfCapsules=%d thighCapsules=%d armCapsules=%d torsoCapsules=%d listAndTeamReadback=1 contactVerified=0 visualVerified=0",s.owner.generation,process,team,l.fittedBody.size(),int(l.fittedBody.size())-capsules,sleeve?0:capsules-thighs,thighs,sleeve?4:0,sleeve?3:0);}
   return true;
 }
 static bool ClothBoneFittedBodyReleaseReady() {

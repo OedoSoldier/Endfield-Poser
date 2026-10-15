@@ -807,7 +807,7 @@ static bool ClothApplyColliders(ClothInstance &i, bool dirty, uint64_t now) {
 #include "cloth/core/cloth_collision.h"
 
 static bool ClothRestore() {
-  if (ClothBoneLeased()||ClothAttachmentPending()||ClothCalfPending()) return false;
+  if (ClothBoneLeased()||ClothAttachmentPending()||ClothCalfPending()||ClothSiEnvelopePending()) return false;
   bool ok = true, parametersChanged = false;
   for (size_t n = 0; n < s_cloth.anchors.count; ++n)
     ok &= ClothRestoreAnchor(s_cloth.anchors.entries[n].value);
@@ -1261,7 +1261,7 @@ static void ClothDrainCancellation() {
 }
 static void ClothBegin(bool explicitPlay = false) {
   if (!ClothOnMainThread() || s_clothBusy) return;
-  if(s_clothRequested && ClothEnhancementSetting().load() &&
+  if(s_clothRequested && ClothEnhancementEnabled() &&
       (!s_cloth.active || !ClothOwns(s_cloth.owner))) {
     auto &gate=g_clothPlaybackGate;
     if(gate.State()==eiem_playback::Preparation::Ready || gate.State()==eiem_playback::Preparation::Prepared)gate.Cancel();
@@ -1312,16 +1312,16 @@ static void ClothPlaybackService(bool completedBoundary) {
   const auto character=reinterpret_cast<uintptr_t>(ClothHostEntity());
   auto &gate=g_clothPlaybackGate;
   if(gate.Matches(backend,generation,character) && gate.State()==Preparation::Failed &&
-      !ClothEnhancementSetting().load() && !ClothBonePending() && !ClothBoneLeased()) {
+      !ClothEnhancementEnabled() && !ClothBonePending() && !ClothBoneLeased()) {
     gate.Cancel();return;
   }
   if(!gate.Matches(backend,generation,character)||
       (gate.State()!=Preparation::Waiting&&gate.State()!=Preparation::Prepared))return;
   const auto ticket=gate.Ticket();const auto elapsed=gate.Elapsed(GetTickCount64());
-  const bool enabled=ClothEnhancementSetting().load(std::memory_order_acquire);
+  const bool enabled=ClothEnhancementEnabled();
   bool ready=false,failed=false;const char *reason="waiting-for-owner-startup";
   if(!enabled && !ClothBonePending() && !ClothBoneLeased()) {
-    ready=true;reason="enhancement-disabled-original-restored";
+    ready=true;reason=s_clothCompatibilityIssue.load()?"native-adapter-incompatible-original-retained":"enhancement-disabled-original-restored";
   } else if(s_cloth.owner.generation==generation && s_cloth.owner.character==character && s_cloth.failed) {
     failed=true;reason=s_cloth.failureReason;
   } else if(ClothOwns(s_cloth.owner) && s_cloth.discovery.complete) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "math/face_geometry.h"
+#include "math/face_native.h"
 #include "nlohmann/json.hpp"
 
 namespace face_mixing {
@@ -50,7 +51,13 @@ inline int BoneRegion(const std::string &name) {
 struct Transform {
   Vec3 position;
   Quat rotation;
+  // Local scale relative to the neutral hierarchy. Globals() returns the
+  // world-space axis lengths instead, for independent regional composition.
+  Vec3 scale{1,1,1};
 };
+inline Vec3 AxisLengths(const mmd::Matrix &m) {
+  return {Len({m.m[0],m.m[1],m.m[2]}),Len({m.m[4],m.m[5],m.m[6]}),Len({m.m[8],m.m[9],m.m[10]})};
+}
 using Pose=std::array<Transform,face_geometry::MaxBones>;
 struct Hierarchy {
   int count=0;
@@ -61,6 +68,9 @@ struct Hierarchy {
   std::array<mmd::Matrix,face_geometry::MaxBones> external{};
   std::array<Quat,face_geometry::MaxBones> externalRotation{};
 };
+inline Vec3 Scale(const Hierarchy &h,int i,const Transform &local) {
+  return face_native::Product(h.scale[i],local.scale);
+}
 inline Hierarchy BindHierarchy(const std::vector<face_geometry::Bone> &nodes,
                               const Pose &rest,const std::vector<Vec3> &scales) {
   Hierarchy h;h.count=int(nodes.size());h.rest=rest;
@@ -95,8 +105,8 @@ inline Pose Globals(const Hierarchy &h,const Pose &local) {
     int i=h.order[n],p=h.parent[i];
     const auto &parent=p>=0?matrices[p]:h.external[i];
     auto parentRotation=p>=0?result[p].rotation:h.externalRotation[i];
-    matrices[i]=parent*mmd::TRS(local[i].position,local[i].rotation,h.scale[i]);
-    result[i]={matrices[i].position(),NormQ(parentRotation*local[i].rotation)};
+    matrices[i]=parent*mmd::TRS(local[i].position,local[i].rotation,Scale(h,i,local[i]));
+    result[i]={matrices[i].position(),NormQ(parentRotation*local[i].rotation),AxisLengths(matrices[i])};
   }
   return result;
 }
@@ -120,7 +130,9 @@ inline bool Compose(const Hierarchy &h,const std::array<Pose,RegionCount> &compl
     auto parentRotation=p>=0?rotations[p]:h.externalRotation[i];
     result[i].position=face_geometry::Vector(inverse,desired[i].position)+inverse.position();
     result[i].rotation=NormQ(Conj(parentRotation)*desired[i].rotation);
-    actual[i]=parent*mmd::TRS(result[i].position,result[i].rotation,h.scale[i]);
+    auto unit=parent*mmd::TRS(result[i].position,result[i].rotation,h.scale[i]);
+    result[i].scale=face_native::Ratio(desired[i].scale,AxisLengths(unit));
+    actual[i]=parent*mmd::TRS(result[i].position,result[i].rotation,Scale(h,i,result[i]));
     rotations[i]=NormQ(parentRotation*result[i].rotation);
     if(!mmd::Inverse(actual[i],inverses[i]))return false;
   }

@@ -40,7 +40,7 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateRibbon(Package &packag
   Need(ribbonReference>=0&&meshes.size()<=16,("ribbon-renderer-coverage-"+std::to_string(meshes.size())).c_str());
   int64_t producer=0;for(const auto &o:s.file.objects)if(s.file.Class(o.first)==114&&s.Name(o.first)=="MC_Seraph_Skirt"){Need(!producer,"ribbon-producer-ambiguous");producer=o.first;}
   Need(producer!=0,"ribbon-producer-missing");auto producerBones=s.Branch(Refs(s.file.Get(producer).At("serializeData").At("rootBones")));
-  for(auto c:Refs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(c);Need(std::find(producerBones.begin(),producerBones.end(),t)!=producerBones.end(),"ribbon-collider-source-not-main-skirt");out->colliders.push_back({text(s.Name(c)),text(s.Name(s.Parent(t)))});}
+  for(auto c:ColliderRefs(sd.At("colliderCollisionConstraint").At("colliderList"))){const auto t=s.TransformId(c);Need(std::find(producerBones.begin(),producerBones.end(),t)!=producerBones.end(),"ribbon-collider-source-not-main-skirt");out->colliders.push_back({text(s.Name(c)),text(s.Name(s.Parent(t)))});}
   Need(out->colliders.size()==3,"ribbon-native-collider-count");out->nativeProducers.push_back(text(s.Name(producer)));
   std::string signature="runtime-native-ribbon-source-v1\n"+s.file.sha+"\n"+std::to_string(id);for(const auto &source:package.sources)signature+="\n"+source.first+"="+source.second;
   p.signature=text(Digest(Bytes(signature.begin(),signature.end())));out->Link();eiem_cloth_cache::Validate(*out);

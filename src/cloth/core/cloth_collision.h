@@ -23,6 +23,20 @@ static ClothActorBank<ClothActorCommands> s_ClothActorCommands;
 static std::atomic<bool> s_clothAutoEnabled{true};
 static std::atomic<bool> s_clothSquadAutoEnabled{true};
 static std::atomic<bool> &ClothEnhancementSetting() {return s_clothActorIndex?s_clothSquadAutoEnabled:s_clothAutoEnabled;}
+// A rejected native adapter must not hold the shared MMD clock forever.
+// Preserve the user's setting; only this process's effective capability changes.
+// Rejection is established before acquiring any enhanced renderer/cloth lease.
+static std::atomic<const char *> s_clothCompatibilityIssue{nullptr};
+static bool ClothEnhancementEnabled() {
+  return ClothEnhancementSetting().load(std::memory_order_acquire) &&
+      !s_clothCompatibilityIssue.load(std::memory_order_acquire);
+}
+static bool ClothRejectCompatibility(const char *reason) {
+  const char *expected=nullptr;
+  if(s_clothCompatibilityIssue.compare_exchange_strong(expected,reason,std::memory_order_acq_rel))
+    Log("[CLOTH-COMPAT] enhancementUnavailable=1 reason=%s originalPhysicsRetained=1 userSettingPreserved=1",reason);
+  return false;
+}
 static const char *CollisionListType = "System.Collections.Generic.List<BeyondDynamicBone.ColliderComponent>";
 static void ClothBoneQueueCommand(uint64_t session,bool stop) {
   ClothEnhancementSetting().store(!stop,std::memory_order_release);
@@ -69,7 +83,7 @@ struct CollisionUi {
   int boneKinds[8]{};
   bool boneApplied[8]{};
   int authoredApplied=0,autoConnectionsApplied=0,autoSkinApplied=0,autoPartialApplied=0;
-  int autoPreserved=0;
+  int autoPreserved=0,compatibilityPreserved=0;
   bool autoPreparing=false,autoChecked=false;
   char boneNames[8][64]{};
   char boneIssues[8][192]{};
@@ -462,16 +476,21 @@ static bool ClothCalfNeeded();
 static bool ClothCalfRetiring();
 static void ClothCalfContactsRelease();
 static void ClothCalfBoundary();
+static bool ClothSiEnvelopePending();
+static bool ClothSiEnvelopeNeeded();
+static void ClothSiEnvelopeRelease();
+static void ClothSiEnvelopeBoundary();
 
 static void ClothCollisionRelease(const char *reason) {
   ClothAttachmentRelease();
   ClothCalfContactsRelease();
+  ClothSiEnvelopeRelease();
   __try { ClothBoneRelease(reason); }
   __except (EXCEPTION_EXECUTE_HANDLER) {
     Log("[CLOTH-CONTACT-FAULT] release-retains-owned-references");
   }
 }
-static bool ClothCollisionNeedsMaintenance() { return ClothBonePending()||ClothAttachmentNeeded()||ClothCalfNeeded(); }
+static bool ClothCollisionNeedsMaintenance() { return ClothBonePending()||ClothAttachmentNeeded()||ClothCalfNeeded()||ClothSiEnvelopeNeeded(); }
 #include "../diagnostics/cloth_input_trace.h"
 #include "../diagnostics/cloth_collision_snapshot.h"
 #include "../native/cloth_native_runtime.h"
@@ -483,6 +502,7 @@ static bool ClothCollisionNeedsMaintenance() { return ClothBonePending()||ClothA
 #include "../native/cloth_turn_runtime.h"
 #include "../native/cloth_attachment_contacts.h"
 #include "../native/cloth_calf_contacts.h"
+#include "../native/cloth_si_envelope.h"
 static void CollisionPublishUi() {
   CollisionUi ui{};
   ui.session = s_cloth.active ? s_cloth.owner.session : 0;
@@ -496,10 +516,12 @@ static void CollisionPublishUi() {
   strncpy_s(ui.catalogSource,s_clothBoneCatalogSource,_TRUNCATE);
   strncpy_s(ui.boneIssue,s_clothBone.issue,_TRUNCATE);
   ui.boneCount=s_clothBoneCount;
+  ui.compatibilityPreserved=int(s_ClothActorBones.Get().incompatibleComponents.size());
   ui.autoPreparing=s_clothAutoWaiting && !s_clothAutoDeferred;
   if(s_clothAutoJob&&s_clothAutoJob->done.load(std::memory_order_acquire)&&s_clothAutoJob->session==s_cloth.owner.session&&s_clothAutoJob->generation==s_cloth.owner.generation) {
     ui.autoChecked=true;std::set<std::string> generated;
-    if(s_clothAutoLease)for(const auto &p:s_clothAutoLease->profiles)generated.insert(p->view.component);
+    if(s_clothAutoLease)for(const auto &p:s_clothAutoLease->profiles)
+      if(!s_ClothActorBones.Get().incompatibleComponents.count(p->view.component))generated.insert(p->view.component);
     for(const auto &c:s_clothAutoJob->query.cloths)if(!generated.count(c.name))++ui.autoPreserved;
   }
   for(int n=0;n<ui.boneCount;++n) {
@@ -546,7 +568,7 @@ static void ClothCollisionServiceUi() {
 }
 static void ClothCollisionMaintenance() {
   if (!ClothOnMainThread() || !ClothCollisionNeedsMaintenance()) return;
-  if((ClothAttachmentNeeded()||ClothCalfNeeded())&&s_clothInputHookInstaller)s_clothInputHookInstaller();
+  if((ClothAttachmentNeeded()||ClothCalfNeeded()||ClothSiEnvelopeNeeded())&&s_clothInputHookInstaller)s_clothInputHookInstaller();
   __try { ClothBoneService(false, ClothFrame()); }
   __except (EXCEPTION_EXECUTE_HANDLER) {
     ClothBoneRelease("maintenance-native-exception");

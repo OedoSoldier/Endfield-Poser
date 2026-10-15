@@ -1,6 +1,8 @@
 #pragma once
 #include "../native/cloth_input_state.h"
 #include "../native/cloth_native_math.h"
+#include "../native/cloth_input_boundary.h"
+#include "../native/cloth_native_memory.h"
 
 constexpr int ClothInputTargets = 24;
 struct ClothInputPose {
@@ -62,7 +64,15 @@ static unsigned char *s_clothInputUpdateCode = nullptr;
 static void *s_clothInputCallsite = nullptr;
 static uint64_t s_clothInputPatchedFingerprint = 0;
 constexpr size_t ClothInputAuditedBytes = 809;
+static size_t s_clothInputAuditedBytes = ClothInputAuditedBytes;
 static thread_local unsigned s_clothInputUpdateDepth = 0;
+static bool s_clothInputBoundary163 = false;
+static thread_local poser_cloth_boundary::Context s_clothInputBoundaryContext;
+static void *s_clothInputEarlyTeamCallsite=nullptr,*s_clothInputBoneCallsite=nullptr;
+static void *s_clothInputStaticCloth=nullptr,*s_clothInputStaticTeam=nullptr,*s_clothInputStaticBone=nullptr;
+using ClothInputGetterFn = void *(__fastcall *)(void *);
+static ClothInputGetterFn s_clothInputOriginalGetTeam=nullptr,s_clothInputOriginalGetBone=nullptr;
+static bool ClothInputBoundaryIdentityMatches(void *team);
 static void ClothBodyClear();
 static void ClothContactClear();
 struct alignas(8) ClothInputJobHandle { uint64_t a, b; };
@@ -581,10 +591,10 @@ static void ClothInputCompletedImpl(void *manager) {
 }
 static void ClothInputCompleted(void *manager, void *caller) {
   if (!ClothOnMainThread() || !s_clothInputHooks || !s_clothInputUpdateDepth ||
-      !s_cloth.active) return;
+      !s_cloth.active || (s_clothInputBoundary163&&!s_clothInputBoundaryContext.observing)) return;
   __try {
     const bool fingerprint = s_clothInputUpdateCode &&
-        eiem_cloth_input::Fingerprint(s_clothInputUpdateCode, ClothInputAuditedBytes) == s_clothInputPatchedFingerprint;
+        eiem_cloth_input::Fingerprint(s_clothInputUpdateCode, s_clothInputAuditedBytes) == s_clothInputPatchedFingerprint;
     if (eiem_cloth_input::CanRead(true, ClothOwns(s_cloth.owner), s_clothInputUpdateDepth == 1,
             caller == s_clothInputCallsite, ClothInputStaticBool("UseAnimatorTransform"),
             ClothInputStaticBool("UseCrossFrameJob"), fingerprint)) {
@@ -600,19 +610,21 @@ static void ClothInputCompleted(void *manager, void *caller) {
 static void ClothSurfaceBeforeTeam(void *self, void *caller) {
   if (!ClothOnMainThread() || !s_clothSurfaceHook || !s_clothInputHooks ||
       s_clothInputUpdateDepth != 1 || s_clothSurfaceAtBoundary ||
-      caller != s_clothSurfaceTeamCallsite || (!ClothBonePending()&&!ClothPrefetchNeedsHooks()&&!ClothTurnNeeded()&&!ClothAttachmentNeeded()&&!ClothCalfNeeded())) return;
+      caller != s_clothSurfaceTeamCallsite || (!ClothBonePending()&&!ClothPrefetchNeedsHooks()&&!ClothTurnNeeded()&&!ClothAttachmentNeeded()&&!ClothCalfNeeded()&&!ClothSiEnvelopeNeeded())) return;
   __try {
     const bool fingerprint = s_clothInputUpdateCode && s_clothSurfaceTeamCode &&
-        eiem_cloth_input::Fingerprint(s_clothInputUpdateCode, ClothInputAuditedBytes) == s_clothInputPatchedFingerprint &&
+        eiem_cloth_input::Fingerprint(s_clothInputUpdateCode, s_clothInputAuditedBytes) == s_clothInputPatchedFingerprint &&
         eiem_cloth_input::Fingerprint(s_clothSurfaceTeamCode, 128) == s_clothSurfaceTeamFingerprint;
     void *team = nullptr;
     if (!eiem_cloth_surface::CanMutate(true, s_clothInputUpdateDepth, true,
           ClothInputStaticBool("UseAnimatorTransform"), ClothInputStaticBool("UseCrossFrameJob"),
           fingerprint, self != nullptr)) return;
-    if (!ClothInvoke(ClothMethod(s_clothInputManagerClass, "get_Team", "BeyondDynamicBone.TeamManager", nullptr, true),
-                     nullptr, nullptr, team) || team != self) return;
+    if(s_clothInputBoundary163) {
+      if(!ClothInputBoundaryIdentityMatches(self))return;
+    } else if (!ClothInvoke(ClothMethod(s_clothInputManagerClass, "get_Team", "BeyondDynamicBone.TeamManager", nullptr, true),
+                            nullptr, nullptr, team) || team != self) return;
     s_clothSurfaceAtBoundary = true;
-    __try { ClothAttachmentBoundary();ClothCalfBoundary();ClothPrefetchBoundary();if(ClothBonePending()&&!ClothCalfRetiring())ClothBoneBoundary();ClothTurnBoundary(); }
+    __try { ClothAttachmentBoundary();ClothCalfBoundary();ClothPrefetchBoundary();if(ClothBonePending()&&!ClothCalfRetiring())ClothBoneBoundary();ClothSiEnvelopeBoundary();ClothTurnBoundary(); }
     __finally { s_clothSurfaceAtBoundary = false; }
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     ClothAttachmentRelease();
@@ -629,8 +641,10 @@ static void __fastcall ClothSurfaceNativeTeamUpdate(void *self, void *method) {
 }
 static void ClothInputUpdateLocked(void *self, void *method) {
   ++s_clothInputUpdateDepth;
+  const bool outer=s_clothInputBoundary163&&s_clothInputUpdateDepth==1;
+  if(outer)s_clothInputBoundaryContext.Begin(self);
   __try { s_clothInputOriginalUpdate(self, method); }
-  __finally { --s_clothInputUpdateDepth; }
+  __finally { if(outer)s_clothInputBoundaryContext.End();--s_clothInputUpdateDepth; }
 }
 static void __fastcall ClothInputNativeUpdate(void *self, void *method) {
   // GUI commands share the Poser lock. Defer maintenance instead of waiting.
@@ -649,3 +663,4 @@ static ClothInputJobHandle *__fastcall ClothInputNativeValid(ClothInputJobHandle
   }
   return s_clothInputOriginalValid(result, self, dependency, method);
 }
+#include "cloth/native/cloth_input_boundary_observer.h"

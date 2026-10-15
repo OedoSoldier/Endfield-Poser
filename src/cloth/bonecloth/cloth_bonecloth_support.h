@@ -63,6 +63,7 @@ static bool ClothBoneSupportCreate() {
   return true;
 }
 static ClothRef ClothBoneLocalBindingRef(const ClothBoneRuntime &s,int id) {
+  if(id<=-ClothSharedSkinBase)return ClothBoneSharedBindingRef(s,id);
   if(id>=0)return size_t(id)<s.bones.size()?s.bones[id].bone:ClothRef{};
   if(!ClothOnMainThread())return {};
   if(id < -128 || s.contactPartner<0 || s.contactPartner>=s_clothBoneCount)return {};
@@ -71,26 +72,27 @@ static ClothRef ClothBoneLocalBindingRef(const ClothBoneRuntime &s,int id) {
       p.tx.phase!=eiem_cloth_rebuild::Phase::Active||!p.teamModeConfirmed||!p.graph[1]||
       index<ClothPartnerSurfaceOriginal||size_t(index)>=p.bones.size()||
       !ClothBoneCandidate(p).bones[index].attribute)return {};
-  const auto &b=p.bones[index];auto t=ClothTarget(b.bone);
-  if(!t||!ClothOwns(s.owner)||!ClothAnchorUnderOwner(t)||CollisionParent(t)!=ClothTarget(b.parent))return {};
+  const auto &b=p.bones[index];auto t=ClothBindingTarget(b.bone);
+  if(!t||!ClothOwns(s.owner)||!ClothBindingUnderOwner(t)||ClothBindingParent(t)!=ClothBindingTarget(b.parent))return {};
   return b.bone;
 }
 static bool ClothBoneLocalBindingMapFor(const ClothBoneRuntime &s,const ClothBoneLocalMeshConfig &c,const ClothBoneRendererAsset &a) {
+  if(s.local.recipe&&s.local.recipe->SharedSkin()&&!s.local.recipe->sharedSkinSupplier&&!ClothBoneSharedTeamsValid(s))return false;
   const bool retained=s.local.recipe&&s.profile&&
       (s.local.recipe->CoatWaistSkinOnly()&&eiem_cloth_asset::SourceInactiveCoat(*s.profile));
   if(c.bindingCount<0||c.bindingCount>256||(c.bindingCount==0?!retained:!c.bindingNativeIndices))return false;
   bool paired=false;
   for(int n=0;n<c.bindingCount;++n)if(c.bindingNativeIndices[n]<0) {
-    if(!ClothBoneLocalBindingRef(s,c.bindingNativeIndices[n]).handle)return false;paired=true;
+    if(!ClothBoneLocalBindingRef(s,c.bindingNativeIndices[n]).handle)return false;paired|=c.bindingNativeIndices[n]>-ClothSharedSkinBase;
   }
   if(paired) {
-    const auto &p=s_clothBoneSlots[s.contactPartner];auto bbc=ClothTarget(p.bbc);void *process=nullptr,*data=nullptr;
+    const auto &p=s_clothBoneSlots[s.contactPartner];auto bbc=ClothBindingTarget(p.bbc);void *process=nullptr,*data=nullptr;
     if(!bbc||!CollisionField(bbc,"process","BeyondDynamicBone.ClothProcess",process)||process!=CollisionGc(p.process[1])||
         !ClothInvoke(SurfaceMethod(il2cpp_object_get_class(bbc),"get_SerializeData","BeyondDynamicBone.ClothSerializeData"),bbc,nullptr,data)||
         data!=CollisionGc(p.candidateData)||!ClothBoneTeamRegistered(process,p.team[1]))return false;
   }
   return ClothBoneLocalBindingMapValid(c,a,s.local.recipe->Total(),paired?ClothPartnerSurfaceOriginal:0,
-      paired?int(std::size(ClothPartnerSurfaceBones)):0,retained);
+      paired?int(std::size(ClothPartnerSurfaceBones)):0,retained,s.local.recipe->SharedSkin()?s.local.recipe->sharedBindingCount:0);
 }
 static bool ClothBoneSupportRelease() {
   auto &s=ClothBoneState();
