@@ -11,7 +11,11 @@ inline void PublishSharedSkin(Package &package,Scene &scene,std::array<SharedSki
   for(int p=0;p<3;++p){const auto &base=*parts[p].profile;const auto &r=*parts[p].recipe;for(int n=0;n<r.view.Total();++n){const int mapped=remap[p][n];auto b=n<r.view.originalCount?base.bones[n]:r.added[n-r.view.originalCount];
       if(n<r.view.originalCount){Need(originalOwner.emplace(parts[p].ids[n],p).second,"shared-skin-original-bone-two-owners");b.column=r.columns[n];if(base.view.Passive(n))b.attribute=0;world[mapped]=scene.World(parts[p].ids[n]);}
       else {const auto parent=b.parent<0?scene.World(scene.Parent(parts[p].ids[base.originalRoots[0]])):world[remap[p][b.parent]];world[mapped]=Mul(parent,BoneMatrix(b));}
-      if(b.column>=0)b.column+=p*32;if(b.parent>=0)b.parent=remap[p][b.parent];bones[mapped]=b;points[mapped]=Transform(world[mapped],{});ownPart[mapped]=p;ownLocal[mapped]=n;if(n<r.view.originalCount)unionBase.bones[mapped]=b;}
+      if(b.column>=0)b.column+=p*32;if(b.parent>=0)b.parent=remap[p][b.parent];
+      // Original sleeve identities remain available for restoration/proofs.
+      // Only the private straight chain is a skin support and solver output.
+      if(n<r.view.originalCount){unionBase.bones[mapped]=b;if(r.view.sourceSleeve){unionBase.bones[mapped].column=p*32;b.attribute=0;b.column=b.depth=-1;}}
+      bones[mapped]=b;points[mapped]=Transform(world[mapped],{});ownPart[mapped]=p;ownLocal[mapped]=n;}
     Need(!r.faces.empty(),"shared-skin-native-graph-missing");for(auto f:r.faces[0]){for(auto &b:f)b=remap[p][b];graph.faces.push_back(f);}for(auto line:r.lines[0]){for(auto &b:line)b=remap[p][b];graph.lines.push_back(line);}}
   unionBase.Link();
   for(const auto &f:graph.faces)Need(ownPart[f[0]]==ownPart[f[1]]&&ownPart[f[0]]==ownPart[f[2]],"shared-skin-cross-part-native-face");

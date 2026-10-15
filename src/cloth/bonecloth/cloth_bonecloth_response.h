@@ -3,7 +3,7 @@ static bool ClothBoneResponseRestore() {
   auto &s=ClothBoneState();auto &l=s.local.response;if(!l.Dirty())return true;
   if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||!s.local.recipe)return false;
   const auto &r=*s.local.recipe;bool restored=true;
-  for(int k=0;k<r.responseCount&&k<3;++k){auto &p=l.poses[k];if(!p.position&&!p.rotation)continue;
+  for(int k=0;k<r.responseCount&&k<int(l.poses.size());++k){auto &p=l.poses[k];if(!p.position&&!p.rotation)continue;
     const int n=r.responses[k].frame.target;if(n<0||size_t(n)>=s.bones.size()){restored=false;continue;}
     auto &b=s.bones[n];void *t=nullptr;const auto life=ClothInspect(b.bone,t);
     if(life==ClothLife::Destroyed){p.position=p.rotation=false;continue;}if(!t){restored=false;continue;}
@@ -16,7 +16,7 @@ static bool ClothBoneResponseRestore() {
     restored&=!p.position&&!p.rotation;
   }
   if(restored)Log("[CLOTH-BONE-RESPONSE] stage=restored consumer=%s session=%llu generation=%llu command=%u updates=%u sourceHierarchyAndColliderGeometryUnchanged=1 foreignPosePreserved=1",
-      r.responseConsumer,s.owner.session,s.owner.generation,s.command,l.updates);
+      r.responseConsumer?r.responseConsumer:s.profile->component,s.owner.session,s.owner.generation,s.command,l.updates);
   return restored;
 }
 static void ClothBoneResponseFree() {
@@ -124,12 +124,15 @@ static bool ClothBoneResponsePeers(bool capture) {
 }
 static bool ClothBoneResponsePrepare() {
   auto &s=ClothBoneState();auto &l=s.local.response;const auto &r=*s.local.recipe;
-  if(!r.responseConsumer||!r.responseRoot||!r.responses||r.responseCount!=3||!r.resampledPanel||!eiem_cloth_asset::SourceSeraphPanel(*s.profile)||
-      !s.tx.disposeOriginalIssued||!s.graph[1]||s.bones.size()!=size_t(r.Total()))return false;
-  for(int k=0;k<3;++k){const auto &f=r.responses[k].frame;
+  const bool sleeve=r.SharedSupplier()&&eiem_cloth_asset::JsspsiSleeveSource(*s.profile);
+  if(!r.responses||!s.tx.disposeOriginalIssued||!s.graph[1]||s.bones.size()!=size_t(r.Total())||
+      (sleeve?r.responseCount!=7:(!r.responseConsumer||!r.responseRoot||r.responseCount!=3||!r.resampledPanel||!eiem_cloth_asset::SourceSeraphPanel(*s.profile))))return false;
+  for(int k=0;k<r.responseCount;++k){const auto &f=r.responses[k].frame;
     if(!eiem_cloth_response::Valid(f,r.originalCount,r.Total())||!ClothBoneCandidate(s).Passive(f.target))return false;
+    if(sleeve&&(f.target!=k||f.count!=1||f.controls[0]!=7+k||f.weights[0]!=1))return false;
     for(int j=0;j<k;++j)if(r.responses[j].frame.target==f.target)return false;
     for(int j=0;j<f.count;++j)if(ClothBoneCandidate(s).Passive(f.controls[j]))return false;}
+  if(sleeve){l.prepared=true;Log("[CLOTH-SLEEVE] stage=source-collider-follow-prepared component=%s nativeParticles=7 sourceFollowers=7 sourceSolverRetired=1 colliderGeometryUnchanged=1 reversible=1",s.profile->component);return true;}
   for(int n=0;n<s_cloth.count;++n)if(!strcmp(s_cloth.instances[n].name,r.responseConsumer)){
     if(l.consumer.handle)return false;l.consumer=ClothProtect(ClothTarget(s_cloth.instances[n].ref));if(!l.consumer.handle)return false;}
   if(!ClothBoneResponseRelation(true)||!ClothBoneResponsePeers(true))return false;l.prepared=true;
@@ -138,26 +141,29 @@ static bool ClothBoneResponsePrepare() {
 }
 static bool ClothBoneResponseApply() {
   auto &s=ClothBoneState();auto &l=s.local.response;const auto &r=*s.local.recipe;
-  if(!ClothBoneResponseRelation(false)||!ClothBoneResponsePeers(false))return false;
+  const bool sleeve=r.SharedSupplier()&&s.profile&&eiem_cloth_asset::JsspsiSleeveSource(*s.profile);
+  if(r.responseCount!=(sleeve?7:3)||!r.responses||!l.prepared)return false;
+  if(sleeve){if(!s.tx.disposeOriginalIssued||!s.graph[1]||s.bones.size()!=size_t(r.Total()))return false;}
+  else if(!ClothBoneResponseRelation(false)||!ClothBoneResponsePeers(false))return false;
   l.failure="source-frame-or-foreign-pose";
   using namespace eiem_cloth_response;
   std::vector<OutputMatrix> world(s.bones.size());std::set<int> read;
-  std::array<OutputMatrix,3> wanted;std::array<Vector3,3> positions;std::array<Quaternion,3> rotations;
-  for(int k=0;k<3;++k){const auto &f=r.responses[k].frame;
+  std::array<OutputMatrix,7> wanted;std::array<Vector3,7> positions;std::array<Quaternion,7> rotations;
+  for(int k=0;k<r.responseCount;++k){const auto &f=r.responses[k].frame;
     for(int j=0;j<f.count;++j){const int n=f.controls[j];if(!read.insert(n).second)continue;const auto &b=s.bones[n];auto t=ClothTarget(b.bone);
       if(!t||CollisionParent(t)!=ClothTarget(b.parent)||!ClothAnchorUnderOwner(t)||!SurfaceOutputMatrix(t,world[n]))return false;}
     if(!Map(f,r.originalCount,world,wanted[k]))return false;}
-  for(int k=0;k<3;++k){const auto &b=s.bones[r.responses[k].frame.target];auto t=ClothTarget(b.bone);auto &p=l.poses[k];Vector3 current{},scale{};Quaternion q{};
+  for(int k=0;k<r.responseCount;++k){const auto &b=s.bones[r.responses[k].frame.target];auto t=ClothTarget(b.bone);auto &p=l.poses[k];Vector3 current{},scale{};Quaternion q{};
     if(!t||CollisionParent(t)!=ClothTarget(b.parent)||!SurfaceVisiblePose(t,current,q,scale))return false;
     if(!l.captured){p.originalP=current;p.originalQ=q;p.scale=scale;}
     else if(!SurfaceVisibleSame(scale,p.scale)||(p.position&&!SurfaceVisibleSame(current,p.lastP))||(p.rotation&&!SurfaceVisibleSame(q,p.lastQ)))return false;
     OutputMatrix parent{},local{};bool mappedParent=false;
-    for(int j=0;j<3;++j)if(ClothTarget(s.bones[r.responses[j].frame.target].bone)==ClothTarget(b.parent)){parent=wanted[j];mappedParent=true;}
+    for(int j=0;j<r.responseCount;++j)if(ClothTarget(s.bones[r.responses[j].frame.target].bone)==ClothTarget(b.parent)){parent=wanted[j];mappedParent=true;}
     if(!mappedParent&&!SurfaceOutputMatrix(ClothTarget(b.parent),parent))return false;
     double rotation[4]{};if(!Relative(parent,wanted[k],local)||!Rotation(local,rotation))return false;
     positions[k]={float(local.v[12]),float(local.v[13]),float(local.v[14])};rotations[k]={float(rotation[0]),float(rotation[1]),float(rotation[2]),float(rotation[3])};}
   l.captured=true;
-  for(int k=0;k<3;++k){auto &p=l.poses[k];auto t=ClothTarget(s.bones[r.responses[k].frame.target].bone);
+  for(int k=0;k<r.responseCount;++k){auto &p=l.poses[k];auto t=ClothTarget(s.bones[r.responses[k].frame.target].bone);
     if(!ClothOwns(s.owner)||s.stopRequested||s.tx.cancelled)return false;
     p.previousP=p.lastP;p.previousPosition=p.position;p.lastP=positions[k];p.position=true;
     if(!SurfaceCall(t,"set_localPosition","UnityEngine.Vector3",&p.lastP))return false;p.previousPosition=false;
@@ -166,8 +172,9 @@ static bool ClothBoneResponseApply() {
     if(!SurfaceCall(t,"set_localRotation","UnityEngine.Quaternion",&p.lastQ))return false;p.previousRotation=false;
     Vector3 pos{},scale{};Quaternion q{};
     if(!SurfaceVisiblePose(t,pos,q,scale)||!SurfaceVisibleSame(pos,p.lastP)||!SurfaceVisibleSame(q,p.lastQ)||!SurfaceVisibleSame(scale,p.scale))return false;}
-  for(int k=0;k<3;++k)if(!SurfaceOutputMatrix(ClothTarget(s.bones[r.responses[k].frame.target].bone),l.appliedWorld[k]))return false;
+  for(int k=0;k<r.responseCount;++k)if(!SurfaceOutputMatrix(ClothTarget(s.bones[r.responses[k].frame.target].bone),l.appliedWorld[k]))return false;
   ++l.updates;
+  if(sleeve){if(l.updates==1)Log("[CLOTH-SLEEVE] stage=source-collider-following component=%s sourceFollowers=7 nativeParticles=7 phase=completed-pre-Team nativeSampling=next-input-pass colliderGeometryWrites=0 visualVerified=0",s.profile->component);return true;}
   if(l.updates==1||l.updates%600==0)Log("[CLOTH-BONE-RESPONSE] stage=following consumer=%s session=%llu generation=%llu command=%u frame=%d innerTeam=%d outerTeam=%d updates=%u mappedFrames=3 registeredExistingColliders=3 phase=completed-pre-Team nativeSampling=next-input-pass zeroLatencyClaim=0 geometryWrites=0 bodyWrites=0 innerFeedback=0 visualVerified=0",
       r.responseConsumer,s.owner.session,s.owner.generation,s.command,ClothFrame(),s.team[1],l.team,l.updates);
   return true;
@@ -185,5 +192,5 @@ static void ClothBoneResponseTick() {
   __except(EXCEPTION_EXECUTE_HANDLER){ok=false;}
   if(!ok){l.disabled=true;const bool restored=ClothBoneResponseRestore();
     Log("[CLOTH-BONE-RESPONSE] stage=disabled consumer=%s reason=%s restored=%d acceptedInnerSimulationRetained=1 generation=%llu command=%u",
-        s.local.recipe->responseConsumer,l.failure,int(restored),s.owner.generation,s.command);}
+        s.local.recipe->responseConsumer?s.local.recipe->responseConsumer:s.profile->component,l.failure,int(restored),s.owner.generation,s.command);}
 }

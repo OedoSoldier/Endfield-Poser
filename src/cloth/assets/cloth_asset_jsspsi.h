@@ -80,28 +80,36 @@ inline SharedSkinPart GenerateJsspsiSleeve(Package &package,Scene &s,int64_t id,
     out.bindings.push_back(std::move(bindings));out.renderers.push_back({text(m.name),text(m.mesh),text(m.root),m.vertices,m.submeshes,nullptr,0,text(m.parent)});part.meshes.push_back(std::move(m));}
   Need(!part.meshes.empty()&&part.meshes.size()<=16,"si-sleeve-renderer-budget");const std::string identity="si-sleeve-source-v1\n"+s.file.sha+"\n"+s.Name(id);p.signature=text(Digest(Bytes(identity.begin(),identity.end())));out.Link();eiem_cloth_cache::Validate(out);
   part.recipe=std::make_shared<DenseRecipe>();auto &d=*part.recipe;auto &r=d.view;r.runtimeGenerated=r.sourceSleeve=r.multipleLod=true;r.loop=false;r.originalCount=7;r.originalRoots=1;r.depth=7;
-  r.baseSignature=d.String(p.signature);r.prefabSha=d.String(p.prefabSha);const std::string recipeId=identity+"\nsource-sleeve-width-full-body-contact-biaxial-v4";r.signature=d.String(Digest(Bytes(recipeId.begin(),recipeId.end())));
+  r.baseSignature=d.String(p.signature);r.prefabSha=d.String(p.prefabSha);const std::string recipeId=identity+"\nsource-sleeve-single-vertical-six-links-v1";r.signature=d.String(Digest(Bytes(recipeId.begin(),recipeId.end())));
   d.radiusCurve=CurveSamples(sd.At("radius"),true);d.distanceCurve=CurveSamples(sd.At("distanceConstraint").At("stiffness"),false);
   for(float value:d.distanceCurve)Need(std::isfinite(value)&&std::abs(value-1.f)<1e-6f,"si-sleeve-source-distance-changed");
   r.distanceStiffness=ClothSleeveDistanceStiffness;r.tetherStretch=ClothSleeveTetherStretch;r.bendingStiffness=0;
-  std::fill(d.distanceCurve.begin(),d.distanceCurve.end(),r.distanceStiffness);
-  auto bones=out.bones;for(auto &b:bones)b.column=1;d.columns.assign(7,1);
-  // Fit the transverse width to the original weighted sleeve surface. The
-  // original center chain remains unchanged for hair/ribbon collider references.
-  const auto best=std::max_element(part.meshes.begin(),part.meshes.end(),[](const MeshView&a,const MeshView&b){return a.vertices<b.vertices;});
-  auto side=Sub(points[0],Transform(s.World(s.Parent(part.ids[0])),{}));auto down=Sub(points[6],points[0]);const double dl=std::sqrt(Dot(down,down));Need(dl>.3,"si-sleeve-length");for(auto &x:down)x/=dl;
-  const double projection=Dot(side,down);for(int k=0;k<3;++k)side[k]-=projection*down[k];double sl=std::sqrt(Dot(side,side));Need(sl>.005,"si-sleeve-width-axis");for(auto &x:side)x/=sl;
-  std::array<std::vector<double>,7> widths;for(size_t v=0;v<best->world.size();++v){double sum=0,own=0,row=0;for(size_t k=0;k<best->weights[v].size();++k){const auto w=best->weights[v][k];sum+=w;const auto b=best->bones[int(best->indices[v][k])];if(index.count(b)){own+=w;row+=w*index.at(b);}}if(sum<=0||own/sum<.8)continue;
-    const int n=(std::min)(6,(std::max)(0,int(std::llround(row/own))));auto point=best->world[v];for(auto &x:point)x/=sum;widths[n].push_back(Dot(Sub(point,points[n]),side));}
-  std::array<std::array<int,7>,3> grid{};for(int n=0;n<7;++n)grid[1][n]=n;
-  for(int c:{0,2})for(int row=0;row<7;++row){auto values=widths[row];if(values.size()<8)values=widths[(std::min)(5,(std::max)(1,row))];Need(values.size()>=8,"si-sleeve-width-support");std::sort(values.begin(),values.end());
-    double width=c==0?values[size_t(.1*(values.size()-1))]:values[size_t(.9*(values.size()-1))];width=c==0?(std::min)(-.008,width):(std::max)(.008,width);Need(std::abs(width)<.3,"si-sleeve-width-budget");
-    auto wanted=world[row];for(int k=0;k<3;++k)wanted[12+k]+=side[k]*width*.8;const int parent=row?grid[c][row-1]:-1;const auto parentWorld=row?world[parent]:s.World(s.Parent(part.ids[0]));const auto local=Mul(Inverse(parentWorld),wanted);const int n=int(bones.size());
-    ClothBoneAsset b{d.String(std::string("EP_SiSleeve_")+(left?"L_":"R_")+std::to_string(c)+"_"+std::to_string(row)),row?bones[parent].name:p.bones[0].parentName,parent,row?2:1,c,row,{float(local[12]),float(local[13]),float(local[14])},QuaternionOf(local),{1,1,1}};
-    grid[c][row]=n;bones.push_back(b);d.added.push_back(b);d.parents.push_back(0);world.push_back(Mul(parentWorld,BoneMatrix(b)));points.push_back(Transform(world.back(),{}));}
-  for(auto &chain:grid)d.roots.push_back(chain[0]);const auto lengths=NativeFixedPathLengths(bones,points);const double maximum=*std::max_element(lengths.begin(),lengths.end());for(size_t n=7;n<bones.size();++n)d.radii.push_back(CurveAt(d.radiusCurve,lengths[n]/maximum));
-  for(bool reverse:{false,true}){auto g=NativeGraph(points,bones,3,false,reverse);if(d.faces.empty()||g.faces!=d.faces[0]||g.lines!=d.lines[0]){d.faces.push_back(g.faces);d.lines.push_back(g.lines);}}
-  for(int c=0;c<2;++c)for(int row=1;row<7;++row){std::array<int,2> edge{grid[c][row],grid[c+1][row]};std::sort(edge.begin(),edge.end());d.cross.push_back(edge);}
+  // Keep the attachment supported and soften the chain towards the hem.
+  for(int n=0;n<16;++n)d.distanceCurve[n]=ClothSleeveDistanceAt(float(n)/15.f);
+  d.columns.assign(7,-1);d.roots={7};d.faces.emplace_back();d.lines.emplace_back();
+  // One vertical seven-point chain in the certified prefab's Y-up reference,
+  // with six equal links and the authored total length. Never relocate the
+  // source skeleton or alter its original bindposes.
+  // New inverse bindposes preserve the visible cloth in its neutral shape.
+  const auto origin=points.front();double length=0;for(int n=1;n<7;++n)length+=Distance(points[n],points[n-1]);
+  Need(length>.3&&length<2,"si-sleeve-length");
+  const Point span{0,-length,0};
+  for(int row=0;row<7;++row){
+    auto wanted=world[0];for(int k=0;k<3;++k)wanted[12+k]=origin[k]+span[k]*(double(row)/6.);
+    const int parent=row?7+row-1:-1;const auto parentWorld=row?world[parent]:s.World(s.Parent(part.ids[0]));
+    const auto local=Mul(Inverse(parentWorld),wanted);
+    ClothBoneAsset b{d.String(std::string("EP_SiSleeveChain_")+(left?"L_":"R_")+std::to_string(row)),
+      row?d.added.back().name:p.bones[0].parentName,parent,row?2:1,0,row,
+      {float(local[12]),float(local[13]),float(local[14])},QuaternionOf(local),{1,1,1}};
+    d.added.push_back(b);d.parents.push_back(0);d.radii.push_back(CurveAt(d.radiusCurve,double(row)/6.));
+    world.push_back(Mul(parentWorld,BoneMatrix(b)));points.push_back(Transform(world.back(),{}));
+    if(row)d.lines[0].push_back({parent,7+row});
+    // Existing ribbon colliders reference the source bones. Follow the private
+    // chain through their original rest offsets, with a reversible pose lease.
+    ClothBoneResponseFrame response;auto &f=response.frame;f.target=row;f.count=1;f.controls[0]=7+row;f.weights[0]=1;
+    const auto offset=Mul(Inverse(world.back()),world[row]);std::copy(offset.begin(),offset.end(),f.offsets[0].v);
+    Need(eiem_cloth_response::Valid(f,7,14),"si-sleeve-source-follow-frame");d.responses.push_back(response);
+  }
   JsspsiSleeveContacts(package,s,part,left);d.Link();p.generatedLocal=&r;return part;
 }
 }

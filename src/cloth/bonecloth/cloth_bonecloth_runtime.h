@@ -712,12 +712,14 @@ static bool ClothBoneLocalDistanceConfigure(void *data,void *original,float stif
       !ClothField(constraint,"stiffness",curveType,curve) || !curve || curve==oldCurve ||
       !SurfaceScalar(curve,"value","System.Single",stiffness) ||
       !SurfaceScalar(curve,"useCurve","System.Boolean",false)) return false;
+  const bool sleeve=ClothBoneSleeveElasticPolicy(ClothBoneState());
+  if(sleeve&&!ClothBoneSleeveDistanceCurve(curve))return false;
   float afterValue=0;bool afterUse=false;void *afterCurve=nullptr;
   if(!ClothField(oldConstraint,"stiffness",curveType,afterCurve) || afterCurve!=oldCurve ||
       !ClothField(oldCurve,"value","System.Single",afterValue) || afterValue!=oldValue ||
       !ClothField(oldCurve,"useCurve","System.Boolean",afterUse) || afterUse!=oldUse) return false;
-  Log("[CLOTH-BONE-LOCAL] stage=distance-policy-configured sourceValue=%g sourceUseCurve=%d candidateValue=%g candidateUseCurve=0 originalCurveUntouched=1 nativeParameterReadbackPending=1",
-      oldValue,int(oldUse),stiffness);
+  Log("[CLOTH-BONE-LOCAL] stage=distance-policy-configured sourceValue=%g sourceUseCurve=%d candidateValue=%g candidateUseCurve=%d candidateTip=%g originalCurveUntouched=1 nativeParameterReadbackPending=1",
+      oldValue,int(oldUse),stiffness,int(sleeve),sleeve?ClothSleeveDistanceTip:stiffness);
   return true;
 }
 static bool ClothBoneContactColliderPolicy();
@@ -1765,6 +1767,10 @@ static void ClothBoneService(bool pose,int frame) {
 static bool ClothBoneOptionalAdapterSupported(const ClothBoneProfile &profile) {
   if(!s_clothInputBoundary163)return true;
   const auto *r=ClothBoneLocalRecipeFor(profile);
+  // Sleeve followers only update retained Unity transforms at the already
+  // certified boundary; they do not use optional inter-garment solver jobs.
+  if(r&&r->SharedSupplier()&&eiem_cloth_asset::JsspsiSleeveSource(profile)&&
+      !r->contactProducer&&!r->nativeLayer&&!r->responseConsumer&&r->responseCount==7&&r->responses)return true;
   return !r||(!r->contactProducer&&!r->nativeLayer&&!r->responseConsumer&&!r->responseCount);
 }
 static void ClothBoneOptionalPreserved(const ClothBoneProfile &profile) {

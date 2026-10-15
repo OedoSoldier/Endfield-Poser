@@ -1035,6 +1035,9 @@ static bool ClothBoneResponseInputRead(int slot,void *manager,double &positionEr
 }
 static void ClothBoneResponseInput(int slot,void *manager) {
   auto &s=s_clothBoneSlots[slot];auto &l=s.local.response;const int frame=ClothFrame();
+  // This readback observes the three-frame skirt/ribbon consumer only.
+  // Sleeve source followers do not own a separate consumer Team.
+  if(!s.local.recipe||!s.local.recipe->responseConsumer||s.local.recipe->responseCount!=3||l.colliders.size()!=3)return;
   if(!l.prepared||l.disabled||!l.updates||!s.pending||s.stopRequested||s.tx.cancelled||!s.local.published||
       s.tx.phase!=eiem_cloth_rebuild::Phase::Active||l.frame!=frame||l.inputFrame==frame||(l.updates>3&&l.updates%600))return;
   l.inputFrame=frame;double error=NAN,dot=NAN;bool known=false;

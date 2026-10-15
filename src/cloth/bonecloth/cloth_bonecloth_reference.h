@@ -57,7 +57,9 @@ template<class Profile> inline bool NativeGraphQuadPair(const Profile &p,const s
 }
 template<class Profile> inline bool NativeGraphMatch(const Profile &p,const std::vector<std::array<int,3>> &faces,
     const std::vector<std::array<int,2>> &lines) {
-  if(!p.nativeGraphs||p.nativeGraphCount<1||p.nativeGraphCount>8||(faces.empty()&&!p.runtimeBodyOnly)||faces.size()>ClothBoneMaxFaces||lines.size()>ClothBoneMaxEdges)return false;
+  // A serial bone chain has edges and no triangle faces. Require its exact
+  // authored graph below, just as for a surface; reject only an empty graph.
+  if(!p.nativeGraphs||p.nativeGraphCount<1||p.nativeGraphCount>8||(faces.empty()&&lines.empty())||faces.size()>ClothBoneMaxFaces||lines.size()>ClothBoneMaxEdges)return false;
   if(p.runtimeFixedForks)return p.runtimeGenerated&&p.nativeGraphOrder&&eiem_cloth_graph::Match(*p.nativeGraphOrder,faces,lines);
   for(int n=0;n<p.nativeGraphCount;++n) {
     const auto &g=p.nativeGraphs[n];if(g.faceCount!=int(faces.size())||g.lineCount!=int(lines.size()))continue;
@@ -66,7 +68,8 @@ template<class Profile> inline bool NativeGraphMatch(const Profile &p,const std:
     for(int k=0;k<g.lineCount;++k)expectedLines.push_back(g.lines[k]);
     if(eiem_cloth_surface::SameSimplices(faces,expectedFaces)&&eiem_cloth_surface::SameSimplices(lines,expectedLines))return true;
   }
-  if(p.rootCount<3||p.boneCount>ClothBoneMaxIdentities)return false;
+  // Alternate triangulations apply only to surfaces, never to unmatched lines.
+  if(faces.empty()||p.rootCount<3||p.boneCount>ClothBoneMaxIdentities)return false;
   using Face=std::array<int,3>;using Cell=std::array<int,4>;
   auto canonical=[](std::vector<Face> fs){for(auto &f:fs)std::sort(f.begin(),f.end());std::sort(fs.begin(),fs.end());return fs;};
   const auto actual=canonical(faces);

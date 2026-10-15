@@ -60,10 +60,11 @@ struct ClothBoneResponseFrame {
 struct ClothBoneResponsePoint {const char *name=nullptr,*parent=nullptr;int attribute=0;};
 struct ClothBoneResponseFace {std::array<int,3> ids{};int outside=0;};
 constexpr float ClothLongPanelDistanceStiffness=.3f,ClothLongPanelTetherStretch=1.f;
-// A wide sleeve needs limited differential length across its two edges to bend
-// in its own plane. Keep a bounded root reach instead of widening the cone or
-// increasing forces; the three roots and the collision graph stay unchanged.
-constexpr float ClothSleeveDistanceStiffness=.3f,ClothSleeveTetherStretch=.15f;
+// Keep bounded reach and progressive compliance along the single sleeve chain.
+constexpr float ClothSleeveDistanceStiffness=.3f,ClothSleeveDistanceTip=.06f,ClothSleeveTetherStretch=.15f;
+inline float ClothSleeveDistanceAt(float depth) {
+  return ClothSleeveDistanceStiffness+(ClothSleeveDistanceTip-ClothSleeveDistanceStiffness)*depth;
+}
 constexpr int ClothLongPanelColumns=20,ClothLongPanelRows=11;
 constexpr int ClothLongPanelParticles=ClothLongPanelColumns*ClothLongPanelRows;
 constexpr int ClothLongPanelIdentities=40+ClothLongPanelParticles;
@@ -92,8 +93,9 @@ struct ClothBoneLocalRecipe {
       sharedBindingCount>=0&&sharedBindingCount<=ClothSharedSkinMaxRefs&&
       (!sharedBindingCount||sharedBindings);}
   bool SharedSupplier() const {return SharedSkin()&&sharedSkinSupplier&&sourceSleeve&&meshCount==0&&
-      originalCount==7&&originalRoots==1&&depth==7&&addedCount==14&&rootCount==3&&
-      !loop&&multipleLod&&crossCount==12&&graphCount>0&&bodyCoverage&&bodyAsset&&bodySphereCount==9;}
+      originalCount==7&&originalRoots==1&&depth==7&&addedCount==7&&rootCount==1&&
+      !loop&&multipleLod&&!crossCount&&graphCount==1&&graphs&&graphs[0].faceCount==0&&
+      graphs[0].lineCount==6&&bodyCoverage&&bodyAsset&&bodySphereCount==9;}
   bool ribbonSurface=false;
   int separatedPanels=0;
   bool separatedWidth=false;
@@ -101,6 +103,7 @@ struct ClothBoneLocalRecipe {
   size_t preservedVertices=0;
   bool sourcePanelFit=false;
   bool resampledPanel=false;
+  bool ReplacesSourceParticles() const {return resampledPanel||SharedSupplier();}
   const ClothBoneRendererAsset *bodyAsset=nullptr;
   const ClothBoneBodySphere *bodySpheres=nullptr;int bodySphereCount=0;
   bool sourceApronFit=false;

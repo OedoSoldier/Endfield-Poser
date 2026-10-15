@@ -8,10 +8,44 @@ static bool ClothBoneSleeveElasticPolicy(const ClothBoneRuntime &s) {
   if(!ClothBoneSleevePolicy(s)||s.supportCreated||s.contactConsumer>=0||s.contactPartner>=0||
       r->distanceStiffness!=ClothSleeveDistanceStiffness||r->tetherStretch!=ClothSleeveTetherStretch||
       r->bendingStiffness!=0||!r->distanceCurve)return false;
-  for(int n=0;n<16;++n)if(r->distanceCurve[n]!=ClothSleeveDistanceStiffness)return false;
+  for(int n=0;n<16;++n)if(!std::isfinite(r->distanceCurve[n])||
+      fabsf(r->distanceCurve[n]-ClothSleeveDistanceAt(float(n)/15.f))>1e-6f)return false;
   return true;
 }
-constexpr float ClothSleeveGravity=4.f,ClothSleeveGravityFalloff=.35f,ClothSleeveRestoration=.18f;
+// Use a private Unity curve, converted by BBC itself. Never overwrite shared
+// keyframes or native Team arrays, and never create curves during simulation.
+static bool ClothBoneSleeveDistanceCurve(void *curve) {
+  void *keys=nullptr,*linear=nullptr,*copy=nullptr;
+  if(!ClothOnMainThread()||!s_clothSurfaceAtBoundary||s_clothInputUpdateDepth!=1||
+      !s_clothMethodFlags||!ClothField(curve,"curve","UnityEngine.AnimationCurve",keys)||!keys)return false;
+  auto cls=il2cpp_object_get_class(keys);
+  for(void *it=nullptr,*m=nullptr;(m=il2cpp_class_get_methods(cls,&it));) {
+    uint32_t flags=0;
+    if(strcmp(il2cpp_method_get_name(m),"Linear")||il2cpp_method_get_param_count(m)!=4||
+        !(s_clothMethodFlags(m,&flags)&0x10)||
+        !CollisionType(il2cpp_method_get_return_type(m),"UnityEngine.AnimationCurve"))continue;
+    bool match=true;for(int n=0;n<4;++n)match&=CollisionType(il2cpp_method_get_param(m,n),"System.Single");
+    if(match){if(linear)return false;linear=m;}
+  }
+  float start=0,root=1,end=1,tip=ClothSleeveDistanceTip/ClothSleeveDistanceStiffness;
+  void *args[]{&start,&root,&end,&tip};
+  if(!linear||!ClothInvoke(linear,nullptr,args,copy)||!copy||copy==keys||
+      il2cpp_object_get_class(copy)!=cls)return false;
+  auto evaluate=SurfaceMethod(cls,"Evaluate","System.Single","System.Single");
+  for(int n=0;n<16;++n) {
+    float t=float(n)/15.f,value=NAN;void *sample=nullptr,*sampleArgs[]{&t};
+    if(!ClothInvoke(evaluate,copy,sampleArgs,sample)||!sample)return false;
+    memcpy(&value,static_cast<char*>(sample)+16,sizeof(value));
+    if(!std::isfinite(value)||fabsf(value*ClothSleeveDistanceStiffness-ClothSleeveDistanceAt(t))>1e-6f)return false;
+  }
+  return SurfaceReference(curve,"curve","UnityEngine.AnimationCurve",copy)&&
+      SurfaceScalar(curve,"useCurve","System.Boolean",true);
+}
+// The sleeve reference has angular limits but zero joint springs. BBC angle
+// restoration instead rotates every edge back towards its reference direction;
+// even a small value opposes gravity continuously and makes a raised sleeve
+// settle like a stiff board. Keep its parent-relative limit, not this bias.
+constexpr float ClothSleeveGravity=4.f,ClothSleeveGravityFalloff=.35f,ClothSleeveRestoration=0.f;
 constexpr float ClothSleeveDamping=.16f;
 constexpr float ClothSleeveCompression=.85f;
 // PMX: 28 moving joints at +/-5 degrees. This six-link BBC approximation
@@ -46,7 +80,7 @@ static bool ClothBoneSleeveLimit(void *data,void *original) {
       ClothField(sourceCurve,"curve","UnityEngine.AnimationCurve",afterKeys)&&afterKeys==keys;
 }
 // Allow folding towards the attachment; the material stage separately bounds
-// the root reach needed for differential length along the two side edges.
+// root reach while preserving a supported attachment and softer free links.
 static bool ClothBoneSleeveTether(void *data,void *original) {
   constexpr auto type="BeyondDynamicBone.TetherConstraint.SerializeData";
   void *source=nullptr,*copy=nullptr,*check=nullptr;float before=NAN,after=NAN;
@@ -81,12 +115,12 @@ static bool ClothBoneSleeveShapeParameters(void *box,ClothSleeveNativeAngle &ang
       ClothValueOffset(tc,"compressionLimit","System.Single",8,4)!=0||
       ClothValueOffset(tc,"stretchLimit","System.Single",8,4)!=4||
       !ClothInputTeamField(box,"angleConstraint",at,angle)||!ClothInputTeamField(box,"tetherConstraint",tt,tether))return false;
-  if(!angle.restore||!angle.limit||!std::isfinite(angle.limitStiffness)||angle.limitStiffness<=0||angle.limitStiffness>1||
+  if(angle.restore||!angle.limit||!std::isfinite(angle.limitStiffness)||angle.limitStiffness<=0||angle.limitStiffness>1||
       !std::isfinite(tether.compression)||fabsf(tether.compression-ClothSleeveCompression)>1e-6f||
       !std::isfinite(tether.stretch)||fabsf(tether.stretch-stretch)>1e-6f)return false;
-  for(float v:angle.stiffness)if(!std::isfinite(v)||v<0||v>1)return false;
+  for(float v:angle.stiffness)if(!std::isfinite(v)||fabsf(v)>1e-7f)return false;
   for(float v:angle.limitCurve)if(!std::isfinite(v)||v<=0||fabsf(v-angle.limitCurve[0])>1e-6f)return false;
-  return angle.stiffness[0]>angle.stiffness[15]&&angle.stiffness[15]>0;
+  return true;
 }
 static bool ClothBoneSleeveDamping(void *data,void *original) {
   constexpr auto type="BeyondDynamicBone.CurveSerializeData";
@@ -126,6 +160,7 @@ static bool ClothBoneSleeveConfigure(void *data,void *original) {
       !ClothField(oldCurve,"curve","UnityEngine.AnimationCurve",oldKeys)||!oldKeys||
       !SurfaceCloneField(data,original,"angleRestorationConstraint",type)||
       !ClothField(data,"angleRestorationConstraint",type,copy)||!copy||copy==source||
+      !SurfaceScalar(copy,"useAngleRestoration","System.Boolean",false)||
       !SurfaceCloneField(copy,source,"stiffness",curveType)||!ClothField(copy,"stiffness",curveType,curve)||!curve||curve==oldCurve||
       !SurfaceScalar(curve,"useCurve","System.Boolean",true)||!SurfaceScalar(curve,"value","System.Single",ClothSleeveRestoration)||
       !SurfaceScalar(data,"gravity","System.Single",ClothSleeveGravity)||
@@ -135,6 +170,7 @@ static bool ClothBoneSleeveConfigure(void *data,void *original) {
   if(!ClothField(original,"gravity","System.Single",after)||after!=gravity||
       !ClothField(original,"gravityFalloff","System.Single",after)||after!=falloff||
       !ClothField(original,"angleRestorationConstraint",type,check)||check!=source||
+      !ClothField(source,"useAngleRestoration","System.Boolean",afterUse)||afterUse!=enabled||
       !ClothField(source,"stiffness",curveType,check)||check!=oldCurve||
       !ClothField(oldCurve,"value","System.Single",after)||after!=value||
       !ClothField(oldCurve,"useCurve","System.Boolean",afterUse)||afterUse!=use||
@@ -150,7 +186,7 @@ static bool ClothBoneSleeveConfigure(void *data,void *original) {
   std::copy(std::begin(angles.limitCurve),std::end(angles.limitCurve),s.sleeveLimitCurve);
   s.sleeveLimitStiffness=angles.limitStiffness;
   s.sleeveDampingConfigured=true;
-  Log("[CLOTH-SLEEVE] stage=drape-configured component=%s gravity=%g->%g falloff=%g->%g restoration=%g useDepthCurve=1 nativeRestoration=%g->%g tetherCompression=%g stretchBeforeMaterial=%g damping=%g inertia=spring-force coneLimitDegrees=%g limitStiffness=%g nativeLimit=%g fixedRoots=3 arms=4 innerBodyCapsules=5 materialPending=1 originalUntouched=1 visualVerified=0",
+  Log("[CLOTH-SLEEVE] stage=drape-configured component=%s gravity=%g->%g falloff=%g->%g restoration=%g angleRestoration=off nativeRestoration=%g->%g tetherCompression=%g stretchBeforeMaterial=%g damping=%g inertia=spring-force coneLimitDegrees=%g limitStiffness=%g nativeLimit=%g fixedRoots=1 arms=4 innerBodyCapsules=5 materialPending=1 originalUntouched=1 visualVerified=0",
       s.profile->component,gravity,ClothSleeveGravity,falloff,ClothSleeveGravityFalloff,ClothSleeveRestoration,
       angles.stiffness[0],angles.stiffness[15],tether.compression,tether.stretch,ClothSleeveDamping,
       ClothSleeveLimitDegrees,ClothSleeveLimitStiffness,angles.limitCurve[0]);
@@ -178,7 +214,7 @@ static bool ClothBoneSleeveMatches(const ClothBoneRuntime &s,int slot,void *box)
   if(!ClothBoneSleeveElasticPolicy(s)||!ClothBoneSleeveShapeParameters(box,angles,tether,ClothSleeveTetherStretch))return false;
   float distance[16]{},attenuation=NAN;
   if(!ClothBoneLocalDistanceParameters(box,distance,attenuation)||!std::isfinite(attenuation))return false;
-  for(float value:distance)if(!std::isfinite(value)||fabsf(value-ClothSleeveDistanceStiffness)>1e-6f)return false;
+  for(int n=0;n<16;++n)if(!std::isfinite(distance[n])||fabsf(distance[n]-ClothSleeveDistanceAt(float(n)/15.f))>1e-6f)return false;
   for(int n=0;n<16;++n)if(fabsf(angles.stiffness[n]-s.sleeveRestorationCurve[n])>1e-5f)return false;
   for(int n=0;n<16;++n)if(fabsf(angles.limitCurve[n]-s.sleeveLimitCurve[n])>1e-5f)return false;
   if(fabsf(angles.limitStiffness-s.sleeveLimitStiffness)>1e-5f)return false;
@@ -191,6 +227,7 @@ static bool ClothBoneSleeveMatches(const ClothBoneRuntime &s,int slot,void *box)
       !ClothField(limitCurve,"value","System.Single",value)||value!=ClothSleeveLimitDegrees)return false;
   return gravity==ClothSleeveGravity&&falloff==ClothSleeveGravityFalloff&&
       ClothField(data,"angleRestorationConstraint","BeyondDynamicBone.AngleConstraint.RestorationSerializeData",angle)&&angle&&
+      ClothField(angle,"useAngleRestoration","System.Boolean",use)&&!use&&
       ClothField(angle,"stiffness","BeyondDynamicBone.CurveSerializeData",curve)&&curve&&
       ClothField(curve,"useCurve","System.Boolean",use)&&use&&
       ClothField(curve,"value","System.Single",restoration)&&restoration==ClothSleeveRestoration;

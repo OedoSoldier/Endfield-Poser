@@ -141,8 +141,8 @@ static bool ClothBoneElasticConfigure(void *data,void *original) {
   Log("[CLOTH-BONE-ELASTIC] stage=private-parameters-confirmed generation=%llu session=%llu sourceTether=%p privateTether=%p distance=%g stretchThreshold=%g sourceStretchThreshold=0.03 bending=%g sourceBending=%g compression=%g waistFixedPreserved=1 colliderGeometryUnchanged=1 TeamReadbackPending=1",
       s.owner.generation,s.owner.session,oldTether,tether,l.recipe->distanceStiffness,l.recipe->tetherStretch,
       l.recipe->bendingStiffness,originalBend,privateCompression);
-  if(sleeve)Log("[CLOTH-SLEEVE] stage=biaxial-material-confirmed component=%s distanceStiffness=%g rootStretch=%g compression=%g fixedRoots=3 particles=21 collisionGraphUnchanged=1 sourceUntouched=1 TeamReadbackPending=1 visualVerified=0",
-      s.profile->component,l.recipe->distanceStiffness,l.recipe->tetherStretch,privateCompression);
+  if(sleeve)Log("[CLOTH-SLEEVE] stage=single-chain-material-confirmed component=%s distanceRoot=%g distanceTip=%g depthCurve=1 rootStretch=%g compression=%g fixedRoots=1 particles=7 links=6 straightReference=1 sourceUntouched=1 TeamReadbackPending=1 visualVerified=0",
+      s.profile->component,l.recipe->distanceStiffness,ClothSleeveDistanceTip,l.recipe->tetherStretch,privateCompression);
   return true;
 }
 static bool ClothBoneSupportElasticMatches(const ClothBoneRuntime &s,void *box) {

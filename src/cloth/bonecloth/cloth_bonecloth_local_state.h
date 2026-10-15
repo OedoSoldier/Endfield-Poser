@@ -44,8 +44,8 @@ struct ClothResponseState {
   std::vector<unsigned char> outputAttributes;
   uint32_t outputContainer=0,outputMesh=0;
   bool outputConfirmed=false,layerArmed=false;
-  std::array<ClothResponsePose,3> poses{};
-  std::array<eiem_cloth_surface::OutputMatrix,3> appliedWorld{};
+  std::array<ClothResponsePose,7> poses{};
+  std::array<eiem_cloth_surface::OutputMatrix,7> appliedWorld{};
   int inputFrame=-1;
   bool attempted=false,prepared=false,captured=false,disabled=false;
   bool Dirty() const {for(const auto &p:poses)if(p.position||p.rotation)return true;return false;}

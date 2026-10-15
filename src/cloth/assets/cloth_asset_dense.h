@@ -205,11 +205,12 @@ inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh
         Need(span>.001,"coat-waist-root-span");waist.fixed[int(k)]={root,span};}}
   }
   auto vertexData=source.At("m_VertexData");auto packed=Blob(vertexData.At("m_DataSize"));const auto wo=ChannelLayout(source,12),io=ChannelLayout(source,13);
-  auto skinSupport=[&](int n){return bones[n].attribute==2||(recipe.view.ribbonSurface&&bones[n].attribute==1);};
+  auto skinSupport=[&](int n){return bones[n].attribute==2||((recipe.view.ribbonSurface||
+      (multipart&&recipe.bindingParts[n]>0))&&bones[n].attribute==1);};
   std::set<std::array<int,2>> edges;for(const auto &f:graph.faces)for(int k=0;k<3;++k){std::array<int,2> e{f[k],f[(k+1)%3]};std::sort(e.begin(),e.end());if(skinSupport(e[0])&&skinSupport(e[1]))edges.insert(e);}for(auto e:graph.lines)if(skinSupport(e[0])&&skinSupport(e[1]))edges.insert(e);
   std::vector<PreciseSkin> oldSkin,newSkin;std::set<int> changed;size_t moving=0,capacitySkipped=0;
   auto skinAttribute=[&](int n){if(recipe.view.ribbonSurface&&base.view.ribbonSource&&n<base.view.boneCount&&RibbonBeltBone(base.bones[n]))return 2;
-    return recipe.view.resampledPanel&&n<base.view.boneCount?
+    return (recipe.view.resampledPanel||(multipart&&recipe.bindingParts[n]>0))&&n<base.view.boneCount?
       (base.bones[n].attribute?base.bones[n].attribute:1):bones[n].attribute;};
   for(size_t n=0;n<mesh.world.size();++n){if((n&255)==0)CheckCancel(package.vfs.cancel);auto original=ReadSkin(mesh,n,unorm);oldSkin.push_back(original);
     Point reference=mesh.world[n],coordinate{};bool panelVertex=false;
@@ -223,7 +224,7 @@ inline DenseMesh DenseBinding(Package &package,Scene &scene,const MeshView &mesh
       if(owned){coordinate=panel->Coordinate(reference);panelVertex=coordinate[1]<panel->WaistHeight(coordinate[0])-1e-6;}}
     PreciseSkin protectedTerms;double total=0;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1)))total+=term.second;else protectedTerms.insert(term);}
     if(!total||(selected&&!(*selected)[n])||(panel&&!panelVertex)){newSkin.push_back(original);continue;}++moving;const size_t capacity=4-protectedTerms.size();SurfaceWeight best;
-    int sourcePart=-1;std::set<int> sourceColumns;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1))){sourceColumns.insert(recipe.view.resampledPanel?recipe.columns[id]:bones[id].column);
+    int sourcePart=-1;std::set<int> sourceColumns;for(auto term:original){const int id=ids[term.first];if(id>=0&&(skinAttribute(id)==2||(panelVertex&&skinAttribute(id)==1))){sourceColumns.insert(multipart&&recipe.bindingParts[id]>0?base.bones[id].column:recipe.view.resampledPanel?recipe.columns[id]:bones[id].column);
       if(multipart){Need(sourcePart<0||sourcePart==recipe.bindingParts[id],"shared-skin-vertex-multiple-parts");sourcePart=recipe.bindingParts[id];}}}
     auto permitted=[&](int id){if(multipart&&recipe.bindingParts[id]!=sourcePart)return false;if(recipe.view.ribbonSurface)return bones[id].column>=0&&bones[id].column<5&&
         (!bindings.count(id)||!protectedTerms.count(bindings.at(id)));for(int c:sourceColumns){int d=std::abs(bones[id].column-c);if(recipe.view.loop)d=(std::min)(d,int(recipe.roots.size())-d);if(d<=(panel?2:sourceSpan))return true;}return false;};
