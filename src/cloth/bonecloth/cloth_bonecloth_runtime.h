@@ -1,6 +1,8 @@
 #pragma once
 #include "math/cloth_preparation_budget.h"
 #include "../native/cloth_native_profile.h"
+#include "../native/cloth_contact_native_profile.h"
+#include "../native/cloth_optional_native_profile.h"
 #include <chrono>
 static cloth_schedule::PreparationBudget s_clothPreparationBudget;
 static bool ClothPreparationTurn() {
@@ -92,11 +94,8 @@ struct ClothBoneRuntime {
   ClothBoneOwnedState owned{};
   bool ribbonDampingConfigured=false,ribbonDampingConfirmed=false;
   float ribbonDamping=0,ribbonDampingCurve[16]{};
-  bool sleeveDampingConfigured=false;
-  float sleeveDampingCurve[16]{};
-  float sleeveRestorationCurve[16]{};
-  float sleeveLimitCurve[16]{};
-  float sleeveLimitStiffness=0;
+  bool sleeveNativeConfigured=false;
+  ClothSleeveMaterial sleeveNativeMaterial{},sleevePmxMaterial{};
   ClothBonePrebuildState prebuild{};
   ClothBoneLocalState local{};
   eiem_cloth_rebuild::Transaction tx{};
@@ -712,14 +711,12 @@ static bool ClothBoneLocalDistanceConfigure(void *data,void *original,float stif
       !ClothField(constraint,"stiffness",curveType,curve) || !curve || curve==oldCurve ||
       !SurfaceScalar(curve,"value","System.Single",stiffness) ||
       !SurfaceScalar(curve,"useCurve","System.Boolean",false)) return false;
-  const bool sleeve=ClothBoneSleeveElasticPolicy(ClothBoneState());
-  if(sleeve&&!ClothBoneSleeveDistanceCurve(curve))return false;
   float afterValue=0;bool afterUse=false;void *afterCurve=nullptr;
   if(!ClothField(oldConstraint,"stiffness",curveType,afterCurve) || afterCurve!=oldCurve ||
       !ClothField(oldCurve,"value","System.Single",afterValue) || afterValue!=oldValue ||
       !ClothField(oldCurve,"useCurve","System.Boolean",afterUse) || afterUse!=oldUse) return false;
   Log("[CLOTH-BONE-LOCAL] stage=distance-policy-configured sourceValue=%g sourceUseCurve=%d candidateValue=%g candidateUseCurve=%d candidateTip=%g originalCurveUntouched=1 nativeParameterReadbackPending=1",
-      oldValue,int(oldUse),stiffness,int(sleeve),sleeve?ClothSleeveDistanceTip:stiffness);
+      oldValue,int(oldUse),stiffness,0,stiffness);
   return true;
 }
 static bool ClothBoneContactColliderPolicy();
@@ -759,7 +756,7 @@ static bool ClothBoneConfigure() {
       !ClothBoneAttributes(data2,true) || (!s.prebuild.captured&&!ClothBoneAttributes(restore)) ||
       (s.prebuild.captured&&!ClothBonePrebuildPrivate(data2)) || !SurfaceCopyConfiguration(data,CollisionGc(s.data))) return false;
   if(s.local.requested && !s.local.recipe->RetainsSourceReference() && (!SurfaceScalar(data,"animationPoseRatio","System.Single",0.0f) ||
-      ((!s.local.recipe->distanceCurve || ClothBoneLongPanelBending(s) || ClothBoneSleeveElasticPolicy(s)) &&
+      ((!s.local.recipe->distanceCurve || ClothBoneLongPanelBending(s)) &&
       !ClothBoneLocalDistanceConfigure(data,CollisionGc(s.data),s.local.recipe->distanceStiffness)))) return false;
   if(!ClothBoneLongPanelRadiusConfigure(data,CollisionGc(s.data)))return ClothBoneReject("long-panel-contact-envelope-unconfirmed-original-unchanged");
   if(s.contactConsumer>=0 && !SurfaceScalar(data,"animationPoseRatio","System.Single",0.0f))return false;
@@ -848,7 +845,6 @@ static bool ClothBonePrepare() {
     if(s.profile->inputAnchorCount&&(!s.local.requested||!s.local.recipe->sourceApronFit))
       return ClothBoneReject("fixed-apron-requires-matching-visible-skin-original-unchanged");
     if(s.profile->sourceBranchCount&&(!s.local.requested||!s.local.recipe->sourceShortSides||!eiem_cloth_asset::SourceShortSides(*s.profile)))return ClothBoneReject("short-side-source-lease-unconfirmed");
-    s.bones.resize(s.profile->boneCount);
     auto &i=s_cloth.instances[index]; ClothReadback r{};
     const bool healthy=i.startup.phase==eiem_cloth::Phase::Ready && ClothRead(i,r) && r.state.valid && r.state.running &&
         r.state.active && r.state.enabled && !r.state.skip && !r.state.culled && !r.state.paused &&
@@ -858,6 +854,7 @@ static bool ClothBonePrepare() {
       if(admission==eiem_playback::SourceReadiness::Expired)return ClothBoneReject("original-skirt-not-healthy-ready");
       s.prepareWait=true;ClothBoneNote("waiting-original-cloth-ready-before-capture");return true;
     }
+    s.bones.resize(s.profile->boneCount);
     Log("[CLOTH-BONE-PROFILE] component=%s signature=%s prefab=%s roots=%d depth=%d loop=%d vertices=%d faces=%d nativeFixedForks=%d nativeGraphConfirmed=0",
         s.profile->component,s.profile->signature,s.profile->prefabSha,s.profile->rootCount,s.profile->depth,
         s.profile->loop,s.profile->EffectiveCount(),s.profile->FaceCount(),s.profile->runtimeFixedForks);
@@ -1761,26 +1758,41 @@ static void ClothBoneService(bool pose,int frame) {
   }
   (void)pose;(void)frame;
 }
-// The current game has a verified native rebuild/elastic path, but its optional
-// inter-garment jobs are not yet certified. Preserve those complete recipes,
-// rather than removing a constraint from an otherwise validated recipe.
-static bool ClothBoneOptionalAdapterSupported(const ClothBoneProfile &profile) {
+// Availability only selects recipes. Every installer still validates the live
+// method identity, complete code and container ABI before any candidate writes.
+static constexpr unsigned ClothNativeAdapterMask163() {
+  return 4u | (poser_cloth_contact_native::ContactAdapter163Reviewed?1u:0u) |
+      (poser_cloth_optional::LayerAdapter163Reviewed?2u:0u) |
+      (poser_cloth_optional::DisplayAdapter163Reviewed?8u:0u) |
+      (poser_cloth_optional::FinishAdapter163Reviewed?16u:0u);
+}
+static bool ClothBoneOptionalAdapterSupported(const ClothBoneProfile &profile,
+    unsigned adapters=ClothNativeAdapterMask163()) {
   if(!s_clothInputBoundary163)return true;
   const auto *r=ClothBoneLocalRecipeFor(profile);
-  // Sleeve followers only update retained Unity transforms at the already
-  // certified boundary; they do not use optional inter-garment solver jobs.
-  if(r&&r->SharedSupplier()&&eiem_cloth_asset::JsspsiSleeveSource(profile)&&
-      !r->contactProducer&&!r->nativeLayer&&!r->responseConsumer&&r->responseCount==7&&r->responses)return true;
-  return !r||(!r->contactProducer&&!r->nativeLayer&&!r->responseConsumer&&!r->responseCount);
+  if(!r)return true;
+  unsigned required=0;
+  if(r->contactProducer||r->nativeLayer)required|=1u|2u;
+  if(r->nativeLayer)required|=8u|16u;
+  if((adapters&required)!=required)return false;
+  if(!r->responseConsumer&&!r->responseCount)return true;
+  // These followers use the certified main-thread completed-job boundary,
+  // not a separate native worker. Keep their exact supported recipe shapes.
+  if(!r->responses)return false;
+  if(r->SharedSupplier()&&eiem_cloth_asset::JsspsiSleeveSource(profile))
+    return !r->contactProducer&&!r->nativeLayer&&!r->responseConsumer&&r->responseCount==7;
+  return r->responseConsumer&&r->responseRoot&&r->responseCount==3&&
+      r->resampledPanel&&eiem_cloth_asset::SourceSeraphPanel(profile);
 }
 static void ClothBoneOptionalPreserved(const ClothBoneProfile &profile) {
   if(s_ClothActorBones.Get().incompatibleComponents.insert(profile.component).second)
     Log("[CLOTH-COMPAT] component=%s decision=optional-job-adapter-unavailable-original-retained motionBlocked=0",profile.component);
 }
-template<class Match> static size_t ClothBoneFilterOptionalProfiles(std::vector<Match> &found) {
+template<class Match> static size_t ClothBoneFilterOptionalProfiles(std::vector<Match> &found,
+    unsigned adapters=ClothNativeAdapterMask163()) {
   if(!s_clothInputBoundary163)return 0;
   std::set<const ClothBoneProfile*> rejected;
-  for(const auto &m:found)if(!ClothBoneOptionalAdapterSupported(*m.profile))rejected.insert(m.profile);
+  for(const auto &m:found)if(!ClothBoneOptionalAdapterSupported(*m.profile,adapters))rejected.insert(m.profile);
   // Dependencies and shared renderers are atomic: no partially rebound group.
   for(size_t pass=0;pass<found.size();++pass)for(const auto &m:found) {
     if(rejected.count(m.profile))continue;

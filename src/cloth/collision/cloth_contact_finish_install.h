@@ -65,7 +65,11 @@ static bool ClothFinishConsumers(void *parent) {
       "EdgeColliderCollisionConstraintKernel$BurstManaged","System.Void",true,edgeArgs,18);
   auto r=ClothFinishMethod(ClothFinishNested(parent,"SolveEdgeBufferAndClearJobKernels"),
       "SolveEdgeBufferAndClearKernel$BurstManaged","System.Void",true,reduceArgs,10);
-  if(!ClothContactRequireCode("finish-edge-managed",e?((MInfo*)e)->mp:nullptr,3342,0x43342eb86afd45ebULL)||
+  if(s_clothInputBoundary163) {
+    using namespace poser_cloth_optional;
+    if(!poser_cloth_boundary::MappedMethodProfile(hGA,e?(unsigned char*)((MInfo*)e)->mp:nullptr,FinishEdgeKernel163)||
+        !poser_cloth_boundary::MappedMethodProfile(hGA,r?(unsigned char*)((MInfo*)r)->mp:nullptr,FinishReduceKernel163))return false;
+  } else if(!ClothContactRequireCode("finish-edge-managed",e?((MInfo*)e)->mp:nullptr,3342,0x43342eb86afd45ebULL)||
       !ClothContactRequireCode("finish-reduce-managed",r?((MInfo*)r)->mp:nullptr,427,0xcd936d8d13b83a22ULL))return false;
   static constexpr ClothLayerCode bodies[]{
     {5753,0x6d5f2a130fef3ba6ULL},{4296,0xd195d01a6ff4401bULL},
@@ -87,11 +91,38 @@ static bool ClothFinishConsumers(void *parent) {
   const auto entries=(const RUNTIME_FUNCTION*)(base+dir.VirtualAddress);unsigned matches[12]{};
   for(size_t n=0;n<dir.Size/sizeof(RUNTIME_FUNCTION);++n) {
     const auto &f=entries[n];if(f.BeginAddress>=f.EndAddress||f.EndAddress>size)return false;
-    for(unsigned k=0;k<12;++k)if(f.EndAddress-f.BeginAddress==bodies[k].bytes&&ClothLayerBody(module,base+f.BeginAddress,bodies[k]))++matches[k];
+    for(unsigned k=0;k<12;++k) {
+      const auto &current=poser_cloth_optional::FinishBurst163[k];
+      const ClothLayerCode expected=s_clothInputBoundary163?ClothLayerCode{current.bytes,current.hash}:bodies[k];
+      if(f.EndAddress-f.BeginAddress==expected.bytes&&ClothLayerBody(module,base+f.BeginAddress,expected))++matches[k];
+    }
   }
   for(auto n:matches)if(n!=1)return false;return true;
 }
 static struct ClothFinishInstallState {bool attempted=false;void *targets[3]{};uint64_t patched[3]{};} s_clothFinishInstall;
+static bool ClothFinishProducer163(unsigned char *step,unsigned char *collision) {
+  using namespace poser_cloth_optional;
+  using poser_cloth_boundary::MappedMethodProfile;
+  using poser_cloth_boundary::DirectCallAt;
+  auto &i=s_clothFinishInstall;auto &h=s_clothFinishHooks;
+  const auto base=(unsigned char*)hGA;
+  if(!MappedMethodProfile(hGA,step,FinishStep163)||
+      !MappedMethodProfile(hGA,(unsigned char*)i.targets[0],FinishDistance163)||
+      !MappedMethodProfile(hGA,collision,FinishCollision163)||
+      !MappedMethodProfile(hGA,base+FinishEdgeSchedule163.rva,FinishEdgeSchedule163)||
+      !MappedMethodProfile(hGA,base+FinishReduceSchedule163.rva,FinishReduceSchedule163))return false;
+  // The second distance pass still follows edge collision. Schedule2's closed
+  // job ABI is also checked at the exact producer call before a view is borrowed.
+  if(!DirectCallAt(step,FinishFirstDistanceCall163+5,FinishFirstDistanceCall163,i.targets[0])||
+      !DirectCallAt(step,FinishCollisionCall163+5,FinishCollisionCall163,collision)||
+      !DirectCallAt(step,FinishSecondDistanceCall163+5,FinishSecondDistanceCall163,i.targets[0])||
+      !DirectCallAt(collision,FinishEdgeCall163+5,FinishEdgeCall163,base+FinishEdgeSchedule163.rva)||
+      !DirectCallAt(collision,FinishReduceCall163+5,FinishReduceCall163,base+FinishReduceSchedule163.rva))return false;
+  i.targets[1]=base+FinishEdgeSchedule163.rva;i.targets[2]=base+FinishReduceSchedule163.rva;
+  h.firstSite=step+FinishFirstDistanceCall163+5;h.secondSite=step+FinishSecondDistanceCall163+5;
+  h.edgeSite=collision+FinishEdgeCall163+5;h.reduceSite=collision+FinishReduceCall163+5;
+  return true;
+}
 static bool ClothFinishScheduleSignature(void *method,bool reduce) {
   static void *attempted[2]{};static bool accepted[2]{};
   const int slot=reduce?1:0;if(method==attempted[slot])return accepted[slot];
@@ -126,8 +157,12 @@ static bool ClothInstallFinishMainThread() {
   auto s=step?(unsigned char*)((MInfo*)step)->mp:nullptr;
   auto c=collider?(unsigned char*)((MInfo*)collider)->mp:nullptr;
   i.targets[0]=distance?((MInfo*)distance)->mp:nullptr;
-  if(!ClothFinishLayout(collision,false)||!ClothFinishLayout(collision,true)||!ClothFinishConsumers(collision)||
-      !ClothContactRequireCode("finish-step-prefix",s,5053,0x62a059b98962ddb5ULL)||
+  if(!ClothFinishLayout(collision,false)||!ClothFinishLayout(collision,true)||!ClothFinishConsumers(collision))
+    return ClothFinishReject("native-producer-or-consumer-unconfirmed");
+  if(s_clothInputBoundary163) {
+    if(!ClothFinishProducer163(s,c))return ClothFinishReject("native-163-producer-or-schedule-unconfirmed");
+  } else {
+  if(!ClothContactRequireCode("finish-step-prefix",s,5053,0x62a059b98962ddb5ULL)||
       !ClothContactRequireCode("finish-distance",i.targets[0],1162,0x35520ec184c8f111ULL)||
       !ClothContactRequireCode("finish-collision",c,1166,0x85eddce644e55ee3ULL))return ClothFinishReject("native-producer-or-consumer-unconfirmed");
   unsigned count=0;void *sites[2]{};
@@ -148,6 +183,7 @@ static bool ClothInstallFinishMainThread() {
   i.targets[2]=ClothContactUniqueCall(cold,958,584,0xfd85bfc35118a0e9ULL,"finish-reduce-schedule",&h.reduceSite);
   if(!i.targets[1]||!i.targets[2]||uintptr_t(h.edgeSite)>=uintptr_t(h.reduceSite))return ClothFinishReject("native-schedule-ABI-unconfirmed");
   h.firstSite=sites[0];h.secondSite=sites[1];
+  }
   void *hooks[]{(void*)ClothFinishDistance,(void*)ClothFinishEdge,(void*)ClothFinishReduce};
   void **originals[]{(void**)&h.distance,(void**)&h.edge,(void**)&h.reduce};int created=0;
   for(;created<3;++created)if(MH_CreateHook(i.targets[created],hooks[created],originals[created])!=MH_OK)break;
@@ -160,6 +196,7 @@ static bool ClothInstallFinishMainThread() {
   }
   for(int n=0;n<3;++n)i.patched[n]=eiem_cloth_input::Fingerprint((unsigned char*)i.targets[n],42);
   s_clothFinishSignature=ClothFinishScheduleSignature;h.installed=true;
-  Log("[CLOTH-CONTACT-FINISH] stage=installed nativeConsumers=12 producerSignatures=verified passes=%d scope=owned-long-panel-Move-edges originalDistancePasses=2 workerHook=0 globalFrequencyChange=0",eiem_cloth_finish::Passes);
+  Log("[CLOTH-CONTACT-FINISH] stage=installed profile=%s nativeConsumers=12 producerSignatures=verified passes=%d scope=owned-long-panel-Move-edges originalDistancePasses=2 workerHook=0 globalFrequencyChange=0",
+      s_clothInputBoundary163?"1.6.3":"legacy",eiem_cloth_finish::Passes);
   return true;
 }

@@ -66,6 +66,11 @@ static bool ClothBoneRendererCheck(size_t slot,bool capture) {
 }
 static bool ClothBoneCaptureRenderers() {
   auto &s=ClothBoneState(); s.renderers.resize(s.profile->rendererCount);
+  const auto reject=[&](const char *reason,void *node=nullptr,int depth=-1,int children=-1) {
+    char name[128]{};if(node)CollisionName(node,name,sizeof(name));
+    Log("[CLOTH-BONE-BINDING] component=%s phase=capture reason=%s node=%s depth=%d children=%d",
+        s.profile->component,reason,name,depth,children);return false;
+  };
   const bool bodyCoverage=s.local.requested && s.local.recipe->bodyCoverage;
   const bool sideCoverage=s.local.requested && ClothBoneSideRecipeFor(*s.profile);
   if(bodyCoverage && sideCoverage) return false;
@@ -73,7 +78,7 @@ static bool ClothBoneCaptureRenderers() {
   auto root=CollisionTransform(ClothTarget(s_cloth.animator)); if(!root) return false;
   struct Node { void *t; int depth; }; std::vector<Node> nodes{{root,0}};
   for(size_t n=0;n<nodes.size();++n) {
-    if(nodes.size()>2048) return false;
+    if(nodes.size()>2048) return reject("source-hierarchy-node-budget");
     const auto node=nodes[n]; if(ClothOwnedRoot(node.t)) continue;
     if(s.profile->candidateIgnoredCount || s.profile->prebuildOmittedCount || (s.profile->originalExcludedCount&&!s.profile->excludedBranchCount)) {
       void *type=il2cpp_type_get_object(il2cpp_class_get_type(g_componentClass)),*go=nullptr,*array=nullptr,*args[]{type};uintptr_t count=0;
@@ -118,13 +123,15 @@ static bool ClothBoneCaptureRenderers() {
       }
     }
     int children=-1;
-    if(!ClothValue(s_clothUnity.childCount,node.t,children) || children<0 || children>128 || (node.depth>=32 && children)) return false;
+    if(!ClothValue(s_clothUnity.childCount,node.t,children) || children<0 || children>128)
+      return reject("source-child-count-invalid",node.t,node.depth,children);
+    if(node.depth>=32 && children)return reject("source-hierarchy-depth-budget",node.t,node.depth,children);
     for(int k=0;k<children;++k) {
       void *child=nullptr,*args[]{&k}; if(!ClothInvoke(s_clothUnity.child,node.t,args,child) || !child) return false;
       nodes.push_back({child,node.depth+1});
     }
   }
-  for(auto &r:s.renderers) if(!r.renderer.handle) return false;
+  for(auto &r:s.renderers) if(!r.renderer.handle) return reject("source-renderer-missing");
   if(bodyCoverage && !s.local.bodyRenderer.renderer.handle) return false;
   if(sideCoverage && !s.local.side.renderer.renderer.handle) return false;
   Log("[CLOTH-BONE-BINDING] profile=%s renderers=%zu naturalReference=1 bindposes=1 GPUContentHashVerified=0",

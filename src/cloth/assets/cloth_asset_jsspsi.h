@@ -80,35 +80,55 @@ inline SharedSkinPart GenerateJsspsiSleeve(Package &package,Scene &s,int64_t id,
     out.bindings.push_back(std::move(bindings));out.renderers.push_back({text(m.name),text(m.mesh),text(m.root),m.vertices,m.submeshes,nullptr,0,text(m.parent)});part.meshes.push_back(std::move(m));}
   Need(!part.meshes.empty()&&part.meshes.size()<=16,"si-sleeve-renderer-budget");const std::string identity="si-sleeve-source-v1\n"+s.file.sha+"\n"+s.Name(id);p.signature=text(Digest(Bytes(identity.begin(),identity.end())));out.Link();eiem_cloth_cache::Validate(out);
   part.recipe=std::make_shared<DenseRecipe>();auto &d=*part.recipe;auto &r=d.view;r.runtimeGenerated=r.sourceSleeve=r.multipleLod=true;r.loop=false;r.originalCount=7;r.originalRoots=1;r.depth=7;
-  r.baseSignature=d.String(p.signature);r.prefabSha=d.String(p.prefabSha);const std::string recipeId=identity+"\nsource-sleeve-single-vertical-six-links-v1";r.signature=d.String(Digest(Bytes(recipeId.begin(),recipeId.end())));
+  r.baseSignature=d.String(p.signature);r.prefabSha=d.String(p.prefabSha);const std::string recipeId=identity+"\nsource-sleeve-thirty-fitted-straight-axis-v4";r.signature=d.String(Digest(Bytes(recipeId.begin(),recipeId.end())));
   d.radiusCurve=CurveSamples(sd.At("radius"),true);d.distanceCurve=CurveSamples(sd.At("distanceConstraint").At("stiffness"),false);
   for(float value:d.distanceCurve)Need(std::isfinite(value)&&std::abs(value-1.f)<1e-6f,"si-sleeve-source-distance-changed");
-  r.distanceStiffness=ClothSleeveDistanceStiffness;r.tetherStretch=ClothSleeveTetherStretch;r.bendingStiffness=0;
-  // Keep the attachment supported and soften the chain towards the hem.
-  for(int n=0;n<16;++n)d.distanceCurve[n]=ClothSleeveDistanceAt(float(n)/15.f);
+  // Retain the source distance curve; zero recipe overrides mean that the
+  // live native configuration owns material parameters, including tether/bend.
+  r.distanceStiffness=1;r.tetherStretch=0;r.bendingStiffness=0;
   d.columns.assign(7,-1);d.roots={7};d.faces.emplace_back();d.lines.emplace_back();
-  // One vertical seven-point chain in the certified prefab's Y-up reference,
-  // with six equal links and the authored total length. Never relocate the
-  // source skeleton or alter its original bindposes.
-  // New inverse bindposes preserve the visible cloth in its neutral shape.
-  const auto origin=points.front();double length=0;for(int n=1;n<7;++n)length+=Distance(points[n],points[n-1]);
+  // PMX uses a straight chain through the sleeve, not a world-vertical axis.
+  // Use the offline garment's root-to-tip direction; a vertical chain leaves
+  // the lower fabric far off-axis and turns its tip into a long rigid lever.
+  // Retain the attachment, two fixed points and 28 moving points. Private binds
+  // preserve neutral skin; original source transforms remain passive followers.
+  const auto origin=points.front();double length=0;std::array<double,7> sourceArc{};
+  for(int n=1;n<7;++n){length+=Distance(points[n],points[n-1]);sourceArc[n]=length;}
   Need(length>.3&&length<2,"si-sleeve-length");
-  const Point span{0,-length,0};
-  for(int row=0;row<7;++row){
-    auto wanted=world[0];for(int k=0;k<3;++k)wanted[12+k]=origin[k]+span[k]*(double(row)/6.);
+  const auto span=Sub(points.back(),origin);const double chord=std::sqrt(Dot(span,span));
+  // Reject a folded/incompatible source rather than constructing a short chain.
+  Need(std::isfinite(chord)&&chord>length*.9&&chord<=length+1e-6,"si-sleeve-straight-axis-coverage");
+  for(int row=0;row<ClothSleeveParticles;++row){
+    auto wanted=world[0];for(int k=0;k<3;++k)wanted[12+k]=origin[k]+span[k]*(double(row)/ClothSleeveLinks);
     const int parent=row?7+row-1:-1;const auto parentWorld=row?world[parent]:s.World(s.Parent(part.ids[0]));
     const auto local=Mul(Inverse(parentWorld),wanted);
     ClothBoneAsset b{d.String(std::string("EP_SiSleeveChain_")+(left?"L_":"R_")+std::to_string(row)),
-      row?d.added.back().name:p.bones[0].parentName,parent,row?2:1,0,row,
+      row?d.added.back().name:p.bones[0].parentName,parent,row<ClothSleeveFixed?1:2,0,row,
       {float(local[12]),float(local[13]),float(local[14])},QuaternionOf(local),{1,1,1}};
-    d.added.push_back(b);d.parents.push_back(0);d.radii.push_back(CurveAt(d.radiusCurve,double(row)/6.));
+    d.added.push_back(b);d.parents.push_back(0);
     world.push_back(Mul(parentWorld,BoneMatrix(b)));points.push_back(Transform(world.back(),{}));
     if(row)d.lines[0].push_back({parent,7+row});
-    // Existing ribbon colliders reference the source bones. Follow the private
-    // chain through their original rest offsets, with a reversible pose lease.
-    ClothBoneResponseFrame response;auto &f=response.frame;f.target=row;f.count=1;f.controls[0]=7+row;f.weights[0]=1;
-    const auto offset=Mul(Inverse(world.back()),world[row]);std::copy(offset.begin(),offset.end(),f.offsets[0].v);
-    Need(eiem_cloth_response::Valid(f,7,14),"si-sleeve-source-follow-frame");d.responses.push_back(response);
+  }
+  // BBC measures depth from the nearest fixed ancestor, so both fixed points
+  // have depth zero. Passive source followers must not affect normalization.
+  auto candidateBones=out.bones;for(auto &b:candidateBones)b.attribute=0;
+  candidateBones.insert(candidateBones.end(),d.added.begin(),d.added.end());
+  const auto lengths=NativeFixedPathLengths(candidateBones,points);
+  const auto maximum=*std::max_element(lengths.begin(),lengths.end());
+  Need(maximum>0,"si-sleeve-native-depth-empty");
+  for(size_t n=ClothSleeveSourceCount;n<candidateBones.size();++n)
+    d.radii.push_back(CurveAt(d.radiusCurve,lengths[n]/maximum));
+  // Existing ribbon colliders reference seven source bones. Interpolate their
+  // arc-length locations on the new chain; never attach all of them at its top.
+  for(int row=0;row<7;++row){
+    const double coordinate=sourceArc[row]/length*ClothSleeveLinks;
+    const int lo=(std::min)(ClothSleeveLinks,int(coordinate));const double mix=coordinate-lo;
+    ClothBoneResponseFrame response;auto &f=response.frame;f.target=row;
+    auto append=[&](int control,double weight){if(weight<1e-9)return;const int k=f.count++;
+      f.controls[k]=7+control;f.weights[k]=weight;const auto offset=Mul(Inverse(world[7+control]),world[row]);
+      std::copy(offset.begin(),offset.end(),f.offsets[k].v);};
+    append(lo,1-mix);if(lo<ClothSleeveLinks)append(lo+1,mix);
+    Need(eiem_cloth_response::Valid(f,7,7+ClothSleeveParticles),"si-sleeve-source-follow-frame");d.responses.push_back(response);
   }
   JsspsiSleeveContacts(package,s,part,left);d.Link();p.generatedLocal=&r;return part;
 }

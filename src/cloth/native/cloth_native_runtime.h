@@ -123,9 +123,19 @@ static bool SurfaceTRS(void *t, void *parent, Vector3 p, Quaternion q, Vector3 s
 }
 
 static std::vector<ClothRef> s_clothOwnedRoots;
+// Borrowed handles: the creating transaction retains them through destruction.
+static bool ClothRegisterOwnedRoot(const ClothRef &root) {
+  if(!ClothTarget(root))return false;
+  for(const auto &r:s_clothOwnedRoots)if(r.id==root.id)return r.handle==root.handle;
+  s_clothOwnedRoots.push_back(root);return true;
+}
+static void ClothUnregisterOwnedRoot(const ClothRef &root) {
+  s_clothOwnedRoots.erase(std::remove_if(s_clothOwnedRoots.begin(),s_clothOwnedRoots.end(),
+      [&](const ClothRef &r){return r.handle==root.handle&&r.id==root.id;}),s_clothOwnedRoots.end());
+}
 static bool ClothOwnedRoot(void *transform) {
   for(const auto &r:s_clothOwnedRoots)
-    if(transform && r.handle && uintptr_t(transform)==r.id.managed) return true;
+    if(transform && r.handle && uintptr_t(transform)==r.id.managed && ClothTarget(r)==transform) return true;
   return false;
 }
 static bool SurfaceRenderArrayLength(void *array, const char *type, size_t expected) {

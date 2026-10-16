@@ -187,6 +187,7 @@ $tests = @(
   @{ Name = 'test_quat';      Src = 'tests\test_quat.cpp' },
   @{ Name = 'test_native_cloth'; Src = 'tests\test_native_cloth.cpp' },
   @{ Name = 'test_cloth_runtime'; Src = 'tests\test_cloth_runtime.cpp' },
+  @{ Name = 'test_cloth_sleeve_solver_binding'; Src = 'tests\test_cloth_sleeve_solver_binding.cpp' },
   @{ Name = 'test_cloth_shared_skin'; Src = 'tests\test_cloth_shared_skin.cpp' },
   @{ Name = 'test_cloth_vfs'; Src = 'tests\test_cloth_vfs.cpp' },
   @{ Name = 'test_cloth_input_boundary'; Src = 'tests\test_cloth_input_boundary.cpp' },

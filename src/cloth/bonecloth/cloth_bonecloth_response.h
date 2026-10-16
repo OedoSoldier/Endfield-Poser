@@ -129,10 +129,15 @@ static bool ClothBoneResponsePrepare() {
       (sleeve?r.responseCount!=7:(!r.responseConsumer||!r.responseRoot||r.responseCount!=3||!r.resampledPanel||!eiem_cloth_asset::SourceSeraphPanel(*s.profile))))return false;
   for(int k=0;k<r.responseCount;++k){const auto &f=r.responses[k].frame;
     if(!eiem_cloth_response::Valid(f,r.originalCount,r.Total())||!ClothBoneCandidate(s).Passive(f.target))return false;
-    if(sleeve&&(f.target!=k||f.count!=1||f.controls[0]!=7+k||f.weights[0]!=1))return false;
+    if(sleeve){
+      if(f.target!=k||f.count>2||(f.count==2&&f.controls[1]!=f.controls[0]+1))return false;
+      if(k==0&&(f.count!=1||f.controls[0]!=7))return false;
+      if(k==6&&(f.count!=1||f.controls[0]!=r.Total()-1))return false;
+      if(k&&f.controls[0]<r.responses[k-1].frame.controls[0])return false;
+    }
     for(int j=0;j<k;++j)if(r.responses[j].frame.target==f.target)return false;
     for(int j=0;j<f.count;++j)if(ClothBoneCandidate(s).Passive(f.controls[j]))return false;}
-  if(sleeve){l.prepared=true;Log("[CLOTH-SLEEVE] stage=source-collider-follow-prepared component=%s nativeParticles=7 sourceFollowers=7 sourceSolverRetired=1 colliderGeometryUnchanged=1 reversible=1",s.profile->component);return true;}
+  if(sleeve){l.prepared=true;Log("[CLOTH-SLEEVE] stage=source-collider-follow-prepared component=%s nativeParticles=30 sourceFollowers=7 sourceSolverRetired=1 colliderGeometryUnchanged=1 reversible=1",s.profile->component);return true;}
   for(int n=0;n<s_cloth.count;++n)if(!strcmp(s_cloth.instances[n].name,r.responseConsumer)){
     if(l.consumer.handle)return false;l.consumer=ClothProtect(ClothTarget(s_cloth.instances[n].ref));if(!l.consumer.handle)return false;}
   if(!ClothBoneResponseRelation(true)||!ClothBoneResponsePeers(true))return false;l.prepared=true;
@@ -174,7 +179,7 @@ static bool ClothBoneResponseApply() {
     if(!SurfaceVisiblePose(t,pos,q,scale)||!SurfaceVisibleSame(pos,p.lastP)||!SurfaceVisibleSame(q,p.lastQ)||!SurfaceVisibleSame(scale,p.scale))return false;}
   for(int k=0;k<r.responseCount;++k)if(!SurfaceOutputMatrix(ClothTarget(s.bones[r.responses[k].frame.target].bone),l.appliedWorld[k]))return false;
   ++l.updates;
-  if(sleeve){if(l.updates==1)Log("[CLOTH-SLEEVE] stage=source-collider-following component=%s sourceFollowers=7 nativeParticles=7 phase=completed-pre-Team nativeSampling=next-input-pass colliderGeometryWrites=0 visualVerified=0",s.profile->component);return true;}
+  if(sleeve){if(l.updates==1)Log("[CLOTH-SLEEVE] stage=source-collider-following component=%s sourceFollowers=7 nativeParticles=30 phase=completed-pre-Team nativeSampling=next-input-pass colliderGeometryWrites=0 visualVerified=0",s.profile->component);return true;}
   if(l.updates==1||l.updates%600==0)Log("[CLOTH-BONE-RESPONSE] stage=following consumer=%s session=%llu generation=%llu command=%u frame=%d innerTeam=%d outerTeam=%d updates=%u mappedFrames=3 registeredExistingColliders=3 phase=completed-pre-Team nativeSampling=next-input-pass zeroLatencyClaim=0 geometryWrites=0 bodyWrites=0 innerFeedback=0 visualVerified=0",
       r.responseConsumer,s.owner.session,s.owner.generation,s.command,ClothFrame(),s.team[1],l.team,l.updates);
   return true;

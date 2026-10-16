@@ -135,7 +135,7 @@ static bool ClothBoneOwnedConstruct() {
   if(!s.lease){void *destroyArgs[]{go};ClothInvoke(ClothMethod(SurfaceClass("UnityEngine","Object"),"Destroy","System.Void","UnityEngine.Object",true),nullptr,destroyArgs,unused);return false;}
   bool off=false;if(!constructed||!SurfaceCall(go,"SetActive","System.Boolean",&off))return false;
   auto transform=CollisionTransform(go);s.transform=ClothProtect(transform);if(!s.transform.handle)return false;
-  s_clothOwnedRoots.push_back(s.transform);
+  if(!ClothRegisterOwnedRoot(s.transform))return false;
   ClothBoneOwnedStep("private-object-parent-and-scene");
   if(!SurfaceTRS(transform,CollisionTransform(ClothTarget(s_cloth.animator)),{},{0,0,0,1},{1,1,1}))return false;
   int scene=0;if(!ClothScene(transform,scene)||scene!=s_cloth.scene)return false;
@@ -252,7 +252,7 @@ static void ClothBoneOwnedCleanup() {
   void *go=nullptr;const auto life=ClothInspect(o.gameObject,go);
   if(life==ClothLife::Unreadable)return;
   if(life==ClothLife::Alive){if(!o.destroyIssued&&o.destroyAttempts<3){++o.destroyAttempts;void *args[]{go};o.destroyIssued=ClothInvoke(ClothMethod(SurfaceClass("UnityEngine","Object"),"Destroy","System.Void","UnityEngine.Object",true),nullptr,args,unused);}return;}
-  const auto id=s.transform.id;s_clothOwnedRoots.erase(std::remove_if(s_clothOwnedRoots.begin(),s_clothOwnedRoots.end(),[&](const ClothRef &r){return r.id==id;}),s_clothOwnedRoots.end());
+  ClothUnregisterOwnedRoot(s.transform);
   ClothFree(o.gameObject);s.tx.phase=eiem_cloth_rebuild::Phase::Complete;
   ClothBoneNote(s.failed?"unowned-candidate-failed-private-BBC-removed":"unowned-BBC-removed-native-control-returned");ClothBoneDropReferences();
 }

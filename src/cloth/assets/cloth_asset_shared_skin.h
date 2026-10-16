@@ -51,19 +51,30 @@ inline void PublishSharedSkin(Package &package,Scene &scene,std::array<SharedSki
   publisher.profile->dependencies.clear();for(int p=1;p<3;++p)publisher.profile->dependencies.push_back(profileText(parts[p].profile->view.component));publisher.profile->Link();output.Link();
   Need(output.view.meshCount>0&&output.view.sharedBindingCount>0&&parts[1].recipe->view.SharedSupplier()&&parts[2].recipe->view.SharedSupplier(),"shared-skin-final-contract");
 }
+// The skirt may share renderers with native sleeves. Only skirt influences
+// belong to this candidate; DenseBinding preserves all foreign sleeve terms.
+inline SharedSkinPart GenerateJsspsiSkirt(Package &package,Scene &s,const Query &query,bool deferredSkin=false){
+  Need(JsspsiGroupSource(s),"si-skirt-source");int captured=0;int64_t id=0;
+  for(const auto &live:query.cloths)captured+=live.name=="MC_jsspsi_Skirt";
+  Need(captured==1,"si-skirt-source-required");
+  for(const auto &o:s.file.objects)if(s.file.Class(o.first)==114&&s.Name(o.first)=="MC_jsspsi_Skirt"){
+    Need(!id,"si-skirt-source-ambiguous");id=o.first;}
+  Need(id!=0,"si-skirt-source-missing");SharedSkinPart part;SurfaceInput surface;
+  part.profile=GenerateConnections(package,s,id,query,&surface);auto &skirt=*part.profile;
+  Need(skirt.view.OriginalCount()==36&&skirt.view.EffectiveCount()==30&&skirt.ignored.size()==6,"si-skirt-source-and-candidate-closure");
+  for(int n:skirt.ignored)Need(skirt.bones[n].attribute==2&&skirt.bones[n].parent>=0&&skirt.bones[n].column==-1,"si-skirt-helper-contract");
+  const auto identity=std::string(skirt.view.signature)+(deferredSkin?"\nsi-source-nearest-helper-selection-v2":"\nsi-skirt-only-native-sleeves-v1");
+  skirt.strings.push_back(Digest(Bytes(identity.begin(),identity.end())));skirt.view.signature=skirt.strings.back().c_str();
+  Need(surface.groups.empty()&&surface.densityIssue.empty(),surface.densityIssue.empty()?"si-skirt-isolated-panels":surface.densityIssue.c_str());
+  part.ids=surface.ids;part.meshes=surface.meshes;
+  part.recipe=GenerateDenseCandidate(package,s,id,skirt,part.ids,part.meshes,{}, {},2,false,deferredSkin);
+  skirt.view.generatedLocal=&part.recipe->view;return part;
+}
 inline std::array<SharedSkinPart,3> GenerateJsspsiGroup(Package &package,Scene &s,const Query &query){
   Need(JsspsiGroupSource(s),"si-group-source");const char *names[]{"MC_jsspsi_Skirt","MC_jsspsi_sleeve_L","MC_jsspsi_sleeve_R"};std::array<int64_t,3> ids{};
   for(int n=0;n<3;++n){int captured=0;for(const auto &live:query.cloths)captured+=live.name==names[n];Need(captured==1,"si-group-all-members-required");
     for(const auto &o:s.file.objects)if(s.file.Class(o.first)==114&&s.Name(o.first)==names[n]){Need(!ids[n],"si-group-source-ambiguous");ids[n]=o.first;}Need(ids[n]!=0,"si-group-source-missing");}
-  std::array<SharedSkinPart,3> parts;SurfaceInput surface;
-  try{parts[0].profile=GenerateConnections(package,s,ids[0],query,&surface);}catch(const std::exception &e){throw std::runtime_error(std::string("si-skirt-source:")+e.what());}
-  auto &skirt=*parts[0].profile;
-  Need(skirt.view.OriginalCount()==36&&skirt.view.EffectiveCount()==30&&skirt.ignored.size()==6,"si-skirt-source-and-candidate-closure");
-  for(int n:skirt.ignored)Need(skirt.bones[n].attribute==2&&skirt.bones[n].parent>=0&&skirt.bones[n].column==-1,"si-skirt-helper-contract");
-  const auto sourceIdentity=std::string(skirt.view.signature)+"\nsi-source-nearest-helper-selection-v2";
-  skirt.strings.push_back(Digest(Bytes(sourceIdentity.begin(),sourceIdentity.end())));skirt.view.signature=skirt.strings.back().c_str();
-  Need(surface.groups.empty()&&surface.densityIssue.empty(),surface.densityIssue.empty()?"si-skirt-isolated-panels":surface.densityIssue.c_str());parts[0].ids=surface.ids;parts[0].meshes=surface.meshes;
-  parts[0].recipe=GenerateDenseCandidate(package,s,ids[0],*parts[0].profile,parts[0].ids,parts[0].meshes,{}, {},2,false,true);parts[0].profile->view.generatedLocal=&parts[0].recipe->view;
+  std::array<SharedSkinPart,3> parts;parts[0]=GenerateJsspsiSkirt(package,s,query,true);
   for(int side=1;side<3;++side)try{parts[side]=GenerateJsspsiSleeve(package,s,ids[side],query);}catch(const std::exception &e){throw std::runtime_error(std::string(names[side])+":"+e.what());}
   PublishSharedSkin(package,s,parts);return parts;
 }

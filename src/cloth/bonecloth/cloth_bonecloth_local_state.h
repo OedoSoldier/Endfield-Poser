@@ -219,6 +219,7 @@ struct ClothBoneLocalState {
   uint64_t deadline=0;
   std::vector<ClothBoneLocalMeshState> layers=std::vector<ClothBoneLocalMeshState>(std::size(ClothLocalMeshes));
   std::vector<ClothRef> objects;
+  std::vector<ClothRef> hierarchyRoots; // Borrowed from retained private bone refs.
   std::vector<bool> destroyIssued;
   ClothBoneRendererRef bodyRenderer{};
   ClothSideState side{};
@@ -231,7 +232,7 @@ struct ClothBoneLocalState {
   std::vector<int> roots,ignored;
   bool HasResources() const {
     if(contactConfigured&&!contactReleased)return true;
-    if(registryScan || created || !objects.empty() || bodyRenderer.renderer.handle || bodyCollider.handle || !fittedBody.empty() || side.renderer.renderer.handle || !side.shapes.empty()) return true;
+    if(registryScan || created || !objects.empty() || !hierarchyRoots.empty() || bodyRenderer.renderer.handle || bodyCollider.handle || !fittedBody.empty() || side.renderer.renderer.handle || !side.shapes.empty()) return true;
     for(auto &l:layers) if(l.scan || l.issued || l.bundle.handle || l.mesh.handle || l.file.path[0]) return true;
     return false;
   }
@@ -240,6 +241,19 @@ struct ClothBoneLocalState {
     return false;
   }
 };
+static bool ClothBoneLocalTrackRoot(ClothBoneLocalState &local,const ClothBoneAsset &asset,
+    int originalCount,const ClothRef &bone) {
+  // Only branch boundaries attached to source bones; descendants are skipped
+  // with their root. Never classify an authored bone by its name or depth.
+  if(asset.parent>=originalCount)return true;
+  for(const auto &r:local.hierarchyRoots)if(r.id==bone.id)return r.handle==bone.handle;
+  if(!ClothRegisterOwnedRoot(bone))return false;
+  local.hierarchyRoots.push_back(bone);return true;
+}
+static void ClothBoneLocalForgetRoots(ClothBoneLocalState &local) {
+  for(const auto &r:local.hierarchyRoots)ClothUnregisterOwnedRoot(r);
+  local.hierarchyRoots.clear();
+}
 static bool ClothBoneLocalCreate();
 static bool ClothBoneLocalCleanupWait(const char *reason,int item=-1);
 static bool ClothBoneLocalCleanup();

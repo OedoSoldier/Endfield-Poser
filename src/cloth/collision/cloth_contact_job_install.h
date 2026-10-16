@@ -1,4 +1,5 @@
 #pragma once
+#include "../native/cloth_contact_native_profile.h"
 static bool ClothContactCodeHash(void *code,size_t bytes,uint64_t &hash) {
   MEMORY_BASIC_INFORMATION region{};hash=0;
   if(!code || !bytes || !VirtualQuery(code,&region,sizeof(region)) || region.AllocationBase!=hGA ||
@@ -20,6 +21,15 @@ static bool ClothContactRequireCode(const char *label,void *code,size_t bytes,ui
   Log("[CLOTH-BONE-CONTACT-ABI] check=code method=%s code=%p bytes=%zu readable=%d expected=%016llX actual=%016llX",
       label,code,bytes,int(readable),(unsigned long long)expected,(unsigned long long)actual);
   return ClothContactInstallReject(label);
+}
+static bool ClothContactProfileCode(void *code,poser_cloth_contact_native::Code check) {
+  return poser_cloth_contact_native::AddressMatches(uintptr_t(hGA),uintptr_t(code),check) &&
+      ClothContactCode(code,check.bytes,check.hash);
+}
+static bool ClothContactRequireProfile(const char *label,void *code,poser_cloth_contact_native::Code check) {
+  if(!poser_cloth_contact_native::AddressMatches(uintptr_t(hGA),uintptr_t(code),check))
+    return ClothContactInstallReject(label);
+  return ClothContactRequireCode(label,code,check.bytes,check.hash);
 }
 static bool ClothContactSize(void *cls,int expected) {
   uint32_t align=0;const int actual=cls?il2cpp_class_value_size(cls,&align):-1;
@@ -74,7 +84,8 @@ static void *ClothContactValueType(const char *name,const char *full,void **asms
   if(!found){Log("[CLOTH-BONE-CONTACT-ABI] check=type-not-found expected=%s",full);ClothContactInstallReject(name);}
   return found;
 }
-static bool ClothContactJobLayout(int kind,void **asms,size_t count) {
+static bool ClothContactJobLayout(int kind,void **asms,size_t count,
+    const poser_cloth_contact_native::Profile &profile) {
   const char *name=kind?"UpdatePointTriangleBroadPhaseCrossFrameJob":"UpdateEdgeEdgeBroadPhaseCrossFrameJob";
   const char *full=kind?"BeyondDynamicBone.SelfCollisionConstraint.UpdatePointTriangleBroadPhaseCrossFrameJob":
       "BeyondDynamicBone.SelfCollisionConstraint.UpdateEdgeEdgeBroadPhaseCrossFrameJob";
@@ -98,8 +109,7 @@ static bool ClothContactJobLayout(int kind,void **asms,size_t count) {
       !ClothContactOffset(ref,"m_Data","System.Void*",16,8,0) ||
       !ClothContactOffset(ref,"m_AllocatorLabel","Unity.Collections.AllocatorManager.AllocatorHandle",16,4,8)) return false;
   auto execute=SurfaceMethod(cls,"Execute","System.Void");
-  if(!ClothContactRequireCode(name,execute?((MInfo*)execute)->mp:nullptr,91,
-      kind?0x34c9caf72e330ef2ULL:0x5773f42d899326d0ULL))return false;
+  if(!ClothContactRequireProfile(name,execute?((MInfo*)execute)->mp:nullptr,profile.execute[kind]))return false;
   const char *queueName=kind?"PointTriangleToListJob":"EdgeEdgeToListJob";
   const char *queueFull=kind?"BeyondDynamicBone.SelfCollisionConstraint.PointTriangleToListJob":
       "BeyondDynamicBone.SelfCollisionConstraint.EdgeEdgeToListJob";
@@ -109,11 +119,14 @@ static bool ClothContactJobLayout(int kind,void **asms,size_t count) {
   if(il2cpp_class_from_type(il2cpp_field_get_type(queueField))!=list)return ClothContactInstallReject("queue-list-type-identity");
   auto toList=SurfaceMethod(queue,"Execute","System.Void");
   auto code=toList?(unsigned char*)((MInfo*)toList)->mp:nullptr;
-  if(!ClothContactRequireCode(queueName,code,190,kind?0xe461448fd60ed6bcULL:0x87a5050d0e9e699eULL))return false;
-  return ClothContactUniqueCall(code,190,31,0x13df3f07871d6310ULL,"queue-list-Clear")!=nullptr;
+  if(!ClothContactRequireProfile(queueName,code,profile.queue[kind]))return false;
+  auto clear=ClothContactUniqueCall(code,profile.queue[kind].bytes,profile.clear.bytes,
+      profile.clear.hash,"queue-list-Clear");
+  return clear && ClothContactRequireProfile("queue-list-Clear-address",clear,profile.clear);
 }
 struct ClothContactInstallState {
   bool attempted=false;
+  const poser_cloth_contact_native::Profile *profile=nullptr;
   unsigned char *updateCode=nullptr,*targets[2]{};
   uint64_t installedHash[2]{};
 } static s_clothContactInstall;
@@ -132,8 +145,9 @@ static bool ClothInstallContactJobsMainThread() {
   auto &updateCode=s.updateCode;auto &targets=s.targets;auto &installedHash=s.installedHash;
   if(!ClothOnMainThread() || !s_clothSurfaceAtBoundary || s_clothInputUpdateDepth!=1 || !s_clothInputHooks) return false;
   if(s_clothContactJobs.installed) {
-    const bool valid= ClothContactCode(updateCode,384,0x17cd35be18c07ca5ULL) &&
-        ClothContactCode(targets[0],367,installedHash[0]) && ClothContactCode(targets[1],367,installedHash[1]);
+    const bool valid=s.profile && ClothContactProfileCode(updateCode,s.profile->update) &&
+        ClothContactCode(targets[0],s.profile->schedule[0].bytes,installedHash[0]) &&
+        ClothContactCode(targets[1],s.profile->schedule[1].bytes,installedHash[1]);
     return valid?true:ClothContactInstallReject("installed-code-changed");
   }
   if(s.attempted)return false;s.attempted=true;s_clothContactInstallIssue[0]=0;
@@ -143,17 +157,25 @@ static bool ClothInstallContactJobsMainThread() {
   auto method=SurfaceMethod(cls,"UpdateBroadPhase","Unity.Jobs.JobHandle","Unity.Jobs.JobHandle");
   auto untyped=FindClass("Unity.Collections.LowLevel.Unsafe","UntypedUnsafeList",asms,count);
   updateCode=method?(unsigned char*)((MInfo*)method)->mp:nullptr;
+  for(auto profile:{&poser_cloth_contact_native::Legacy,&poser_cloth_contact_native::Native163})
+    if(ClothContactProfileCode(updateCode,profile->update)) {s.profile=profile;break;}
+  if(!s.profile)return ClothContactInstallReject("UpdateBroadPhase-profile");
+  const auto &profile=*s.profile;
   if(!ClothContactSize(untyped,32) ||
       !ClothContactOffset(untyped,"m_length","System.Int32",32,4,8) ||
       !ClothContactOffset(untyped,"Ptr","System.Void*",32,8,0) ||
       !ClothContactOffset(untyped,"m_capacity","System.Int32",32,4,12) ||
-      !ClothContactRequireCode("UpdateBroadPhase",updateCode,384,0x17cd35be18c07ca5ULL) ||
-      !ClothContactJobLayout(0,asms,count) || !ClothContactJobLayout(1,asms,count))return false;
-  const uint64_t hashes[]{0x482d29a4aa3a07ceULL,0xd90fc83366eb9f98ULL};
+      !ClothContactRequireProfile("UpdateBroadPhase",updateCode,profile.update) ||
+      !ClothContactJobLayout(0,asms,count,profile) || !ClothContactJobLayout(1,asms,count,profile))return false;
+  for(const auto &support:profile.support)if(support.bytes &&
+      !ClothContactRequireProfile("schedule-support",(unsigned char*)hGA+support.rva,support))return false;
   for(int kind=0;kind<2;++kind) {
-    targets[kind]=(unsigned char*)ClothContactUniqueCall(updateCode,384,367,hashes[kind],
+    const auto &schedule=profile.schedule[kind];
+    targets[kind]=(unsigned char*)ClothContactUniqueCall(updateCode,profile.update.bytes,schedule.bytes,schedule.hash,
         kind?"PointTriangle-schedule":"EdgeEdge-schedule",&s_clothContactJobs.callsites[kind]);
-    if(!targets[kind])return false;
+    if(!targets[kind] || !ClothContactRequireProfile("schedule-address",targets[kind],schedule))return false;
+    if(profile.scheduleCall[kind] && s_clothContactJobs.callsites[kind]!=updateCode+profile.scheduleCall[kind]+5)
+      return ClothContactInstallReject("schedule-callsite");
   }
   if(targets[0]==targets[1])return ClothContactInstallReject("schedule-target-identity");
   const double validated=ClothInstallClockMs();
@@ -170,10 +192,10 @@ static bool ClothInstallContactJobsMainThread() {
     for(int n=0;n<2;++n)if(created[n]){MH_DisableHook(targets[n]);MH_RemoveHook(targets[n]);}
     s_clothContactJobs={};return ClothContactInstallReject("hook-install-failed");
   }
-  for(int n=0;n<2;++n)installedHash[n]=eiem_cloth_input::Fingerprint(targets[n],367);
+  for(int n=0;n<2;++n)installedHash[n]=eiem_cloth_input::Fingerprint(targets[n],profile.schedule[n].bytes);
   s_clothContactJobs.lengthOffset=8;s_clothContactJobs.installed=true;
   Log("[CLOTH-INSTALL-COST] adapter=contact validateMs=%g createMs=%g enableMs=%g enableBatches=1",
       validated-started,createdAt-validated,ClothInstallClockMs()-createdAt);
-  Log("[CLOTH-BONE-CONTACT-JOB] stage=installed jobs=2 scope=leased-contact-list-and-exact-callsite counter=live-native-list-length clearProof=native-queue-call noWorkerHook=1 nativeArrayWrites=0 dependencyWrites=0");
+  Log("[CLOTH-BONE-CONTACT-JOB] stage=installed profile=%s jobs=2 scope=leased-contact-list-and-exact-callsite counter=live-native-list-length clearProof=native-queue-call noWorkerHook=1 nativeArrayWrites=0 dependencyWrites=0",profile.name);
   return true;
 }

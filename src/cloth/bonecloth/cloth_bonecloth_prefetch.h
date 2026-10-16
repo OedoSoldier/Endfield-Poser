@@ -44,7 +44,7 @@ static void ClothPrefetchBoundary() {
   if(!ClothPrefetchNeedsHooks()||!ClothOnMainThread()||!s_clothSurfaceAtBoundary||
       s_clothInputUpdateDepth!=1||!ClothPrefetchIdentity())return;
   // The profile is selected after the first job sets its prefetch mask.
-  if(s_clothInputBoundary163)s_clothPrefetch.hookMask&=4;
+  if(s_clothInputBoundary163)s_clothPrefetch.hookMask&=ClothNativeAdapterMask163();
   const struct {unsigned bit;const char *name;bool (*install)();} hooks[]{
       {1,"contact",s_clothContactJobInstaller},{2,"layer",s_clothLayerInstaller},
       {4,"elastic",s_clothElasticInstaller},{8,"display",s_clothDisplayInstaller},{16,"finish",s_clothFinishInstaller}};
@@ -145,7 +145,8 @@ static void ClothPrefetchPulseImpl() {
     const auto result=p.job->result;
     Log("[CLOTH-PREFETCH] stage=ready elapsedMs=%llu cache=%d cacheKey=%s generated=%zu reason=%s mainCaptureOnly=1 nativeCandidatesCreated=0",
         p.job->elapsedMs,int(p.job->cacheHit),p.job->cacheKey.c_str(),result?result->profiles.size():0,p.job->error.empty()?"complete":p.job->error.c_str());
-    if(result)for(const auto &d:result->dense)if(d->view.resampledPanel)p.hookMask|=s_clothInputBoundary163?4:31;
+    if(result)for(const auto &d:result->dense)if(d->view.resampledPanel)
+      p.hookMask|=s_clothInputBoundary163?ClothNativeAdapterMask163():31;
   }
   if(p.hookMask&&s_clothInputHookInstaller)s_clothInputHookInstaller();
   if(p.reported&&p.job&&p.job->error.empty()) {

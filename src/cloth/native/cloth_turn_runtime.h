@@ -248,6 +248,9 @@ static void ClothTurnReadback(const ClothRef &ref,void *process,int expectedMode
 // TeamManager consumes external forces. No job buffer or mesh access.
 static bool ClothTurnForce(void *obj,const ClothRef &ref,cloth_turn::Part part,double now,
     const ClothInstance *source,const ClothBoneRuntime *enhanced,unsigned &budget) {
+  const bool sleeve=enhanced&&ClothBoneSleevePolicy(*enhanced);
+  if(!sleeve&&((source&&eiem_cloth_asset::JsspsiSleeveName(source->name))||
+      (enhanced&&enhanced->profile&&eiem_cloth_asset::JsspsiSleeveName(enhanced->profile->component))))return true;
   const float strength=part==cloth_turn::Part::Hair?s_clothHairStrength:
       part==cloth_turn::Part::Ribbon?s_clothRibbonStrength:part==cloth_turn::Part::Belt?s_clothBeltStrength:
       part==cloth_turn::Part::Accessory?s_clothAccessoryStrength:s_clothTurnStrength;
@@ -263,13 +266,13 @@ static bool ClothTurnForce(void *obj,const ClothRef &ref,cloth_turn::Part part,d
   auto entry=ClothTurnShape(ref,part,process,source,enhanced,budget);
   if(!entry)return false;
   // An unresolved attachment retains native physics, not an invented chest driver.
-  if(cloth_turn::AttachmentPart(part)&&!entry->attachment.count)return false;
+  if((cloth_turn::AttachmentPart(part)||sleeve)&&!entry->attachment.count)return false;
   const auto &mailbox=entry->attachment.count?entry->motion:s_clothTurn.mailbox;
   // BBC adds impactForce to gravity/wind, then multiplies by its own fixed
   // simulationDeltaTime. Native API's historical velocity label is misleading
   // for this game build. Supply acceleration, not our sample's delta velocity.
   Vec3 force=mailbox.force(part,{center.x,center.y,center.z},strength,now,s_clothLightness,&entry->shape);
-  if(enhanced&&ClothBoneSleevePolicy(*enhanced))
+  if(sleeve)
     force=entry->sleeve.step(mailbox,{center.x,center.y,center.z},strength,now,s_clothLightness,entry->shape);
   else entry->sleeve.clear();
   const float magnitude=Len(force);
@@ -277,11 +280,12 @@ static bool ClothTurnForce(void *obj,const ClothRef &ref,cloth_turn::Part part,d
   // Zero motion must not erase native wind or another system's force.
   if(magnitude>1e-5f) {
     Vector3 direction{force.x/magnitude,force.y/magnitude,force.z/magnitude};float amount=magnitude;
-    // Generated chains and short native attachment chains attenuate the
-    // depth-weighted mode differently. Apply the
-    // bounded supplemental force uniformly to moving points; fixed particles
-    // are still excluded by the native solver, all constraints remain active.
-    int mode=(enhanced||cloth_turn::AttachmentPart(part))&&api.enhancedMode?api.enhancedMode:api.mode;
+    // Most generated/short attachment chains use uniform bounded input;
+    // fixed particles are excluded and native constraints remain active.
+    // Si sleeves already inherit native mounting inertia. Their small extra
+    // input uses BBC's depth attenuation so it does not drive every movable
+    // vertex at the full acceleration. Other components keep their policy.
+    int mode=!sleeve&&(enhanced||cloth_turn::AttachmentPart(part))&&api.enhancedMode?api.enhancedMode:api.mode;
     void *args[]{&direction,&amount,&mode},*unused=nullptr;
     if(!ClothInvoke(api.force,obj,args,unused)) {
       s_clothTurn.fault=true;s_clothTurn.status=u8"运动受力调用失败，停止重播后可重试";return false;
@@ -309,7 +313,7 @@ static void ClothTurnBoundary() {
   const double now=ClothTurnMotionNow();
   void *seen[ClothCapacity+eiem_cloth_rebuild::BatchCapacity]{};unsigned count=0,budget=1;
   auto submit=[&](const ClothRef &ref,const char *name,const ClothInstance *source,const ClothBoneRuntime *enhanced) {
-    if(s.fault)return;
+    if(s.fault||(eiem_cloth_asset::JsspsiSleeveName(name)&&(!enhanced||!ClothBoneSleevePolicy(*enhanced))))return;
     auto part=cloth_turn::Classify(name);if(part==cloth_turn::Part::None)return;
     void *obj=ClothTarget(ref);if(!obj)return;
     for(unsigned n=0;n<count;++n)if(seen[n]==obj)return;

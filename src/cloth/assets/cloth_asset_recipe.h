@@ -459,10 +459,12 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &c
       SelectBodyScope(scene,query);
       if(scene.bodyRoot){int count=0;for(const auto &t:scene.goTransform)count+=Key(scene,t.second)==query.hips;
         result.reports.push_back({"body-reference","auto-Animator-relative-path-confirmed hipsCandidates="+std::to_string(count)+" selectedSkeletons=1"});}
-      if(JsspsiGroupSource(scene))try{auto group=GenerateJsspsiGroup(package,scene,query);for(auto &part:group){result.profiles.push_back(part.profile);result.dense.push_back(part.recipe);}
-        result.reports.push_back({"MC_jsspsi_Skirt","shared-skin skirt-and-both-sleeves singlePublisher=1 originalSleeveBonesPreserved=14 armCapsules=8 innerBodyCopies=10 nativeAndVisual=pending"});}
-      catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"MC_jsspsi_Skirt",std::string("shared-skin-group-original-retained:")+e.what()});}
-      for(size_t k=0;k<cloths.size();++k){CheckCancel(vfs.cancel);if(JsspsiGroupSource(scene)&&JsspsiGroupComponent(scene.Name(cloths[k])))continue;try{
+      if(JsspsiGroupSource(scene))try{auto parts=GenerateJsspsiGroup(package,scene,query);
+        for(auto &part:parts){result.profiles.push_back(part.profile);result.dense.push_back(part.recipe);}
+        result.reports.push_back({"MC_jsspsi_Skirt","shared-skin-independent-sleeves particlesPerSleeve=30 material=pmx-joint-approximation extraSleeveSkirtContacts=0 nativeAndVisual=pending"});}
+      catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"MC_jsspsi_Skirt",std::string("shared-skin-original-retained:")+e.what()});}
+      for(size_t k=0;k<cloths.size();++k){CheckCancel(vfs.cancel);
+        if(JsspsiGroupSource(scene)&&(JsspsiSleeveName(scene.Name(cloths[k]).c_str())||scene.Name(cloths[k])=="MC_jsspsi_Skirt"))continue;try{
           if(RibbonSource(scene,cloths[k])){std::shared_ptr<DenseRecipe> dense;auto p=GenerateRibbon(package,scene,cloths[k],query,dense);result.profiles.push_back(p);result.dense.push_back(dense);continue;}
           SurfaceInput surface;auto p=ApronSource(scene,cloths[k])?GenerateApron(package,scene,cloths[k],query,surface):GenerateConnections(package,scene,cloths[k],query,&surface);
           if(!surface.legReport.empty())result.reports.push_back({query.cloths[k].name,surface.legReport});

@@ -5,6 +5,7 @@
 #include "cloth_bonecloth_profile.h"
 #include "cloth_bonecloth_short_policy.h"
 #include "cloth_bonecloth_strip_width_policy.h"
+#include "cloth_bonecloth_sleeve_reference.h"
 #include "../core/cloth_skin_guard.h"
 #include "../collision/cloth_response_frame.h"
 struct ClothBoneLocalMeshConfig {
@@ -60,11 +61,6 @@ struct ClothBoneResponseFrame {
 struct ClothBoneResponsePoint {const char *name=nullptr,*parent=nullptr;int attribute=0;};
 struct ClothBoneResponseFace {std::array<int,3> ids{};int outside=0;};
 constexpr float ClothLongPanelDistanceStiffness=.3f,ClothLongPanelTetherStretch=1.f;
-// Keep bounded reach and progressive compliance along the single sleeve chain.
-constexpr float ClothSleeveDistanceStiffness=.3f,ClothSleeveDistanceTip=.06f,ClothSleeveTetherStretch=.15f;
-inline float ClothSleeveDistanceAt(float depth) {
-  return ClothSleeveDistanceStiffness+(ClothSleeveDistanceTip-ClothSleeveDistanceStiffness)*depth;
-}
 constexpr int ClothLongPanelColumns=20,ClothLongPanelRows=11;
 constexpr int ClothLongPanelParticles=ClothLongPanelColumns*ClothLongPanelRows;
 constexpr int ClothLongPanelIdentities=40+ClothLongPanelParticles;
@@ -93,9 +89,9 @@ struct ClothBoneLocalRecipe {
       sharedBindingCount>=0&&sharedBindingCount<=ClothSharedSkinMaxRefs&&
       (!sharedBindingCount||sharedBindings);}
   bool SharedSupplier() const {return SharedSkin()&&sharedSkinSupplier&&sourceSleeve&&meshCount==0&&
-      originalCount==7&&originalRoots==1&&depth==7&&addedCount==7&&rootCount==1&&
+      originalCount==ClothSleeveSourceCount&&originalRoots==1&&depth==7&&addedCount==ClothSleeveParticles&&rootCount==1&&
       !loop&&multipleLod&&!crossCount&&graphCount==1&&graphs&&graphs[0].faceCount==0&&
-      graphs[0].lineCount==6&&bodyCoverage&&bodyAsset&&bodySphereCount==9;}
+      graphs[0].lineCount==ClothSleeveLinks&&bodyCoverage&&bodyAsset&&bodySphereCount==9;}
   bool ribbonSurface=false;
   int separatedPanels=0;
   bool separatedWidth=false;

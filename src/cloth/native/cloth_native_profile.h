@@ -101,7 +101,32 @@ inline constexpr CodeRange Native163_21[]{
 inline constexpr CodeRange Native163_22[]{
   {0x0,12,0x934a3fc2f8136c18ULL},
 };
+inline constexpr CodeRange Native163_23[]{
+  {0x0,231,0x951aa420dd3f846aULL},
+};
+inline constexpr CodeRange Native163_24[]{
+  {0x0,112,0x4aa08342604ed212ULL},
+  {0xcf0e28,34,0xb084f250bebdaa8ULL},
+};
+inline constexpr CodeRange Native163_25[]{
+  {0x0,99,0x94f66291aa2753c8ULL},
+  {0x63,60,0x5440fa54f78639fcULL},
+  {0x9f,35,0x7ca615b7170bca41ULL},
+  {0xc2,24,0x2c26b58d09e1d5c4ULL},
+  {0xda,68,0xdd393359c08b36deULL},
+  {0x11e,20,0xf5e4758c639dbe56ULL},
+  {0x132,176,0x3c08ada600602704ULL},
+  {0x1e2,24,0xfe7929d07c43b418ULL},
+  {0x200a56e,17,0x4269164ebe0613ffULL},
+};
+inline constexpr CodeRange Native163_26[]{
+  {0x0,57,0x2ca7d162a33dcf2cULL},
+  {0x39,112,0x7226b1471cdf2806ULL},
+  {0xa9,80,0x3587a5968a3b5255ULL},
+  {0xf9,67,0x8358d817433354ebULL},
+};
 inline constexpr NativeMethodProfile RequiredMethods163[]{
+  {"BeyondBoneCloth","ResetCloth",0x89d136c,Native163_23,std::size(Native163_23)},
   {"BeyondBoneCloth","DisposeTeleportResources",0x5ff13c0,Native163_0,std::size(Native163_0)},
   {"BeyondBoneCloth","Initialize",0x613ce70,Native163_1,std::size(Native163_1)},
   {"BeyondBoneCloth","BuildAndRun",0x89cf140,Native163_2,std::size(Native163_2)},
@@ -117,6 +142,9 @@ inline constexpr NativeMethodProfile RequiredMethods163[]{
   {"VirtualMesh","ImportBoneType",0x54541e0,Native163_12,std::size(Native163_12)},
 };
 inline constexpr NativeMethodProfile RequiredSupport163[]{
+  {"support","BeyondDynamicBone.BeyondBoneCloth.IsValid",0x6a713f0,Native163_24,std::size(Native163_24)},
+  {"support","BeyondDynamicBone.TeamManager.GetTeamDataRef",0x54d7710,Native163_25,std::size(Native163_25)},
+  {"support","BeyondDynamicBone.ClothProcess.UpdateRendererUse",0x6c183f0,Native163_26,std::size(Native163_26)},
   {"support","BeyondDynamicBone.BeyondBoneCloth.get_Process",0x54d81c0,Native163_13,std::size(Native163_13)},
   {"support","BeyondDynamicBone.ClothProcess.CreateBoneRenderSetupData",0x6ad9960,Native163_14,std::size(Native163_14)},
   {"support","BeyondDynamicBone.ClothProcess.StartRuntimeBuild",0x5ae18a0,Native163_15,std::size(Native163_15)},

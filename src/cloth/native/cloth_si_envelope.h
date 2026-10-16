@@ -52,7 +52,7 @@ static void ClothSiEnvelopeBoundary() {
   }
   if(!enabled||state.checked||!ClothAttachmentStable())return;
   state.checked=true;
-  if(ClothAutoModelPath()!="assets/beyond/dynamicassets/gameplay/actors/postmodels/characters/chr_0036_jsspsi_postmodel.prefab")return;
+  if(!ClothSiModelPath(ClothAutoModelPath()))return;
   std::vector<void*> selected;
   for(int n=0;n<s_cloth.count;++n) {
     void *data=nullptr,*list=nullptr;std::vector<void*> colliders;

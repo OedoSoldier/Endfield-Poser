@@ -68,6 +68,9 @@ if(WIN32)
     src/cloth/native/cloth_attachment_contacts.h src/math/cloth_attachment.h
     src/cloth/native/cloth_calf_colliders.h src/cloth/native/cloth_calf_contacts.h
     src/cloth/native/cloth_si_envelope.h src/cloth/bonecloth/cloth_bonecloth_sleeve_policy.h
+    src/cloth/bonecloth/cloth_bonecloth_sleeve_reference.h
+    src/cloth/native/cloth_native_profile.h src/cloth/native/cloth_contact_native_profile.h
+    src/cloth/native/cloth_optional_native_profile.h
     src/cloth/collision/cloth_calf_math.h
     src/core/build_features.h
     src/core/game_hooks.h
@@ -256,6 +259,12 @@ if(MSVC)
   add_poser_test(test_mmd_audio tests/test_mmd_audio.cpp)
   target_compile_options(test_mmd_audio PRIVATE /EHa)
   add_poser_test(test_cloth_runtime tests/test_cloth_runtime.cpp)
+  foreach(sleeve_test IN ITEMS test_cloth_sleeve_solver_binding)
+    add_poser_test(${sleeve_test} tests/${sleeve_test}.cpp)
+    target_include_directories(${sleeve_test} PRIVATE deps/minhook_lib/include)
+    target_compile_options(${sleeve_test} PRIVATE /EHa)
+    target_link_libraries(${sleeve_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
+  endforeach()
   add_poser_test(test_cloth_shared_skin tests/test_cloth_shared_skin.cpp)
   target_include_directories(test_cloth_shared_skin PRIVATE deps/minhook_lib/include)
   target_compile_options(test_cloth_shared_skin PRIVATE /EHa)

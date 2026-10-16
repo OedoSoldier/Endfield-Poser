@@ -65,6 +65,13 @@ static bool ClothLayerSolverLayout(void **asms,size_t count,unsigned char *(&man
   managed[0]=kernel?(unsigned char*)((MInfo*)kernel)->mp:nullptr;
   managed[1]=index?(unsigned char*)((MInfo*)index)->mp:nullptr;
   auto code=whole?(unsigned char*)((MInfo*)whole)->mp:nullptr;
+  if(s_clothInputBoundary163) {
+    using namespace poser_cloth_optional;
+    return poser_cloth_boundary::MappedMethodProfile(hGA,managed[0],LayerKernel163) &&
+        poser_cloth_boundary::MappedMethodProfile(hGA,managed[1],LayerIndex163) &&
+        poser_cloth_boundary::MappedMethodProfile(hGA,code,LayerWhole163) &&
+        ClothContactUniqueCall(code,62,1804,0x1c632da699bc2db1ULL,"point-solver-index-caller-163")==managed[1];
+  }
   return ClothContactRequireCode("point-solver-kernel",managed[0],1766,0x4ef36188cbdd058aULL) &&
       ClothContactRequireCode("point-solver-index",managed[1],1789,0x96bd6a931bd13a17ULL) &&
       ClothContactRequireCode("point-solver-whole",code,62,0x6dde1006dd25ed56ULL) &&
@@ -79,7 +86,7 @@ struct ClothLayerInstallState {
 static bool ClothInstallLayerOrderMainThread() {
   if(!ClothOnMainThread() || !s_clothSurfaceAtBoundary || s_clothInputUpdateDepth!=1 || !s_clothInputHooks)return false;
   auto &s=s_clothLayerInstall;
-  const size_t lengths[]{2644,1708,2643,1733,1766,1789};
+  const size_t lengths[]{2644,1708,2643,1733,1766,s_clothInputBoundary163?1804u:1789u};
   if(s_clothLayerInstalled.load(std::memory_order_acquire)) {
     for(unsigned n=0;n<6;++n)if(!ClothLayerBody(n<4?s.burst:hGA,s.targets[n],{lengths[n],s.patched[n]}))
       return ClothLayerInstallReject("installed-code-changed");
@@ -116,6 +123,7 @@ static bool ClothInstallLayerOrderMainThread() {
   s_clothLayerInstalled.store(true,std::memory_order_release);
   Log("[CLOTH-INSTALL-COST] adapter=layer validateMs=%g createMs=%g enableMs=%g enableBatches=1",
       validated-started,createdAt-validated,ClothInstallClockMs()-createdAt);
-  Log("[CLOTH-LAYER-ORDER] stage=installed scope=owned-point-solver-input BurstConsumers=4 managedFallbacks=2 nativeContactListWrites=0 workerUnityCalls=0 originalSolver=1 dispatchObserved=0");
+  Log("[CLOTH-LAYER-ORDER] stage=installed profile=%s scope=owned-point-solver-input BurstConsumers=4 managedFallbacks=2 nativeContactListWrites=0 workerUnityCalls=0 originalSolver=1 dispatchObserved=0",
+      s_clothInputBoundary163?"1.6.3":"legacy");
   return true;
 }

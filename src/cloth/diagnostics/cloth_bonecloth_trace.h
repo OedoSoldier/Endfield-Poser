@@ -112,7 +112,8 @@ static bool ClothBoneSolverAccess(void *manager,uintptr_t &access,int &length,vo
   return getItem && ClothValue(ClothMethod(c,"get_length","System.Int32"),&access,length) && length>0 && length<=8192;
 }
 // Resolve only colliders owned by this candidate or its verified layer partner.
-// Calf supplements are separate from the original/fitted-body collider lists.
+// Calf supplements are separate from the original/fitted-body lists.
+// Every installed collider must reach this map.
 static ClothRef ClothBoneSolverColliderRef(const ClothBoneRuntime &b,void *c) {
   if(!c)return {};
   ClothRef ref{};
@@ -168,7 +169,12 @@ static bool ClothBoneSolverBind(int slot,void *manager,uintptr_t &access,void *&
     if(!c) { ++v.emptyColliderSlots;continue; }
     if(v.count>=ClothContactColliders) return false;
     const auto ref=ClothBoneSolverColliderRef(b,c);
-    auto t=ClothTarget(ref);if(!t || CollisionTransform(c)!=t || !ClothAnchorUnderOwner(t)) return false;
+    auto t=ClothTarget(ref);if(!t || CollisionTransform(c)!=t || !ClothAnchorUnderOwner(t)) {
+      char name[128]{};CollisionName(CollisionTransform(c),name,sizeof(name));
+      Log("[CLOTH-BONE-SOLVER-MAP] component=%s team=%d listSlot=%d transform=%s retainedHandle=%u reason=collider-transform-not-retained-or-replaced",
+          b.profile?b.profile->component:"unknown",id,n,name,ref.handle);
+      return false;
+    }
     int index=chunk.start+n,actualId=0;int16_t ownerTeam=0;void *actual=nullptr,*ia[]{&index};
     if(!ClothInvoke(getItem,&access,ia,actual) || actual!=t ||
         !ClothValue(s_clothUnity.instance,actual,actualId) || actualId!=ref.id.instance ||
@@ -290,7 +296,7 @@ static bool ClothBoneLocalDistancePolicy(int slot,const ClothContactSample &samp
     return ClothBoneLocalRefuse(slot,"paired-waist-effective-output-policy-mismatch");
   if(!b.local.distanceParametersReadback) {
     b.local.distanceParametersReadback=true;
-    if(b.local.recipe->distanceCurve)Log("[CLOTH-AUTO] stage=distance-policy-confirmed frame=%d team=%d sourceCurveRetained=%d samples=16 nativeVelocityAttenuation=%g reference=%s",sample.frame,b.team[1],!b.local.recipe->resampledPanel&&!ClothBoneSleeveElasticPolicy(b),attenuation,b.local.recipe->RetainsSourceReference()?"source-retained":"natural");
+    if(b.local.recipe->distanceCurve)Log("[CLOTH-AUTO] stage=distance-policy-confirmed frame=%d team=%d sourceCurveRetained=%d samples=16 nativeVelocityAttenuation=%g reference=%s",sample.frame,b.team[1],!b.local.recipe->resampledPanel,attenuation,b.local.recipe->RetainsSourceReference()?"source-retained":"natural");
     else Log("[CLOTH-BONE-LOCAL] stage=distance-policy-confirmed frame=%d team=%d effectiveStiffness=%g samples=16 nativeVelocityAttenuation=%g reference=natural",
         sample.frame,b.team[1],b.local.recipe->distanceStiffness,attenuation);
     if(ClothBoneElasticRequested(b)) Log("[CLOTH-BONE-ELASTIC] stage=Team-confirmed frame=%d team=%d generation=%llu session=%llu distance=%g stretchThreshold=%g bending=%g compression=%g conversions=%u visualVerified=0",

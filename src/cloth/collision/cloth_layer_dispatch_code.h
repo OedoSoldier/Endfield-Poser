@@ -1,4 +1,5 @@
 #pragma once
+#include "../native/cloth_optional_native_profile.h"
 struct ClothLayerCode { size_t bytes;uint64_t hash; };
 static constexpr ClothLayerCode ClothLayerBurstBodies[]{
   {2644,0x4f2ad03553b99707ULL},{1708,0xf3f1612e8c642b02ULL},
@@ -42,9 +43,11 @@ static bool ClothLayerBurstLocate(HMODULE module,unsigned char *(&found)[8]) {
   for(unsigned pass=0;pass<2;++pass)for(size_t n=0;n<dir.Size/sizeof(RUNTIME_FUNCTION);++n) {
     const auto &e=entries[n];
     if(e.BeginAddress>=e.EndAddress || e.EndAddress>size)return false;
-    for(unsigned k=pass*4;k<pass*4+4;++k)if(e.EndAddress-e.BeginAddress==ClothLayerBurstBodies[k].bytes &&
-        ClothLayerBody(module,base+e.BeginAddress,ClothLayerBurstBodies[k])) {
-      if(pass && (!found[k-4] || !ClothLayerCalls(base+e.BeginAddress,ClothLayerBurstBodies[k].bytes,found[k-4])))continue;
+    for(unsigned k=pass*4;k<pass*4+4;++k) {
+      const auto &current=poser_cloth_optional::LayerBurst163[k];
+      const ClothLayerCode expected=s_clothInputBoundary163?ClothLayerCode{current.bytes,current.hash}:ClothLayerBurstBodies[k];
+      if(e.EndAddress-e.BeginAddress!=expected.bytes || !ClothLayerBody(module,base+e.BeginAddress,expected))continue;
+      if(pass && (!found[k-4] || !ClothLayerCalls(base+e.BeginAddress,expected.bytes,found[k-4])))continue;
       if(found[k])return false;found[k]=base+e.BeginAddress;
     }
   }

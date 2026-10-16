@@ -62,7 +62,11 @@ static bool ClothDisplayBurstVerified(HMODULE module) {
   const auto entries=(const RUNTIME_FUNCTION*)(base+dir.VirtualAddress);unsigned matches[6]{};
   for(size_t n=0;n<dir.Size/sizeof(RUNTIME_FUNCTION);++n) {
     const auto &e=entries[n];if(e.BeginAddress>=e.EndAddress||e.EndAddress>size)return false;
-    for(unsigned k=0;k<6;++k)if(e.EndAddress-e.BeginAddress==bodies[k].bytes&&ClothLayerBody(module,base+e.BeginAddress,bodies[k]))++matches[k];
+    for(unsigned k=0;k<6;++k) {
+      const auto &current=poser_cloth_optional::DisplayBurst163[k];
+      const ClothLayerCode expected=s_clothInputBoundary163?ClothLayerCode{current.bytes,current.hash}:bodies[k];
+      if(e.EndAddress-e.BeginAddress==expected.bytes&&ClothLayerBody(module,base+e.BeginAddress,expected))++matches[k];
+    }
   }
   for(unsigned m:matches)if(m!=1)return false;
   return true;
@@ -81,10 +85,19 @@ static bool ClothInstallDisplayMainThread() {
   auto kernel=ClothDisplayKernel(ClothDisplayNested(cls,"CalcDisplayPositionJobKernels"));
   s.producer=producer?(unsigned char*)((MInfo*)producer)->mp:nullptr;
   s.target=setter?(unsigned char*)((MInfo*)setter)->mp:nullptr;
-  if(!ClothDisplayLayout(job)||!ClothContactRequireCode("display-producer",s.producer,1081,0xb587141af3068e66ULL)||
-      !ClothContactRequireCode("display-counter-setter",s.target,7,0xef625ca43c061f4cULL)||
-      !ClothContactRequireCode("display-managed-kernel",kernel?((MInfo*)kernel)->mp:nullptr,1621,0x51880b9d60834732ULL)||
-      ClothContactUniqueCall(s.producer,1081,7,0xef625ca43c061f4cULL,"display-counter-call",&s_clothDisplayCallsite)!=s.target||
+  bool codeVerified=false;
+  if(s_clothInputBoundary163) {
+    using namespace poser_cloth_optional;
+    codeVerified=poser_cloth_boundary::MappedMethodProfile(hGA,s.producer,DisplayProducer163)&&
+        poser_cloth_boundary::MappedMethodProfile(hGA,kernel?(unsigned char*)((MInfo*)kernel)->mp:nullptr,DisplayKernel163)&&
+        ClothContactRequireCode("display-counter-setter",s.target,7,0xef625ca43c061f4cULL)&&
+        poser_cloth_boundary::DirectCallAt(s.producer,DisplayCounterCall163+5,DisplayCounterCall163,s.target);
+    if(codeVerified)s_clothDisplayCallsite=s.producer+DisplayCounterCall163+5;
+  } else codeVerified=ClothContactRequireCode("display-producer",s.producer,1081,0xb587141af3068e66ULL)&&
+      ClothContactRequireCode("display-counter-setter",s.target,7,0xef625ca43c061f4cULL)&&
+      ClothContactRequireCode("display-managed-kernel",kernel?((MInfo*)kernel)->mp:nullptr,1621,0x51880b9d60834732ULL)&&
+      ClothContactUniqueCall(s.producer,1081,7,0xef625ca43c061f4cULL,"display-counter-call",&s_clothDisplayCallsite)==s.target;
+  if(!ClothDisplayLayout(job)||!codeVerified||
       !ClothDisplayBurstVerified(GetModuleHandleW(L"lib_burst_generated.dll")))return ClothDisplayReject("producer-or-consumer-ABI-unconfirmed");
   auto status=MH_CreateHook(s.target,(void*)ClothDisplaySetCount,(void**)&s_clothDisplaySetCount);const bool created=status==MH_OK;
   if(created)status=MH_EnableHook(s.target);
@@ -93,6 +106,7 @@ static bool ClothInstallDisplayMainThread() {
     return ClothDisplayReject("producer-hook-install-failed");
   }
   s.patched=eiem_cloth_input::Fingerprint(s.target,7);
-  Log("[CLOTH-DISPLAY] stage=installed scope=exact-main-thread-producer nativeConsumers=6 managedSignature=verified borrowedView=until-master-complete workerHook=0 schedulerChanges=0 sourceArrayWrites=0");
+  Log("[CLOTH-DISPLAY] stage=installed profile=%s scope=exact-main-thread-producer nativeConsumers=6 managedSignature=verified borrowedView=until-master-complete workerHook=0 schedulerChanges=0 sourceArrayWrites=0",
+      s_clothInputBoundary163?"1.6.3":"legacy");
   return true;
 }
