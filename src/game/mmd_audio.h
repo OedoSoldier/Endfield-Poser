@@ -1,7 +1,9 @@
 #pragma once
 #include "math/mmd_audio_sync.h"
 #include <atomic>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -35,18 +37,33 @@ struct AudioClip {
 };
 
 inline std::shared_ptr<const AudioClip>
-DecodeWavDirect(const std::filesystem::path &path) {
+DecodeWavDirect(const std::filesystem::path &path,
+                const std::atomic<bool> *cancel = nullptr) {
+  if (cancel && cancel->load(std::memory_order_relaxed)) return nullptr;
+
   std::ifstream file(path, std::ios::binary);
   if (!file) return nullptr;
+
+  // Determine actual file size
+  file.seekg(0, std::ios::end);
+  const std::streampos endPos = file.tellg();
+  if (endPos < 12) return nullptr;
+  const uint64_t fileSize = static_cast<uint64_t>(endPos);
+  file.seekg(0, std::ios::beg);
 
   char riff[4];
   if (!file.read(riff, 4) || std::memcmp(riff, "RIFF", 4) != 0) return nullptr;
 
-  uint32_t riffSize = 0;
-  if (!file.read(reinterpret_cast<char*>(&riffSize), 4)) return nullptr;
+  uint32_t rawRiffSize = 0;
+  if (!file.read(reinterpret_cast<char*>(&rawRiffSize), 4)) return nullptr;
 
   char wave[4];
   if (!file.read(wave, 4) || std::memcmp(wave, "WAVE", 4) != 0) return nullptr;
+
+  // The RIFF chunk payload extends for rawRiffSize bytes starting at byte 8.
+  // RIFF container end must not exceed actual file size.
+  const uint64_t riffEnd = (std::min)(uint64_t(8) + uint64_t(rawRiffSize), fileSize);
+  if (riffEnd < 12) return nullptr;
 
   WAVEFORMATEX fmt{};
   bool hasFmt = false;
@@ -54,38 +71,94 @@ DecodeWavDirect(const std::filesystem::path &path) {
   constexpr size_t maxBytes = 256u * 1024u * 1024u;
 
   while (file) {
+    if (cancel && cancel->load(std::memory_order_relaxed)) return nullptr;
+
+    const uint64_t chunkHeaderPos = static_cast<uint64_t>(file.tellg());
+    if (chunkHeaderPos + 8 > riffEnd) break;
+
     char chunkId[4];
     uint32_t chunkSize = 0;
     if (!file.read(chunkId, 4)) break;
     if (!file.read(reinterpret_cast<char*>(&chunkSize), 4)) break;
 
+    const uint64_t payloadStart = chunkHeaderPos + 8;
+    const uint64_t paddedChunkSize = uint64_t(chunkSize) + (uint64_t(chunkSize) & 1u);
+    const uint64_t nextChunkPos = payloadStart + paddedChunkSize;
+
+    if (payloadStart + uint64_t(chunkSize) > riffEnd || nextChunkPos < payloadStart) {
+      break; // Malformed or truncated chunk boundary
+    }
+
     if (std::memcmp(chunkId, "fmt ", 4) == 0) {
       if (chunkSize < 16) return nullptr;
       if (!file.read(reinterpret_cast<char*>(&fmt), 16)) return nullptr;
-      if (chunkSize > 16) {
-        file.seekg(chunkSize - 16, std::ios::cur);
+
+      // Validate supported audio formats:
+      // PCM (1) or IEEE Float (3)
+      if (fmt.wFormatTag != WAVE_FORMAT_PCM && fmt.wFormatTag != 3 /* WAVE_FORMAT_IEEE_FLOAT */) {
+        return nullptr;
       }
+      if (fmt.nChannels == 0 || fmt.nChannels > XAUDIO2_MAX_AUDIO_CHANNELS) {
+        return nullptr;
+      }
+      if (fmt.nSamplesPerSec < XAUDIO2_MIN_SAMPLE_RATE || fmt.nSamplesPerSec > XAUDIO2_MAX_SAMPLE_RATE) {
+        return nullptr;
+      }
+
+      if (fmt.wFormatTag == WAVE_FORMAT_PCM) {
+        if (fmt.wBitsPerSample != 8 && fmt.wBitsPerSample != 16 &&
+            fmt.wBitsPerSample != 24 && fmt.wBitsPerSample != 32) {
+          return nullptr;
+        }
+      } else { // WAVE_FORMAT_IEEE_FLOAT
+        if (fmt.wBitsPerSample != 32) {
+          return nullptr; // XAudio2 supports 32-bit float, not float64
+        }
+      }
+
+      const uint32_t bytesPerSample = fmt.wBitsPerSample / 8u;
+      if (uint32_t(fmt.nBlockAlign) != uint32_t(fmt.nChannels) * bytesPerSample) {
+        return nullptr;
+      }
+      if (uint64_t(fmt.nAvgBytesPerSec) != uint64_t(fmt.nSamplesPerSec) * uint64_t(fmt.nBlockAlign)) {
+        return nullptr;
+      }
+
       hasFmt = true;
+      file.seekg(nextChunkPos, std::ios::beg);
+      if (!file) return nullptr;
     } else if (std::memcmp(chunkId, "data", 4) == 0) {
+      if (!hasFmt) return nullptr;
       if (chunkSize > maxBytes) {
         throw std::runtime_error("Decoded music exceeds 256 MiB (about 23 minutes)");
       }
+      if (payloadStart + uint64_t(chunkSize) > fileSize) {
+        return nullptr; // Declared data length exceeds actual file content
+      }
+      if (fmt.nBlockAlign == 0 || chunkSize % fmt.nBlockAlign != 0) {
+        return nullptr;
+      }
+
       pcmData.resize(chunkSize);
-      if (!file.read(reinterpret_cast<char*>(pcmData.data()), chunkSize)) return nullptr;
-      if (chunkSize % 2 != 0) {
-        file.seekg(1, std::ios::cur);
+      constexpr size_t bufferBlock = 64u * 1024u;
+      size_t bytesRead = 0;
+      while (bytesRead < chunkSize) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) return nullptr;
+        const size_t toRead = (std::min)(bufferBlock, size_t(chunkSize - bytesRead));
+        if (!file.read(reinterpret_cast<char*>(pcmData.data() + bytesRead), toRead)) {
+          return nullptr;
+        }
+        bytesRead += toRead;
       }
       break;
     } else {
-      file.seekg(chunkSize + (chunkSize % 2), std::ios::cur);
+      file.seekg(nextChunkPos, std::ios::beg);
+      if (!file) break;
     }
   }
 
+  if (cancel && cancel->load(std::memory_order_relaxed)) return nullptr;
   if (!hasFmt || pcmData.empty()) return nullptr;
-  if (fmt.wFormatTag != WAVE_FORMAT_PCM && fmt.wFormatTag != 3 /* WAVE_FORMAT_IEEE_FLOAT */) {
-    return nullptr;
-  }
-  if (fmt.nBlockAlign == 0 || pcmData.size() % fmt.nBlockAlign != 0) return nullptr;
 
   auto clip = std::make_shared<AudioClip>();
   clip->format = fmt;
@@ -97,16 +170,21 @@ DecodeWavDirect(const std::filesystem::path &path) {
 inline std::shared_ptr<const AudioClip>
 DecodeAudio(const std::filesystem::path &path,
             const std::atomic<bool> &cancel) {
+  if (cancel.load(std::memory_order_relaxed)) return nullptr;
+
   // If the file is a standard WAV, directly decode it first.
   // This bypasses Windows Media Foundation / Media Player dependencies under Wine / Proton.
   try {
-    auto directClip = DecodeWavDirect(path);
+    auto directClip = DecodeWavDirect(path, &cancel);
     if (directClip && !directClip->pcm.empty()) {
       return directClip;
     }
-  } catch (...) {
-    // If direct WAV reading throws, fall through to Media Foundation or let error propagate
+  } catch (const std::exception &) {
+    // Malformed/oversized errors should propagate rather than silently falling back
+    throw;
   }
+
+  if (cancel.load(std::memory_order_relaxed)) return nullptr;
   struct MediaScope {
     bool com = false, mf = false;
     MediaScope() {
