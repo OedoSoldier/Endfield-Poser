@@ -886,59 +886,81 @@ static const ImWchar *PoserGlyphRanges(ImFontAtlas *atlas) {
   return glyphRanges.Data;
 }
 
-static void LoadOverlayFont(ImGuiIO &io, const char *layoutSlash, const char *layoutPath) {
+static void LoadOverlayFont(ImGuiIO &io) {
   ImFontConfig fontCfg;
   fontCfg.OversampleH = 2;
   fontCfg.OversampleV = 1;
   fontCfg.PixelSnapH = true;
 
-  // Resolve directory containing poser.dll to check for local font overrides
-  char pluginFontPath[MAX_PATH] = {};
-  if (layoutSlash && layoutPath) {
-    size_t dirLen = layoutSlash - layoutPath + 1;
-    strncpy_s(pluginFontPath, layoutPath, dirLen);
+  // Build candidate paths in Unicode (wstring) to support non-ASCII paths (e.g. C:\游戏\plugin)
+  // ImGui's ImFileOpen internally converts UTF-8 strings to wide paths on Windows via CP_UTF8.
+  std::vector<std::wstring> fontCandidates;
+
+  HMODULE poserMod = GetModuleHandleW(L"poser.dll");
+  std::wstring pluginDir = poserMod ? ModuleDirectory(poserMod) : ProxyPluginDirectory();
+  if (!pluginDir.empty()) {
+    fontCandidates.push_back(pluginDir + L"\\font.ttf");
+    fontCandidates.push_back(pluginDir + L"\\font.otf");
+    fontCandidates.push_back(pluginDir + L"\\font.ttc");
+    fontCandidates.push_back(pluginDir + L"\\msyh.ttc");
   }
 
-  std::vector<std::string> fontCandidates;
-  if (pluginFontPath[0]) {
-    fontCandidates.push_back(std::string(pluginFontPath) + "font.ttf");
-    fontCandidates.push_back(std::string(pluginFontPath) + "font.otf");
-    fontCandidates.push_back(std::string(pluginFontPath) + "font.ttc");
-    fontCandidates.push_back(std::string(pluginFontPath) + "msyh.ttc");
+  std::wstring exeDir = ModuleDirectory(nullptr);
+  if (!exeDir.empty() && exeDir != pluginDir) {
+    fontCandidates.push_back(exeDir + L"\\plugin\\font.ttf");
+    fontCandidates.push_back(exeDir + L"\\plugin\\font.otf");
+    fontCandidates.push_back(exeDir + L"\\font.ttf");
   }
-  fontCandidates.push_back("plugin\\font.ttf");
-  fontCandidates.push_back("plugin\\font.otf");
-  fontCandidates.push_back("font.ttf");
 
   // Windows & Proton/Wine standard CJK font locations
-  fontCandidates.push_back("C:\\Windows\\Fonts\\msyh.ttc");       // Microsoft YaHei
-  fontCandidates.push_back("C:\\Windows\\Fonts\\msyh.ttf");
-  fontCandidates.push_back("C:\\Windows\\Fonts\\simsun.ttc");     // SimSun / NSimSun
-  fontCandidates.push_back("C:\\Windows\\Fonts\\simhei.ttf");     // SimHei
-  fontCandidates.push_back("C:\\Windows\\Fonts\\msjh.ttc");       // Microsoft JhengHei
-  fontCandidates.push_back("C:\\Windows\\Fonts\\arialuni.ttf");   // Arial Unicode MS
-  fontCandidates.push_back("C:\\Windows\\Fonts\\msgothic.ttc");   // MS Gothic
-  fontCandidates.push_back("C:\\Windows\\Fonts\\meiryo.ttc");     // Meiryo
-  fontCandidates.push_back("C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msyh.ttc");       // Microsoft YaHei
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msyh.ttf");
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\simsun.ttc");     // SimSun / NSimSun
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\simhei.ttf");     // SimHei
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msjh.ttc");       // Microsoft JhengHei
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\arialuni.ttf");   // Arial Unicode MS
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msgothic.ttc");   // MS Gothic
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\meiryo.ttc");     // Meiryo
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc");
 
   // Host Linux fonts accessible through Wine Z: drive mapping (NixOS / standard Linux)
-  fontCandidates.push_back("Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont.otf");
-  fontCandidates.push_back("Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont_jp.otf");
-  fontCandidates.push_back("Z:\\usr\\share\\fonts\\opentype\\noto\\NotoSansCJK-Regular.ttc");
-  fontCandidates.push_back("Z:\\usr\\share\\fonts\\noto-cjk\\NotoSansCJK-Regular.ttc");
-  fontCandidates.push_back("Z:\\usr\\share\\fonts\\truetype\\noto\\NotoSansCJK-Regular.ttc");
-  fontCandidates.push_back("Z:\\usr\\share\\fonts\\wenquanyi\\wqy-microhei\\wqy-microhei.ttc");
-  fontCandidates.push_back("Z:\\usr\\share\\fonts\\wenquanyi\\wqy-zenhei\\wqy-zenhei.ttc");
+  fontCandidates.push_back(L"Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont.otf");
+  fontCandidates.push_back(L"Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont_jp.otf");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\opentype\\noto\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\noto-cjk\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\truetype\\noto\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\wenquanyi\\wqy-microhei\\wqy-microhei.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\wenquanyi\\wqy-zenhei\\wqy-zenhei.ttc");
 
   bool loaded = false;
   for (const auto &candidate : fontCandidates) {
-    if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) {
-      ImFont *f = io.Fonts->AddFontFromFileTTF(
-          candidate.c_str(), 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
-      if (f != nullptr) {
-        loaded = true;
-        Log("[GUI] Loaded CJK font from: %s", candidate.c_str());
-        break;
+    const DWORD attrs = GetFileAttributesW(candidate.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+      // Validate file can be opened and has sufficient size before passing to ImGui
+      HANDLE hFile = CreateFileW(candidate.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (hFile != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER size{};
+        if (GetFileSizeEx(hFile, &size) && size.QuadPart >= 1024) {
+          CloseHandle(hFile);
+          const int utf8Len = WideCharToMultiByte(CP_UTF8, 0, candidate.c_str(), -1, nullptr, 0, nullptr, nullptr);
+          if (utf8Len > 0) {
+            std::string utf8Path(size_t(utf8Len), '\0');
+            if (WideCharToMultiByte(CP_UTF8, 0, candidate.c_str(), -1, utf8Path.data(), utf8Len, nullptr, nullptr) > 0) {
+              // Strip null terminator for string data
+              if (!utf8Path.empty() && utf8Path.back() == '\0') utf8Path.pop_back();
+              ImFont *f = io.Fonts->AddFontFromFileTTF(
+                  utf8Path.c_str(), 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
+              if (f != nullptr) {
+                loaded = true;
+                Log("[GUI] Loaded CJK font from: %s", utf8Path.c_str());
+                break;
+              }
+            }
+          }
+        } else {
+          CloseHandle(hFile);
+        }
       }
     }
   }
@@ -1040,11 +1062,18 @@ static DWORD GuiThreadBody(LPVOID) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
-  static char layoutPath[MAX_PATH] = {};
-  GetModuleFileNameA(GetModuleHandleA("poser.dll"), layoutPath, MAX_PATH);
-  char *layoutSlash = strrchr(layoutPath, '\\');
-  if (layoutSlash) strcpy_s(layoutSlash + 1, size_t(layoutPath + MAX_PATH - layoutSlash - 1), "poser_layout.ini");
-  io.IniFilename = layoutSlash ? layoutPath : "plugin/poser_layout.ini";
+  static std::string layoutPathUtf8;
+  HMODULE poserMod = GetModuleHandleW(L"poser.dll");
+  std::wstring layoutPath = poserMod ? PoserFilePath(L"poser_layout.ini") : L"plugin\\poser_layout.ini";
+  int utf8Len = WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (utf8Len > 0) {
+    layoutPathUtf8.resize(size_t(utf8Len));
+    WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, layoutPathUtf8.data(), utf8Len, nullptr, nullptr);
+    if (!layoutPathUtf8.empty() && layoutPathUtf8.back() == '\0') layoutPathUtf8.pop_back();
+    io.IniFilename = layoutPathUtf8.c_str();
+  } else {
+    io.IniFilename = "plugin/poser_layout.ini";
+  }
   io.ConfigWindowsMoveFromTitleBarOnly = true;
   io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // 关键盘导航，避免输入框被自动聚焦
   io.MouseDrawCursor = false;
@@ -1058,7 +1087,7 @@ static DWORD GuiThreadBody(LPVOID) {
   style.ScrollbarSize = 12.0f;
   style.GrabMinSize = 10.0f;
 
-  LoadOverlayFont(io, layoutSlash, layoutPath);
+  LoadOverlayFont(io);
 
   ImGui_ImplWin32_Init(g_guiHwnd);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
