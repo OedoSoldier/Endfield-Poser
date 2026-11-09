@@ -170,21 +170,18 @@ DecodeWavDirect(const std::filesystem::path &path,
 inline std::shared_ptr<const AudioClip>
 DecodeAudio(const std::filesystem::path &path,
             const std::atomic<bool> &cancel) {
-  if (cancel.load(std::memory_order_relaxed)) return nullptr;
+  if (cancel.load(std::memory_order_relaxed))
+    throw std::runtime_error("Music loading cancelled");
 
   // If the file is a standard WAV, directly decode it first.
   // This bypasses Windows Media Foundation / Media Player dependencies under Wine / Proton.
-  try {
-    auto directClip = DecodeWavDirect(path, &cancel);
-    if (directClip && !directClip->pcm.empty()) {
-      return directClip;
-    }
-  } catch (const std::exception &) {
-    // Malformed/oversized errors should propagate rather than silently falling back
-    throw;
-  }
-
-  if (cancel.load(std::memory_order_relaxed)) return nullptr;
+  auto directClip = DecodeWavDirect(path, &cancel);
+  // DecodeAudio reports cancellation through the same exception as the MF
+  // reader; callers must never receive an empty clip as a successful import.
+  if (cancel.load(std::memory_order_relaxed))
+    throw std::runtime_error("Music loading cancelled");
+  if (directClip && !directClip->pcm.empty())
+    return directClip;
   struct MediaScope {
     bool com = false, mf = false;
     MediaScope() {

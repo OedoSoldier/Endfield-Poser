@@ -21,6 +21,7 @@
 #pragma comment(lib, "imm32.lib")
 
 #include "imgui.h"
+#include "overlay_font.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 
@@ -949,13 +950,14 @@ static void LoadOverlayFont(ImGuiIO &io) {
             if (WideCharToMultiByte(CP_UTF8, 0, candidate.c_str(), -1, utf8Path.data(), utf8Len, nullptr, nullptr) > 0) {
               // Strip null terminator for string data
               if (!utf8Path.empty() && utf8Path.back() == '\0') utf8Path.pop_back();
-              ImFont *f = io.Fonts->AddFontFromFileTTF(
-                  utf8Path.c_str(), 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
+              ImFont *f = TryLoadOverlayFont(
+                  io, utf8Path.c_str(), fontCfg, PoserGlyphRanges(io.Fonts));
               if (f != nullptr) {
                 loaded = true;
                 Log("[GUI] Loaded CJK font from: %s", utf8Path.c_str());
                 break;
               }
+              Log("[GUI] Skipped invalid or unreadable font: %s", utf8Path.c_str());
             }
           }
         } else {
@@ -969,6 +971,20 @@ static void LoadOverlayFont(ImGuiIO &io) {
     io.Fonts->AddFontDefault();
     Log("[GUI] WARN: No suitable CJK font found, Chinese/Japanese text may render as '?'");
   }
+}
+
+static const char *OverlayLayoutFilename() {
+  // Keep C++ string lifetimes outside GuiThreadBody's SEH frame (MSVC C2712).
+  static std::string layoutPathUtf8;
+  HMODULE poserMod = GetModuleHandleW(L"poser.dll");
+  std::wstring layoutPath = poserMod ? PoserFilePath(L"poser_layout.ini") : L"plugin\\poser_layout.ini";
+  const int utf8Len = WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (utf8Len <= 0) return "plugin/poser_layout.ini";
+  layoutPathUtf8.resize(size_t(utf8Len));
+  if (!WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, layoutPathUtf8.data(), utf8Len, nullptr, nullptr))
+    return "plugin/poser_layout.ini";
+  layoutPathUtf8.pop_back();
+  return layoutPathUtf8.c_str();
 }
 
 static DWORD GuiThreadBody(LPVOID) {
@@ -1062,18 +1078,7 @@ static DWORD GuiThreadBody(LPVOID) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
-  static std::string layoutPathUtf8;
-  HMODULE poserMod = GetModuleHandleW(L"poser.dll");
-  std::wstring layoutPath = poserMod ? PoserFilePath(L"poser_layout.ini") : L"plugin\\poser_layout.ini";
-  int utf8Len = WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-  if (utf8Len > 0) {
-    layoutPathUtf8.resize(size_t(utf8Len));
-    WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, layoutPathUtf8.data(), utf8Len, nullptr, nullptr);
-    if (!layoutPathUtf8.empty() && layoutPathUtf8.back() == '\0') layoutPathUtf8.pop_back();
-    io.IniFilename = layoutPathUtf8.c_str();
-  } else {
-    io.IniFilename = "plugin/poser_layout.ini";
-  }
+  io.IniFilename = OverlayLayoutFilename();
   io.ConfigWindowsMoveFromTitleBarOnly = true;
   io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // 关键盘导航，避免输入框被自动聚焦
   io.MouseDrawCursor = false;
