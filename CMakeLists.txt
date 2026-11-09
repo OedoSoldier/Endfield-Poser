@@ -74,7 +74,7 @@ if(WIN32)
     src/cloth/collision/cloth_calf_math.h
     src/core/build_features.h
     src/core/game_hooks.h
-    src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h src/editor/panel_scale.h
+    src/core/gui_overlay.h src/core/overlay_font.h src/core/layered_readback.h src/core/overlay_device.h src/editor/panel_scale.h
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/tool_close_state.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/game/mmd_music_mute.h src/math/mmd_audio_sync.h src/math/mmd_mirror.h

@@ -12,6 +12,8 @@
 #include <imm.h>
 #include <tlhelp32.h>
 #include <cmath>
+#include <vector>
+#include <string>
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -19,6 +21,7 @@
 #pragma comment(lib, "imm32.lib")
 
 #include "imgui.h"
+#include "overlay_font.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 
@@ -884,6 +887,106 @@ static const ImWchar *PoserGlyphRanges(ImFontAtlas *atlas) {
   return glyphRanges.Data;
 }
 
+static void LoadOverlayFont(ImGuiIO &io) {
+  ImFontConfig fontCfg;
+  fontCfg.OversampleH = 2;
+  fontCfg.OversampleV = 1;
+  fontCfg.PixelSnapH = true;
+
+  // Build candidate paths in Unicode (wstring) to support non-ASCII paths (e.g. C:\游戏\plugin)
+  // ImGui's ImFileOpen internally converts UTF-8 strings to wide paths on Windows via CP_UTF8.
+  std::vector<std::wstring> fontCandidates;
+
+  HMODULE poserMod = GetModuleHandleW(L"poser.dll");
+  std::wstring pluginDir = poserMod ? ModuleDirectory(poserMod) : ProxyPluginDirectory();
+  if (!pluginDir.empty()) {
+    fontCandidates.push_back(pluginDir + L"\\font.ttf");
+    fontCandidates.push_back(pluginDir + L"\\font.otf");
+    fontCandidates.push_back(pluginDir + L"\\font.ttc");
+    fontCandidates.push_back(pluginDir + L"\\msyh.ttc");
+  }
+
+  std::wstring exeDir = ModuleDirectory(nullptr);
+  if (!exeDir.empty() && exeDir != pluginDir) {
+    fontCandidates.push_back(exeDir + L"\\plugin\\font.ttf");
+    fontCandidates.push_back(exeDir + L"\\plugin\\font.otf");
+    fontCandidates.push_back(exeDir + L"\\font.ttf");
+  }
+
+  // Windows & Proton/Wine standard CJK font locations
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msyh.ttc");       // Microsoft YaHei
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msyh.ttf");
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\simsun.ttc");     // SimSun / NSimSun
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\simhei.ttf");     // SimHei
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msjh.ttc");       // Microsoft JhengHei
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\arialuni.ttf");   // Arial Unicode MS
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\msgothic.ttc");   // MS Gothic
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\meiryo.ttc");     // Meiryo
+  fontCandidates.push_back(L"C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc");
+
+  // Host Linux fonts accessible through Wine Z: drive mapping (NixOS / standard Linux)
+  fontCandidates.push_back(L"Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont.otf");
+  fontCandidates.push_back(L"Z:\\run\\current-system\\sw\\share\\X11\\fonts\\unifont_jp.otf");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\opentype\\noto\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\noto-cjk\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\truetype\\noto\\NotoSansCJK-Regular.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\wenquanyi\\wqy-microhei\\wqy-microhei.ttc");
+  fontCandidates.push_back(L"Z:\\usr\\share\\fonts\\wenquanyi\\wqy-zenhei\\wqy-zenhei.ttc");
+
+  bool loaded = false;
+  for (const auto &candidate : fontCandidates) {
+    const DWORD attrs = GetFileAttributesW(candidate.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+      // Validate file can be opened and has sufficient size before passing to ImGui
+      HANDLE hFile = CreateFileW(candidate.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (hFile != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER size{};
+        if (GetFileSizeEx(hFile, &size) && size.QuadPart >= 1024) {
+          CloseHandle(hFile);
+          const int utf8Len = WideCharToMultiByte(CP_UTF8, 0, candidate.c_str(), -1, nullptr, 0, nullptr, nullptr);
+          if (utf8Len > 0) {
+            std::string utf8Path(size_t(utf8Len), '\0');
+            if (WideCharToMultiByte(CP_UTF8, 0, candidate.c_str(), -1, utf8Path.data(), utf8Len, nullptr, nullptr) > 0) {
+              // Strip null terminator for string data
+              if (!utf8Path.empty() && utf8Path.back() == '\0') utf8Path.pop_back();
+              ImFont *f = TryLoadOverlayFont(
+                  io, utf8Path.c_str(), fontCfg, PoserGlyphRanges(io.Fonts));
+              if (f != nullptr) {
+                loaded = true;
+                Log("[GUI] Loaded CJK font from: %s", utf8Path.c_str());
+                break;
+              }
+              Log("[GUI] Skipped invalid or unreadable font: %s", utf8Path.c_str());
+            }
+          }
+        } else {
+          CloseHandle(hFile);
+        }
+      }
+    }
+  }
+
+  if (!loaded) {
+    io.Fonts->AddFontDefault();
+    Log("[GUI] WARN: No suitable CJK font found, Chinese/Japanese text may render as '?'");
+  }
+}
+
+static const char *OverlayLayoutFilename() {
+  // Keep C++ string lifetimes outside GuiThreadBody's SEH frame (MSVC C2712).
+  static std::string layoutPathUtf8;
+  HMODULE poserMod = GetModuleHandleW(L"poser.dll");
+  std::wstring layoutPath = poserMod ? PoserFilePath(L"poser_layout.ini") : L"plugin\\poser_layout.ini";
+  const int utf8Len = WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (utf8Len <= 0) return "plugin/poser_layout.ini";
+  layoutPathUtf8.resize(size_t(utf8Len));
+  if (!WideCharToMultiByte(CP_UTF8, 0, layoutPath.c_str(), -1, layoutPathUtf8.data(), utf8Len, nullptr, nullptr))
+    return "plugin/poser_layout.ini";
+  layoutPathUtf8.pop_back();
+  return layoutPathUtf8.c_str();
+}
+
 static DWORD GuiThreadBody(LPVOID) {
   g_guiTraceMask = 0;
   // Runtime registration is scoped to editor operations, never GPU/message waits.
@@ -975,11 +1078,7 @@ static DWORD GuiThreadBody(LPVOID) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
-  static char layoutPath[MAX_PATH] = {};
-  GetModuleFileNameA(GetModuleHandleA("poser.dll"), layoutPath, MAX_PATH);
-  char *layoutSlash = strrchr(layoutPath, '\\');
-  if (layoutSlash) strcpy_s(layoutSlash + 1, size_t(layoutPath + MAX_PATH - layoutSlash - 1), "poser_layout.ini");
-  io.IniFilename = layoutSlash ? layoutPath : "plugin/poser_layout.ini";
+  io.IniFilename = OverlayLayoutFilename();
   io.ConfigWindowsMoveFromTitleBarOnly = true;
   io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // 关键盘导航，避免输入框被自动聚焦
   io.MouseDrawCursor = false;
@@ -993,23 +1092,7 @@ static DWORD GuiThreadBody(LPVOID) {
   style.ScrollbarSize = 12.0f;
   style.GrabMinSize = 10.0f;
 
-  {
-    ImFontConfig fontCfg;
-    fontCfg.OversampleH = 2;
-    fontCfg.OversampleV = 1;
-    fontCfg.PixelSnapH = true;
-    const char *fontPath = "C:\\Windows\\Fonts\\msyh.ttc";
-    bool loaded = false;
-    if (GetFileAttributesA(fontPath) != INVALID_FILE_ATTRIBUTES) {
-      ImFont *f = io.Fonts->AddFontFromFileTTF(
-          fontPath, 18.0f, &fontCfg, PoserGlyphRanges(io.Fonts));
-      loaded = (f != nullptr);
-    }
-    if (!loaded) {
-      io.Fonts->AddFontDefault();
-      Log("[GUI] WARN: msyh.ttc not found, Chinese text may not render");
-    }
-  }
+  LoadOverlayFont(io);
 
   ImGui_ImplWin32_Init(g_guiHwnd);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
