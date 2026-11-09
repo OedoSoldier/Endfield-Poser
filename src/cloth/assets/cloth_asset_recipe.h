@@ -265,7 +265,13 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
     const auto candidateOwnership=SharedSelection(s,id,ids,attrs);
     Need(candidateOwnership.proofs.empty()&&candidateOwnership.foreign.empty(),"inactive-coat-output-already-owned");
   }
-  auto tree=SourceFixedTree(s,roots,ids,columns,attrs,passive,up,hipWidth);
+  const bool minghe=SourceMingheCoat(s.file.sha.c_str(),s.Name(id).c_str());
+  if(minghe) {
+    int fixed=0,moving=0;for(auto b:ids)if(!passive.count(b)){fixed+=attrs.at(b)==1;moving+=attrs.at(b)==2;}
+    Need(roots.size()==6&&ids.size()==60&&passive.size()==6&&fixed==16&&moving==38&&
+        ownership.proofs.empty()&&ownership.foreign.empty()&&branch.ignored.size()==13&&prebuildId.empty(),"minghe-coat-source-contract");
+  }
+  auto tree=SourceFixedTree(s,roots,ids,columns,attrs,passive,up,hipWidth,minghe);
   tree.irregular|=inactiveCoat;
   auto &chains=tree.chains;auto &rows=tree.rows;const size_t depth=tree.depth;const bool irregular=tree.irregular;
   bool upperCoat=false;
@@ -352,7 +358,7 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
   if(!groups.empty()||shortSkin){singleSheet=false;densityIssue.clear();}
   auto out=std::make_shared<eiem_cloth_cache::Profile>();auto text=[&](const std::string &v){Need(!v.empty()&&v.size()<128,"auto-profile-name-budget");out->strings.push_back(v);return out->strings.back().c_str();};auto &p=out->view;p.component=text(s.Name(id));p.prefabSha=text(s.file.sha);p.depth=int(depth);p.loop=loop;p.runtimeFixedForks=tree.forks;
   p.legRequiredMask=leg.required;p.legListedMask=leg.listed;
-  p.runtimeForkCoat=upperCoat&&tree.forks&&!loop;
+  p.runtimeForkCoat=(upperCoat||minghe)&&tree.forks&&!loop;
   if(p.runtimeForkCoat&&surface)surface->legReport+=" contact=Point faceBending=inactive-source-line";
   if(upperCoat&&surface)surface->legReport+=" attachment=upper-torso-descending-coat";
   if(!prebuildId.empty())p.prebuildId=text(prebuildId);
@@ -395,7 +401,15 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
       for(auto b:foreign)Need(!columns.count(b),"auto-collider-producer-shared-output");
       for(auto b:Refs(other.At("rootBones")))for(auto own:roots)Need(!Above(s,b,own),"auto-collider-producer-follows-consumer");
       for(const auto &live:query.cloths)Need(!RootMatch(s,o.first,live),"auto-collider-producer-needs-ordered-batch");
-      for(auto c:ColliderRefs(other.At("colliderCollisionConstraint").At("colliderList")))for(auto own:roots)Need(!Above(s,s.TransformId(c),own),"auto-collider-producer-feedback");
+      const auto producerContacts=ColliderRefs(other.At("colliderCollisionConstraint").At("colliderList"));
+      for(auto c:producerContacts)for(auto own:roots)if(Above(s,s.TransformId(c),own)) {
+        // This exact source already has reciprocal tail/coat contacts. Its two
+        // return contacts remain parent-following, unskinned helper leaves;
+        // neither the tail team nor the source collider objects are replaced.
+        const auto t=s.TransformId(c);const auto name=s.Name(t);
+        Need(minghe&&s.Name(o.first)=="MC_minghe_Tail"&&producerContacts.size()==2&&passive.count(t)&&
+            (name=="cloth_L_coat_d_05_jnt_collder"||name=="cloth_R_coat_d_05_jnt_collder"),"auto-collider-producer-feedback");
+      }
     }
     if(producer)retainedProducers.insert(producer);out->colliders.push_back({text(s.Name(collider)),text(s.Name(s.Parent(t))),s.animatorRoot&&s.Parent(t)==s.animatorRoot});
   }
@@ -410,6 +424,18 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
     if(surface)surface->legReport+=" releasedWaistFixed=9 promotedUpperInputs=11 shoulderRootsRetained=7 sourceSkin=retained contact=Point";
     const auto revised=std::string(p.signature)+"\nupper-coat-shoulder-attachments-free-upper-v3";
     p.signature=text(Digest(Bytes(revised.begin(),revised.end())));
+  }
+  if(minghe) {
+    auto proposed=attrs;
+    for(int n=0;n<p.boneCount;++n){const auto &b=p.bones[n];
+      const int attribute=b.attribute==1&&b.parent>=0?2:b.attribute;
+      out->candidateAttributes.push_back(attribute);proposed[ids[n]]=attribute;}
+    out->Link();Need(SourceMingheCoatSelection(p),"minghe-coat-interior-fixed-contract");
+    const auto peers=SharedSelection(s,id,ids,proposed);
+    Need(peers.proofs.empty()&&peers.foreign.empty(),"minghe-coat-input-owned-by-peer");
+    const auto revised=std::string(p.signature)+"\nminghe-six-upper-mounts-ten-free-interior-v1";
+    p.signature=text(Digest(Bytes(revised.begin(),revised.end())));
+    if(surface)surface->legReport+=" releasedInteriorFixed=10 upperMountsRetained=6 sourceSkin=retained";
   }
   if(bodyOnly){p.runtimeBodyOnly=true;out->faces.resize(1);out->lines.resize(1);out->graphs.resize(1);
     for(size_t n=0;n<out->bones.size();++n){const auto &b=out->bones[n];if(b.attribute&&b.parent>=0&&out->bones[b.parent].attribute)out->lines[0].push_back({b.parent,int(n)});}out->Link();}

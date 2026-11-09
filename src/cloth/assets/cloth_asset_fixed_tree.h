@@ -10,7 +10,7 @@ struct FixedTree {
 };
 inline FixedTree SourceFixedTree(Scene &s,const std::vector<int64_t> &roots,
     const std::vector<int64_t> &ids,const std::map<int64_t,int> &columns,
-    const std::map<int64_t,int> &attrs,const std::set<int64_t> &passive,Point up,double hipWidth) {
+    const std::map<int64_t,int> &attrs,const std::set<int64_t> &passive,Point up,double hipWidth,bool fixedSplit=false) {
   Need(!roots.empty()&&roots.size()<=16&&ids.size()<=128,"auto-tree-budget");
   FixedTree out;
   for(size_t c=0;c<roots.size();++c){std::vector<int64_t> starts;
@@ -23,7 +23,9 @@ inline FixedTree SourceFixedTree(Scene &s,const std::vector<int64_t> &roots,
       auto path=std::move(pending.back());pending.pop_back();const auto n=path.back();
       Need(path.size()<=32&&out.rows.emplace(n,int(path.size()-1)).second,"auto-tree-cycle-or-depth-budget");
       std::vector<int64_t> children;for(auto b:s.children[n])if(attrs.count(b)&&attrs.at(b)&&!passive.count(b))children.push_back(b);
-      if(children.size()>1){Need(children.size()==2&&attrs.at(n)==1&&attrs.at(children[0])==2&&attrs.at(children[1])==2,"auto-branch-needs-authored-graph");out.forks=true;}
+      if(children.size()>1){Need(children.size()==2&&attrs.at(n)==1&&
+          attrs.at(children[0])==attrs.at(children[1])&&
+          ((fixedSplit&&attrs.at(children[0])==1)||attrs.at(children[0])==2),"auto-branch-needs-authored-graph");out.forks=true;}
       if(children.empty()){
         Need(path.size()>=2&&attrs.at(n)==2,"auto-chain-needs-fixed-and-move");
         const auto from=Transform(s.World(path.front()),{0,0,0}),to=Transform(s.World(n),{0,0,0});

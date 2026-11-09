@@ -215,13 +215,26 @@ def prepare_mouth_line_retraction(model):
         if morph['type']!=1 or morph.get('category')!=3:continue
         full=np.zeros_like(vertices);np.add.at(full,morph['ids'],morph['offsets'])
         surplus=full[mask]-full[nearest]
-        if np.min(surplus[:,2])<span or np.max(np.ptp(surplus[:,1:],axis=0))>span*.5:
+        inward=np.min(surplus[:,2])>=span and np.max(np.ptp(surplus[:,1:],axis=0))<=span*.5
+        # Some references hide the detached line by collapsing its vertices
+        # to a point (or overshooting through that point). A bone translation
+        # cannot reproduce this: fitting its tiny skin weight produces a huge
+        # movement. Recognize only a severe, compact collapse near the mouth;
+        # ordinary narrowing and all non-line skin stay unchanged.
+        line_target=vertices[mask]+full[mask]
+        extent=np.ptp(line_target,axis=0)
+        centered=vertices[mask]-vertices[mask].mean(0)
+        direction=float(np.sum(centered*(line_target-line_target.mean(0)))/max(np.sum(centered*centered),1e-20))
+        collapsed=extent[0]<=span*.4 and np.linalg.norm(extent)<=span*.45 and \
+            direction<=.05 and np.linalg.norm(line_target.mean(0)-vertices[mask].mean(0))<=span*2
+        if not (inward or collapsed):
             continue
         full[mask]=full[nearest]+lw[mask,None]*np.array([0.,0.,control_depth])
         morph['ids']=np.union1d(morph['ids'],np.flatnonzero(mask))
         morph['offsets']=full[morph['ids']]
         report['shapes'].append({'name':normalize(morph['name']),
-                                'vertices':int(mask.sum()),'control_depth':control_depth})
+                                'vertices':int(mask.sum()),'control_depth':control_depth,
+                                'source_hide':'collapse' if collapsed else 'inward'})
     if not report['shapes']:return model,report
     result['mouth_line_retraction']=report
     return result,report

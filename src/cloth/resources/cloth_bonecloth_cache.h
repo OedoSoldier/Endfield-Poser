@@ -88,7 +88,8 @@ inline void Validate(const Profile &s) {
   Require(p.runtimeSeparatedCoat?(eiem_cloth_asset::SourceSeparatedCoat(p)&&p.releasedFixed==s.releasedFixed.data()&&
       p.releasedFixedCount==int(s.releasedFixed.size())):(s.releasedFixed.empty()&&!p.releasedFixedCount&&!p.releasedFixed));
   Require(s.candidateAttributes.empty()?p.candidateAttributes==nullptr:
-      (s.candidateAttributes.size()==s.bones.size()&&p.candidateAttributes==s.candidateAttributes.data()&&eiem_cloth_asset::SourceInactiveCoat(p)));
+      (s.candidateAttributes.size()==s.bones.size()&&p.candidateAttributes==s.candidateAttributes.data()&&
+      (eiem_cloth_asset::SourceInactiveCoat(p)||eiem_cloth_asset::SourceMingheCoatSelection(p))));
   if(p.candidateAttributes){candidate=s.bones;for(size_t n=0;n<candidate.size();++n)candidate[n].attribute=s.candidateAttributes[n];p.bones=candidate.data();p.candidateAttributes=nullptr;}
   Require(p.legRequiredMask<=15&&p.legListedMask<=15);
   Require(!p.runtimeUnowned||(p.runtimeGenerated&&p.loop&&p.rootCount>=4&&p.rootCount<=16&&p.depth>=3&&p.depth<=8&&
@@ -142,7 +143,10 @@ inline void Validate(const Profile &s) {
   Require(activeCount==p.EffectiveCount());
   for(int n=0;n<p.boneCount;++n)if(p.bones[n].attribute&&!p.Passive(n)){
     std::vector<int> children;for(int k=n+1;k<p.boneCount;++k)if(p.bones[k].parent==n&&p.bones[k].attribute&&!p.Passive(k))children.push_back(k);
-    if(children.size()>1){Require(p.runtimeFixedForks&&children.size()==2&&p.bones[n].attribute==1&&p.bones[children[0]].attribute==2&&p.bones[children[1]].attribute==2);++forks;}
+    if(children.size()>1){Require(p.runtimeFixedForks&&children.size()==2&&p.bones[n].attribute==1&&
+        p.bones[children[0]].attribute==p.bones[children[1]].attribute&&
+        (p.bones[children[0]].attribute==2||(p.runtimeGenerated&&p.bones[children[0]].attribute==1&&
+        eiem_cloth_asset::SourceMingheCoat(p.prefabSha,p.component))));++forks;}
   }
   Require(p.runtimeFixedForks==(forks>0));
   for(int n=0;n<p.rootCount;++n) {Require(roots.insert(p.roots[n]).second&&old.insert(p.originalRoots[n]).second);}

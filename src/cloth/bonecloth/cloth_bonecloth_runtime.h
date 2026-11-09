@@ -96,6 +96,9 @@ struct ClothBoneRuntime {
   float ribbonDamping=0,ribbonDampingCurve[16]{};
   bool sleeveNativeConfigured=false;
   ClothSleeveMaterial sleeveNativeMaterial{},sleevePmxMaterial{};
+  bool mingheRadiusConfigured=false;
+  uint32_t mingheRadiusSource=0,mingheRadiusCandidate=0;
+  float mingheRadiusOriginal[16]{},mingheRadiusExpected[16]{};
   ClothBonePrebuildState prebuild{};
   ClothBoneLocalState local{};
   eiem_cloth_rebuild::Transaction tx{};
@@ -741,6 +744,7 @@ static bool ClothBoneLongPanelRadiusConfigure(void *data,void *original) {
   return true;
 }
 static bool ClothBonePrebuildOmittedIdentity(bool capture);
+#include "cloth_bonecloth_minghe_policy.h"
 static bool ClothBoneConfigure() {
   auto &s=ClothBoneState(); const auto *profile=&ClothBoneCandidate(s);
   if(s.local.requested && s.local.recipe && s.local.recipe->sourceApronFit && !ClothBoneApronPointBody(s))
@@ -762,6 +766,8 @@ static bool ClothBoneConfigure() {
   if(s.contactConsumer>=0 && !SurfaceScalar(data,"animationPoseRatio","System.Single",0.0f))return false;
   if(!ClothBoneSurfaceBendingConfigure(data,CollisionGc(s.data)))
     return ClothBoneReject("native-surface-bending-policy-unconfirmed-original-unchanged");
+  if(!ClothBoneMingheRadiusConfigure(data,CollisionGc(s.data)))
+    return ClothBoneReject("minghe-contact-envelope-unconfirmed-original-unchanged");
   if(!ClothBoneSleeveConfigure(data,CollisionGc(s.data)))
     return ClothBoneReject("sleeve-drape-policy-unconfirmed-original-unchanged");
   if(!ClothBoneElasticConfigure(data,CollisionGc(s.data)))
@@ -909,9 +915,12 @@ static bool ClothBonePrepare() {
           (!s.local.recipe->graphCount || (s.profile->candidateIgnoredCount&&!s.local.recipe->runtimeGenerated)))) return ClothBoneReject("unequal-passive-attachment-contract-unconfirmed-original-unchanged");
       s.shapeBones.assign(s.profile->bones,s.profile->bones+s.profile->boneCount);s.shapeProfile=*s.profile;
       if(s.profile->candidateAttributes) {
-        if(!eiem_cloth_asset::SourceInactiveCoat(*s.profile))return ClothBoneReject("source-candidate-selection-unconfirmed");
+        const bool minghe=eiem_cloth_asset::SourceMingheCoatSelection(*s.profile);
+        if(!minghe&&!eiem_cloth_asset::SourceInactiveCoat(*s.profile))return ClothBoneReject("source-candidate-selection-unconfirmed");
         for(int n=0;n<s.profile->boneCount;++n)s.shapeBones[n].attribute=s.profile->CandidateAttribute(n);
-        Log("[CLOTH-BONE-COAT-INPUT] stage=prepared component=%s frame=%d generation=%llu command=%u promotedInvalid=6 sourceFixed=6 sourceMove=12 sourceInvalid=6 candidateFixed=6 candidateMove=18 originalSelectionUnchanged=1 hierarchyAndSkinWrites=0 nativeAttributesReadback=pending",
+        if(minghe)Log("[CLOTH-BONE-COAT-INPUT] stage=prepared component=%s frame=%d generation=%llu command=%u releasedInternalFixed=10 sourceFixed=16 sourceMove=38 candidateFixed=6 candidateMove=48 sourceSelectionUnchanged=1 hierarchyAndSkinWrites=0 nativeAttributesReadback=pending",
+            s.profile->component,ClothFrame(),s.owner.generation,s.command);
+        else Log("[CLOTH-BONE-COAT-INPUT] stage=prepared component=%s frame=%d generation=%llu command=%u promotedInvalid=6 sourceFixed=6 sourceMove=12 sourceInvalid=6 candidateFixed=6 candidateMove=18 originalSelectionUnchanged=1 hierarchyAndSkinWrites=0 nativeAttributesReadback=pending",
             s.profile->component,ClothFrame(),s.owner.generation,s.command);
       }
       for(int n=0;n<s.profile->candidateIgnoredCount;++n) s.shapeBones[s.profile->candidateIgnored[n]].attribute=0;
@@ -1274,7 +1283,7 @@ static bool ClothBoneMode(int slot,bool teamReadback) {
   auto box=ClothInputArrayBox(parameters,s.team[slot]);
   return CollisionParameterMode(box,actual) && actual==processMode &&
       (slot!=1 || (ClothBoneSupportPolicyMatches(s,box) && ClothBoneSupportElasticMatches(s,box))) &&
-      ClothBoneAttachmentMatches(s,slot,box)&&ClothBoneContactEnvelopeMatches(s,slot,box)&&ClothBoneSurfaceBendingMatches(s,slot,box)&&ClothBoneLongPanelMaterialMatches(s,slot,box)&&ClothBoneSleeveMatches(s,slot,box);
+      ClothBoneAttachmentMatches(s,slot,box)&&ClothBoneContactEnvelopeMatches(s,slot,box)&&ClothBoneSurfaceBendingMatches(s,slot,box)&&ClothBoneLongPanelMaterialMatches(s,slot,box)&&ClothBoneSleeveMatches(s,slot,box)&&ClothBoneMingheRadiusMatches(s,slot,box);
 }
 static bool ClothBoneAdopt(int slot) {
   auto &s=ClothBoneState();
@@ -1555,12 +1564,17 @@ static void ClothBoneBoundaryImpl() {
           s.profile->component,s.team[1],ClothBoneBodyMode(s),s.local.fittedBody.size(),s.calfColliders.size());
       if(eiem_cloth_asset::SourceInactiveCoat(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d promotedInvalid=6 fixed=6 move=18 originalSelectionUnchanged=1 hierarchyWrites=0 waistPrivateSkin=%d visualVerified=0",
           s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1],s.local.requested&&s.local.recipe->CoatWaistSkinOnly());
+      if(eiem_cloth_asset::SourceMingheCoatSelection(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d releasedInternalFixed=10 fixed=6 move=48 originalSelectionUnchanged=1 hierarchyAndSkinWrites=0 visualVerified=0",
+          s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1]);
+      if(s.mingheRadiusConfigured)Log("[CLOTH-MINGHE] stage=Team-confirmed team=%d upperRadius=%g lowerRadius=%g nativeRadiusCurveVerified=1 bodyAndTailCollidersRetained=1 visualVerified=0",
+          s.team[1],s.mingheRadiusExpected[0],s.mingheRadiusExpected[15]);
       if(eiem_cloth_asset::SourceForkCoatFront(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed frame=%d generation=%llu command=%u Process=%p team=%d releasedInternalFixed=6 promotedShoulderInputs=2 fixed=5 move=33 hierarchyAndSkinWrites=0 sourceSelectionUnchanged=1 depthCurveSampling=native-recomputed visualVerified=0",
           frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1]);
       if(eiem_cloth_asset::SourceSeparatedCoat(*s.profile))Log("[CLOTH-BONE-COAT-INPUT] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d releasedInternalFixed=%d retainedOriginalRoots=%d points=%d sourceSelectionUnchanged=1 hierarchyAndSkinWrites=0 depthCurveSampling=native-recomputed visualVerified=0",
           s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1],s.profile->releasedFixedCount,s.profile->rootCount,ClothBoneCandidate(s).EffectiveCount());
-      if(ClothBoneForkCoat(s))Log("[CLOTH-BONE-COAT-POLICY] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d bodyCollision=%s triangleBending=0 originalStiffness=%g originalRadiusCurve=1 originalSkin=%d waistSkinTransition=%d longitudinalShapeConstraints=retained visualVerified=0",
+      if(ClothBoneForkCoat(s))Log("[CLOTH-BONE-COAT-POLICY] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d bodyCollision=%s triangleBending=0 originalStiffness=%g candidateRadiusPolicy=%s originalSkin=%d waistSkinTransition=%d longitudinalShapeConstraints=retained visualVerified=0",
           s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1],ClothBoneBodyMode(s),s.surfaceOriginalStiffness,
+          s.mingheRadiusConfigured?"PMX-row-thickness":"source-curve",
           !s.local.requested||(s.local.recipe&&s.local.recipe->NativeSkinRetained()),s.local.recipe&&s.local.recipe->CoatWaistSkinOnly());
       if(ClothBoneLongPanelBending(s))Log("[CLOTH-BONE-LONG-PANEL-POLICY] stage=Team-confirmed component=%s frame=%d generation=%llu command=%u Process=%p team=%d bodyCollision=Edge triangleBending=0 originalStiffness=%g points=%d faces=%d contourDistance=%g contourTetherStretch=%g sourceAngleRetained=1 colliderGeometryUnchanged=1 visualVerified=0",
           s.profile->component,frame,s.owner.generation,s.command,CollisionGc(s.process[1]),s.team[1],s.surfaceOriginalStiffness,ClothBoneCandidate(s).EffectiveCount(),ClothBoneCandidate(s).FaceCount(),

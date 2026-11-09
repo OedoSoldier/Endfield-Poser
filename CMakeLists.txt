@@ -69,6 +69,7 @@ if(WIN32)
     src/cloth/native/cloth_calf_colliders.h src/cloth/native/cloth_calf_contacts.h
     src/cloth/native/cloth_si_envelope.h src/cloth/bonecloth/cloth_bonecloth_sleeve_policy.h
     src/cloth/bonecloth/cloth_bonecloth_sleeve_reference.h
+    src/cloth/bonecloth/cloth_bonecloth_minghe_policy.h
     src/cloth/native/cloth_native_profile.h src/cloth/native/cloth_contact_native_profile.h
     src/cloth/native/cloth_optional_native_profile.h
     src/cloth/collision/cloth_calf_math.h

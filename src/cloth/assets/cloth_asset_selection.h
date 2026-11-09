@@ -170,6 +170,17 @@ inline std::set<int64_t> PassiveSourceLeaves(Scene &s,const std::vector<int64_t>
       const auto &v=s.file.Get(object);verified&=s.file.Class(object)==114&&v.Has("center")&&v.Has("size");}
     if(!verified||!transform)continue;
     const auto &name=s.Name(id);
+    // The six offset contact handles on Minghe's back coat are not cloth
+    // strands. Keep their local offsets and let the owning coat bone carry
+    // them; treating them as extra moving branches joins unrelated surfaces.
+    if(s.file.sha=="9c582aa500cb1f8252e2d0833199ba45ef11fa897b19b3df123dcd769827b59c") {
+      const auto parentName=s.Name(parent);bool contact=false;
+      for(const char *side:{"L","R"})for(int row=4;row<=6;++row){
+        const auto base=std::string("cloth_")+side+"_coat_d_0"+std::to_string(row)+"_jnt";
+        contact|=parentName==base&&name==base+(row==4?"_collider":"_collder");
+      }
+      if(contact){Need(attrs.at(id)==2&&attrs.at(parent)==2,"minghe-coat-helper-selection-changed");passive.insert(id);continue;}
+    }
     if(s.file.sha=="e35214f71bf8886bf2d1ffe31d65e38893d5de2f866f068443b0de0685377f96"&&components.size()==2&&
         name.size()>9&&name.compare(name.size()-9,9,"_Collider")==0&&s.Name(parent).find("_skirtA_")!=std::string::npos){
       Need(attrs.at(id)==2&&attrs.at(parent)==2,"si-skirt-helper-not-move-source");passive.insert(id);continue;}

@@ -83,8 +83,9 @@ static bool ClothBoneSurfaceBendingConfigure(void *data,void *original) {
   s.surfaceSourceBending=ClothBoneHold(source);s.surfaceBending=ClothBoneHold(copy);
   if(!s.surfaceSourceBending||!s.surfaceBending)return false;
   s.surfaceOriginalStiffness=stiffness;s.surfaceOriginalMethod=before.method;s.surfaceNoneMethod=none;
-  if(ClothBoneForkCoat(s))Log("[CLOTH-BONE-COAT-POLICY] stage=configured component=%s frame=%d generation=%llu command=%u bodyCollision=%s originalStiffness=%g candidateStiffness=0 effectiveMethod=None sourceUntouched=1 originalRadiusCurve=1 originalSkin=%d waistSkinTransition=%d longitudinalShapeConstraints=retained nativeTeamReadback=pending visualVerified=0",
+  if(ClothBoneForkCoat(s))Log("[CLOTH-BONE-COAT-POLICY] stage=configured component=%s frame=%d generation=%llu command=%u bodyCollision=%s originalStiffness=%g candidateStiffness=0 effectiveMethod=None sourceUntouched=1 candidateRadiusPolicy=%s originalSkin=%d waistSkinTransition=%d longitudinalShapeConstraints=retained nativeTeamReadback=pending visualVerified=0",
       s.profile->component,ClothFrame(),s.owner.generation,s.command,"Point",stiffness,
+      eiem_cloth_asset::SourceMingheCoatSelection(*s.profile)?"PMX-row-thickness-pending":"source-curve",
       !s.local.requested||(s.local.recipe&&s.local.recipe->NativeSkinRetained()),s.local.recipe&&s.local.recipe->CoatWaistSkinOnly());
   if(ClothBoneLongPanelBending(s))Log("[CLOTH-BONE-LONG-PANEL-POLICY] stage=configured component=%s frame=%d generation=%llu command=%u sourceTriangles=0 candidateTriangles=%d bodyCollision=Edge sourceStiffness=%g candidateStiffness=0 effectiveMethod=None sourceUntouched=1 contourMaterialReadback=pending sourceAngleRetained=1 colliderGeometryUnchanged=1 nativeTeamReadback=pending visualVerified=0",
       s.profile->component,ClothFrame(),s.owner.generation,s.command,ClothLongPanelFaces,stiffness);

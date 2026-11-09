@@ -1,7 +1,55 @@
 #pragma once
 #include "cloth_bonecloth_profile.h"
 #include <cstring>
+#include <cstdio>
 namespace eiem_cloth_asset {
+inline bool SourceMingheCoat(const char *sha,const char *component) {
+  return sha&&component&&!strcmp(sha,"9c582aa500cb1f8252e2d0833199ba45ef11fa897b19b3df123dcd769827b59c")&&
+      !strcmp(component,"MC_minghe_Skirt");
+}
+// The authored fixed region reaches below the hips. Release only its ten
+// interior inputs in the private candidate; keep the six upper torso mounts,
+// source selection, skin, separate ribbons and offset collider leaves intact.
+inline bool SourceMingheCoatSelection(const ClothBoneProfile &p) {
+  if(!SourceMingheCoat(p.prefabSha,p.component)||!p.runtimeGenerated||!p.runtimeFixedForks||
+      !p.runtimeForkCoat||p.runtimeSeparatedCoat||p.loop||!p.candidateAttributes||
+      !p.bones||p.boneCount!=60||p.rootCount!=6||p.depth!=7||!p.roots||!p.originalRoots||
+      p.candidateIgnoredCount!=6||!p.candidateIgnored||p.foreignIgnoredCount||p.ownershipCount||
+      p.inputAnchorCount||p.sourceBranchCount||p.prebuildId||p.releasedFixedCount||p.generatedLocal||
+      p.originalExcludedCount!=13)return false;
+  bool points[2][4][7]{},helpers[2][3]{};int fixed=0,moving=0,roots=0,ignored=0;
+  for(int n=0;n<p.boneCount;++n) {
+    const auto &b=p.bones[n];if(!b.name||!b.parentName||strlen(b.name)<21)return false;
+    const char side=b.name[6],chain=b.name[13];const int row=b.name[16]-'0';
+    if((side!='L'&&side!='R')||chain<'a'||chain>'d'||row<0||row>6||(chain=='d'&&row==0))return false;
+    char name[64]{},parent[64]{};std::snprintf(name,sizeof(name),"cloth_%c_coat_%c_%02d_jnt",side,chain,row);
+    const bool passive=p.Passive(n);const int s=side=='R',c=chain-'a';
+    if(passive) {
+      if(chain!='d'||row<4||helpers[s][row-4]||b.attribute!=2||b.column!=-1||b.depth!=-1)return false;
+      helpers[s][row-4]=true;++ignored;std::snprintf(parent,sizeof(parent),"%s",name);
+      std::snprintf(name,sizeof(name),"%s_%s",parent,row==4?"collider":"collder");
+      for(int k=0;k<p.boneCount;++k)if(p.bones[k].parent==n)return false;
+    } else {
+      if(points[s][c][row]||b.depth!=row||b.column<0||b.column>=6)return false;
+      points[s][c][row]=true;
+      const int attr=(row<=1||(chain=='a'&&row==2))?1:2;
+      if(b.attribute!=attr)return false;
+      fixed+=attr==1;moving+=attr==2;
+      if(!row) {
+        if(b.parent!=-1||p.roots[b.column]!=n)return false;
+        int count=0;for(int k=0;k<6;++k)count+=p.originalRoots[k]==n;if(count!=1)return false;
+        std::snprintf(parent,sizeof(parent),"Bip001_Spine");++roots;
+      } else std::snprintf(parent,sizeof(parent),"cloth_%c_coat_%c_%02d_jnt",side,chain=='d'&&row==1?'c':chain,row-1);
+    }
+    if(strcmp(b.name,name)||strcmp(b.parentName,parent)||
+        p.candidateAttributes[n]!=(passive||row?2:1))return false;
+    if(passive||row) {
+      if(b.parent<0||b.parent>=n||!p.bones[b.parent].name||strcmp(p.bones[b.parent].name,parent))return false;
+      if(!passive&&p.bones[b.parent].column!=b.column)return false;
+    }
+  }
+  return fixed==16&&moving==38&&roots==6&&ignored==6;
+}
 // Verified original coat: retain its authored skin and all non-thigh contacts.
 // Calf coverage and symmetric thigh replacements belong only to the candidate.
 inline bool SourceOriginalCoverageCoat(const char *sha,const char *component) {
@@ -168,6 +216,8 @@ inline void SourceForkCoatSelection(const ClothBoneProfile &p,int n,ClothBoneAss
 }
 inline int SourceForkCoatPromoted(const ClothBoneProfile &p) {return SourceForkCoatFront(p)?2:0;}
 inline int SourceCoatInputs(const ClothBoneProfile &p,int (&out)[32]) {
+  if(SourceMingheCoatSelection(p)){int count=0;for(int n=0;n<p.boneCount;++n)
+      if(p.bones[n].attribute==1&&p.candidateAttributes[n]==2)out[count++]=n;return count;}
   if(SourceUpperCoatFront(p)){int count=0;for(int n=0;n<p.boneCount;++n)
       if(SourceUpperCoatRelease(p,n)||SourceUpperCoatRoot(p,n)>=0)out[count++]=n;return count;}
   if(SourceSeparatedCoat(p)){for(int k=0;k<p.releasedFixedCount;++k)out[k]=p.releasedFixed[k];return p.releasedFixedCount;}
