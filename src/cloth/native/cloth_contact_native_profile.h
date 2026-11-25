@@ -33,6 +33,17 @@ inline constexpr Profile Native163{
   {{0xc70a24,73,0xace3b5becd8344f8ULL},{0xc70814,97,0x1a4e94463824046aULL}},
   {0xeb,0x14d}
 };
+inline constexpr bool ContactAdapter1125Reviewed=true;
+inline constexpr Profile Native1125{
+    "2026-11",
+    {0x7700fe0,384,0x74ad9cb698bbae8eULL},
+    {{0x771c4bc,91,0x94b0837c8d9f6a45ULL},{0x771d750,91,0x937f18cb137c1915ULL}},
+    {{0x7710550,190,0xd250f71b23812eb2ULL},{0x7713a6c,190,0x5d160c4a44591085ULL}},
+    {0x33519c,31,0x582af3e099d12a38ULL},
+    {{0x76ee094,367,0x721cd37f61b320dULL},{0x76ee204,367,0x18576cb4bc9f2d12ULL}},
+    {{0x3e15bc,73,0xb260d9f74b725d46ULL},{0x3e13b0,97,0xd8b54a4f91268370ULL}},
+    {0xeb,0x14d}
+};
 inline bool AddressMatches(uintptr_t module, uintptr_t code, Code check) {
   return module && code && check.bytes && (!check.rva ||
       (check.rva<=UINTPTR_MAX-module && code==module+check.rva));

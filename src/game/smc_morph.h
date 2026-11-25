@@ -31,7 +31,6 @@
 #include "game/blush.h"
 
 // ---- 常量 ----
-#define SMC_MAX_BIGLIST 8192
 #define SMC_MAX_FACE_BONES 256
 #define SMC_BONE_MAP_SIZE 512
 #define SMC_NUM_MOUTH 5
@@ -49,6 +48,15 @@ struct SMCMorphBoneEntry {
 #pragma pack(pop)
 static_assert(sizeof(SMCMorphBoneEntry) == 44,
               "SMCMorphBoneEntry must be 44 bytes");
+
+// Bound corrupt native lengths by bytes, not a character-specific entry count.
+// Valid snapshots allocate exactly the complete NativeArray (Sweetpie: 8716).
+static constexpr size_t SMC_MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+struct SMCMorphMappingEntry {
+  int32_t id, nameHash, tagHash, partType, boneOffset, boneLen;
+  void *bones;
+};
+static_assert(sizeof(SMCMorphMappingEntry) == 32, "Native morph mapping layout");
 
 // SMC 维护的面部骨骼快照（局部位姿 + transform 引用）
 struct SMCFaceBone {
@@ -715,7 +723,8 @@ static void SMCDropLockKeepWeights() {
   s_confirmedSMC = nullptr;
   s_frame = 0;
   s_bigListCaptured = false;
-  s_capturedLen = 0;
+  s_capturedExpression.clear();
+  s_activeSMC->capturedBuffer = nullptr;
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
   s_activeSMC->nativeReference={};
@@ -991,12 +1000,11 @@ static void SMCCaptureBigList(void *smcBase) {
     int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
     void *bigBuf = *(void **)((char *)smcBase + blOff);
     int bigLen = *(int *)((char *)smcBase + blOff + 8);
-    if (bigBuf && bigLen > 0 && bigLen < SMC_MAX_BIGLIST) {
-      if (bigLen > SMC_MAX_BIGLIST)
-        bigLen = SMC_MAX_BIGLIST;
-      memcpy(s_capturedExpression, bigBuf,
-             bigLen * sizeof(SMCMorphBoneEntry));
-      s_capturedLen = bigLen;
+    if (bigBuf && bigLen > 0 && size_t(bigLen) <= SMC_MAX_SNAPSHOT_BYTES / sizeof(SMCMorphBoneEntry)) {
+      s_capturedExpression.resize(size_t(bigLen));
+      memcpy(s_capturedExpression.data(), bigBuf,
+             s_capturedExpression.size() * sizeof(SMCMorphBoneEntry));
+      s_activeSMC->capturedBuffer = bigBuf;
       s_bigListCaptured = true;
       int nonZero = 0;
       for (int i = 0; i < bigLen; i++) {
@@ -1017,6 +1025,9 @@ static void SMCCaptureBigList(void *smcBase) {
       Log("[SMC] BigList invalid: buf=%p len=%d", bigBuf, bigLen);
     }
   } __except (1) {
+    s_capturedExpression.clear();
+    s_activeSMC->capturedBuffer = nullptr;
+    s_bigListCaptured = false;
     Log("[SMC] SMCCaptureBigList exception");
   }
 }
@@ -1029,8 +1040,8 @@ static void SMCRestoreBigList() {
     int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
     void *bigBuf = *(void **)((char *)s_confirmedSMC + blOff);
     int bigLen = *(int *)((char *)s_confirmedSMC + blOff + 8);
-    if (bigBuf && bigLen == s_capturedLen) {
-      memcpy(bigBuf, s_capturedExpression,
+    if (bigBuf && bigBuf == s_activeSMC->capturedBuffer && bigLen == s_capturedLen) {
+      memcpy(bigBuf, s_capturedExpression.data(),
              bigLen * sizeof(SMCMorphBoneEntry));
       Log("[SMC] BigList restored (%d entries)", bigLen);
     }
@@ -1083,15 +1094,13 @@ static void ResolveSMCMouthShapes(void *smcBase) {
       Log("[SMC] Null pointers in hashmap");
       return;
     }
-    int valStride = (int)(((uintptr_t)keys - (uintptr_t)values) /
-                          keyCapacity);
-    if (valStride < 8 || valStride > 200) {
-      Log("[SMC] Invalid valStride=%d", valStride);
+    // Key storage is cache-line aligned. Its distance from the values is not
+    // the element stride; use the verified FSkeletalMorphMappingData layout.
+    if ((uintptr_t)keys < (uintptr_t)values + size_t(keyCapacity) * sizeof(SMCMorphMappingEntry)) {
+      Log("[SMC] Invalid mapping value storage: capacity=%d", keyCapacity);
       return;
     }
-    if (valStride != 40)
-      Log("[SMC] WARN: valStride=%d (expected 40), layout may differ",
-          valStride);
+    const auto *mapping = reinterpret_cast<const SMCMorphMappingEntry *>(values);
 
     for (int m = 0; m < SMC_NUM_MOUTH; m++) {
       int targetHash = s_mouthShapes[m].nameHash;
@@ -1100,16 +1109,16 @@ static void ResolveSMCMouthShapes(void *smcBase) {
       int depth = 0;
       while (entryIdx >= 0 && entryIdx < keyCapacity && depth < 100) {
         if (keys[entryIdx] == targetHash) {
-          int *vi = (int *)(values + entryIdx * valStride);
-          s_mouthShapes[m].morphId = vi[0];
-          s_mouthShapes[m].startIdx = vi[4];
-          s_mouthShapes[m].count = vi[5];
-          s_mouthShapes[m].jobStartIdx = vi[4];
-          s_mouthShapes[m].jobCount = vi[5];
+          const auto &entry = mapping[entryIdx];
+          s_mouthShapes[m].morphId = entry.id;
+          s_mouthShapes[m].startIdx = entry.boneOffset;
+          s_mouthShapes[m].count = entry.boneLen;
+          s_mouthShapes[m].jobStartIdx = entry.boneOffset;
+          s_mouthShapes[m].jobCount = entry.boneLen;
           s_mouthShapes[m].resolved = true;
           Log("[SMC] Mouth '%s': morphId=%d start=%d count=%d partType=%d",
-              s_mouthShapes[m].name, vi[0], vi[4], vi[5], vi[3]);
-          if (vi[4] < 0 || vi[4] > 10000 || vi[5] <= 0 || vi[5] > 500) {
+              s_mouthShapes[m].name, entry.id, entry.boneOffset, entry.boneLen, entry.partType);
+          if (entry.boneOffset < 0 || size_t(entry.boneOffset) > SMC_MAX_SNAPSHOT_BYTES / sizeof(SMCMorphBoneEntry) || entry.boneLen <= 0 || entry.boneLen > 500) {
             Log("[SMC] WARN: '%s' suspicious start/count, layout may differ",
                 s_mouthShapes[m].name);
             s_mouthShapes[m].resolved = false;
@@ -1149,10 +1158,10 @@ static void ResolveSMCMouthShapes(void *smcBase) {
     if (nameArr && nameArrLen > 0 && nameArrLen <= 500) {
       int resolvedTargets = 0;
       for (int e = 0; e < allocLen && e < keyCapacity; e++) {
-        int *vi = (int *)(values + e * valStride);
-        int morphId = vi[0];
-        int smcStart = vi[4];
-        int smcCount = vi[5];
+        const auto &entry = mapping[e];
+        int morphId = entry.id;
+        int smcStart = entry.boneOffset;
+        int smcCount = entry.boneLen;
         if (morphId < 0 || morphId >= nameArrLen || smcCount <= 0)
           continue;
         char nn[128] = {};
@@ -1171,7 +1180,7 @@ static void ResolveSMCMouthShapes(void *smcBase) {
               tgt.count = smcCount;
               tgt.jobStartIdx = smcStart;
               tgt.jobCount = smcCount;
-              tgt.resolved = (smcStart >= 0 && smcStart <= 10000 &&
+              tgt.resolved = (smcStart >= 0 && size_t(smcStart) <= SMC_MAX_SNAPSHOT_BYTES / sizeof(SMCMorphBoneEntry) &&
                               smcCount > 0 && smcCount <= 500);
               if (tgt.resolved) {
                 resolvedTargets++;
@@ -1203,6 +1212,20 @@ static void ResolveSMCMouthShapes(void *smcBase) {
 }
 
 static void SMCSelectCandidate(void *param1) {
+  if (param1 && param1 == s_confirmedSMC && s_bigListCaptured) {
+    bool changed = false;
+    __try {
+      int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
+      changed = *(void **)((char *)param1 + blOff) != s_activeSMC->capturedBuffer ||
+                *(int *)((char *)param1 + blOff + 8) != s_capturedLen;
+    } __except (1) { changed = true; }
+    if (changed) {
+      // The core can survive replacement of its native data. Revalidate its
+      // owner and rebuild the mapping/baseline, never restore into a new array.
+      Log("[SMC] Native morph array changed; rebinding core=%p", param1);
+      SMCDropLockKeepWeights();
+    }
+  }
   if (!s_confirmedSMC && param1) {
     SMCRefreshCharBoneSnapshot();
     // Retry changing/loading instances periodically, without ever accepting a
@@ -1234,7 +1257,7 @@ static void SMCMorphJobBefore(void *param1) {
       int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
       void *bigBuf = *(void **)((char *)param1 + blOff);
       int bigLen = *(int *)((char *)param1 + blOff + 8);
-      if (bigBuf && bigLen > 0 && bigLen == s_capturedLen) {
+      if (bigBuf && bigBuf == s_activeSMC->capturedBuffer && bigLen > 0 && bigLen == s_capturedLen) {
         SMCMorphBoneEntry *live = (SMCMorphBoneEntry *)bigBuf;
         for (int i = 0; i < bigLen; i++) {
           live[i].deltaPosX = live[i].deltaPosY = live[i].deltaPosZ = 0;
@@ -1254,7 +1277,7 @@ static void SMCMorphJobBefore(void *param1) {
       int blOff = SafeOff(s_offBigList, 0x120, "smc.bigList");
       void *bigBuf = *(void **)((char *)param1 + blOff);
       int bigLen = *(int *)((char *)param1 + blOff + 8);
-      if (bigBuf && bigLen > 0 && bigLen == s_capturedLen) {
+      if (bigBuf && bigBuf == s_activeSMC->capturedBuffer && bigLen > 0 && bigLen == s_capturedLen) {
         SMCMorphBoneEntry *live = (SMCMorphBoneEntry *)bigBuf;
         for (int i = 0; i < bigLen; i++) {
           int boneID = live[i].boneID;
@@ -2101,6 +2124,42 @@ static bool SMCValidateHookSignatures(void *update, void *job) {
          SMCJobValueType(il2cpp_method_get_param(job, 1));
 }
 
+struct SMCNativeField {
+  const char *name;
+  size_t offset;
+  const char *space, *type;
+};
+static bool SMCNativeValueLayout(void *klass, size_t size,
+                                  std::initializer_list<SMCNativeField> fields) {
+  if (!klass) return false;
+  uint32_t alignment = 0;
+  if (il2cpp_class_value_size(klass, &alignment) != size) return false;
+  for (const auto &expected : fields) {
+    void *it = nullptr, *field = nullptr;
+    bool matched = false;
+    while ((field = il2cpp_class_get_fields(klass, &it))) {
+      if (strcmp(il2cpp_field_get_name(field), expected.name)) continue;
+      matched = il2cpp_field_get_offset(field) == expected.offset + 16 &&
+                MetadataClassIs(il2cpp_field_get_type(field), expected.space, expected.type);
+      break;
+    }
+    if (!matched) return false;
+  }
+  return true;
+}
+static bool SMCValidateNativeLayouts(void **assemblies, size_t count) {
+  auto bones = FindClass("Beyond.Gameplay.Core", "FSkeletalMorphBoneData", assemblies, count);
+  auto mappings = FindClass("Beyond.Gameplay.Core", "FSkeletalMorphMappingData", assemblies, count);
+  return SMCNativeValueLayout(bones, sizeof(SMCMorphBoneEntry), {
+      {"boneNameHash",0,"System","Int32"}, {"boneID",4,"System","Int32"},
+      {"position",8,"UnityEngine","Vector3"}, {"rotation",20,"UnityEngine","Vector3"},
+      {"scale",32,"UnityEngine","Vector3"}}) &&
+    SMCNativeValueLayout(mappings, sizeof(SMCMorphMappingEntry), {
+      {"id",0,"System","Int32"}, {"nameHash",4,"System","Int32"},
+      {"partType",12,"Beyond.Gameplay.Core","EMorphPartType"},
+      {"boneOffset",16,"System","Int32"}, {"boneLen",20,"System","Int32"}});
+}
+
 static void SMCLogHookMethod(void *method, const char *label) {
   if (!method || !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||
       !il2cpp_method_get_return_type || !il2cpp_method_get_param ||
@@ -2162,8 +2221,13 @@ static void InstallSMCFaceHooks() {
       Log("[SMC] Callback signature mismatch; facial hooks disabled");
       return;
     }
+    if (!SMCValidateNativeLayouts(asms, ac)) {
+      Log("[SMC] Native bone/mapping layout mismatch; facial hooks disabled");
+      return;
+    }
     Log("[SMC] Callback ABI verified: instance Update(float), "
-        "value16 MorphJob(count32, value16)");
+        "value16 MorphJob(count32, value16), boneEntry=%zu mappingEntry=%zu",
+        sizeof(SMCMorphBoneEntry), sizeof(SMCMorphMappingEntry));
     Hook(updateMethod, "SkeletalMorphCore.Update", (void *)HookedSMCUpdate,
          (void **)&s_origSMCUpdate);
     Hook(jobMethod, "DoEvaluateMorphToBoneJob", (void *)HookedSMCMorphJob,
@@ -2185,7 +2249,8 @@ static void ResetSMCState(bool restoreOriginal = true) {
   s_confirmedSMC = nullptr;
   s_frame = 0;
   s_bigListCaptured = false;
-  s_capturedLen = 0;
+  s_capturedExpression.clear();
+  s_activeSMC->capturedBuffer = nullptr;
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
   s_activeSMC->nativeReference={};

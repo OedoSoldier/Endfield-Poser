@@ -228,6 +228,8 @@ inline void RadialSourceSheet(const std::vector<MeshView> &meshes,const std::vec
 inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &package,Scene &s,int64_t id,const Query &query,SurfaceInput *surface=nullptr){
   const auto &object=s.file.Get(id),&sd=object.At("serializeData"),&sd2=object.At("serializeData2");
   const bool bodyOnly=SourceBodyContact(s.file.sha.c_str(),s.Name(id).c_str());
+  const bool sweetpieCoat=s.file.sha==SweetpiePrefab&&
+      (s.Name(id)=="MC_sweetpie_jacket_L"||s.Name(id)=="MC_sweetpie_jacket_R");
   Need(sd.At("clothType").Int()==1,"auto-not-bonecloth");Need(sd.At("connectionMode").Int()==0,"auto-original-already-connected");
   Need(sd.At("colliderCollisionConstraint").At("mode").Int()==1,"auto-existing-collision-policy");
   if(sd.Has("preBuildData"))Need(sd.At("preBuildData").At("enabled").Int()==0,"auto-prebuild-requires-authored-lifecycle");
@@ -276,12 +278,15 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
   auto &chains=tree.chains;auto &rows=tree.rows;const size_t depth=tree.depth;const bool irregular=tree.irregular;
   bool upperCoat=false;
   for(size_t c=0;c<roots.size();++c){const auto p=Transform(s.World(roots[c]),{0,0,0});const double height=Dot(Sub(p,hp),up);
-    if(height<waistTop)continue;double movingLow=1e100;for(auto b:ids)if(columns.at(b)==int(c)&&attrs.at(b)==2&&!passive.count(b))
+    // Sweetpie's two short jacket panels hang from Spine2 and end at the hips.
+    // Their descending chains are already checked; they are not long coats
+    // that must reach below the pelvis and cover both thighs independently.
+    if(height<waistTop||sweetpieCoat)continue;double movingLow=1e100;for(auto b:ids)if(columns.at(b)==int(c)&&attrs.at(b)==2&&!passive.count(b))
       movingLow=(std::min)(movingLow,Dot(Sub(Transform(s.World(b),{0,0,0}),hp),up));
     Need(UpperCoatAttachment(height,Distance(p,hp),waistTop,hipWidth,movingLow),"auto-high-attachment-not-descending-coat");upperCoat=true;}
   std::set<int64_t> movable;for(auto bone:ids)if((attrs[bone]==2||(shortSkin&&attrs[bone]==1))&&!passive.count(bone))movable.insert(bone);
   std::vector<MeshView> meshes;std::set<std::pair<int,int>> pairs;std::string densityIssue;
-  auto densityCheck=[&](bool ok,const char *reason){if(ok||bodyOnly)return;if(!surface)throw std::runtime_error(reason);if(densityIssue.empty())densityIssue=reason;};
+  auto densityCheck=[&](bool ok,const char *reason){if(ok||bodyOnly||sweetpieCoat)return;if(!surface)throw std::runtime_error(reason);if(densityIssue.empty())densityIssue=reason;};
   for(const auto &o:s.file.objects)if(s.file.Class(o.first)==137){const auto &r=s.file.Get(o.first);const auto boneIds=Refs(r.At("m_Bones"));bool uses=false;for(auto b:boneIds)uses|=movable.count(b)!=0;if(!uses)continue;
     auto mesh=ReadMesh(package,s,o.first);Need(!query.reservedRenderers.count({mesh.name,mesh.parent})&&!query.reservedRenderers.count({mesh.name,""}),"auto-renderer-reserved-by-authored-contact-group");size_t matches=0;for(const auto &live:query.renderers)matches+=RendererMatch(s,mesh,live);Need(matches==1,"auto-renderer-live-binding-mismatch-or-ambiguous");
     std::vector<std::set<int>> vertexRoots(mesh.world.size());std::vector<bool> pure(mesh.world.size(),true),moving(mesh.world.size());
@@ -337,10 +342,11 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
   const auto panelKey=Digest(Bytes(panelIdentity.begin(),panelIdentity.end()));ClothBoneProfile panelSource{};
   panelSource.runtimeGenerated=true;panelSource.signature=panelKey.c_str();panelSource.prefabSha=s.file.sha.c_str();
   const bool fittedPanels=surface&&SourcePanelFit(panelSource);bool singleSheet=!fittedPanels;
-  if(bodyOnly)singleSheet=false;
+  if(bodyOnly||sweetpieCoat)singleSheet=false;
+  if(sweetpieCoat&&surface)surface->sheetIssue="auto-short-jacket-native-connections-original-skin-retained";
   if(fittedPanels)surface->sheetIssue="content-fitted-folded-source-not-generic-single-sheet";
   if(tree.forks||inactiveCoat){singleSheet=false;if(surface)surface->sheetIssue=inactiveCoat?"auto-inactive-coat-branches-completed-original-skin-retained":"auto-fixed-fork-native-connections-original-skin-retained";}
-  if(!bodyOnly&&!tree.forks&&!inactiveCoat&&!fittedPanels&&groups.empty()&&!shortSkin)try {
+  if(!bodyOnly&&!sweetpieCoat&&!tree.forks&&!inactiveCoat&&!fittedPanels&&groups.empty()&&!shortSkin)try {
   const auto lod=SourceLodSheets(package,s,meshes);std::map<int,SheetSamples> sheets;
   for(size_t meshIndex=0;meshIndex<meshes.size();++meshIndex){const auto &m=meshes[meshIndex];std::vector<std::array<double,2>> uv(m.world.size());std::vector<bool> pure(m.world.size(),true),moving(m.world.size());std::vector<std::array<int,3>> faces;
     for(size_t n=0;n<m.world.size();++n){std::vector<std::pair<int,double>> labels;for(size_t k=0;k<m.weights[n].size();++k)if(m.weights[n][k]>0){const auto b=m.bones[size_t(m.indices[n][k])];if(!columns.count(b)||!attrs[b]){pure[n]=false;continue;}const double w=m.weights[n][k];labels.push_back({orderedColumn[columns[b]],w});uv[n][1]+=w*rows[b]/double(depth-1);moving[n]=moving[n]||attrs[b]==2;}
@@ -403,12 +409,16 @@ inline std::shared_ptr<eiem_cloth_cache::Profile> GenerateConnections(Package &p
       for(const auto &live:query.cloths)Need(!RootMatch(s,o.first,live),"auto-collider-producer-needs-ordered-batch");
       const auto producerContacts=ColliderRefs(other.At("colliderCollisionConstraint").At("colliderList"));
       for(auto c:producerContacts)for(auto own:roots)if(Above(s,s.TransformId(c),own)) {
-        // This exact source already has reciprocal tail/coat contacts. Its two
-        // return contacts remain parent-following, unskinned helper leaves;
-        // neither the tail team nor the source collider objects are replaced.
+        // Minghe's two reciprocal contacts remain parent-following unskinned
+        // helpers; neither the tail team nor its colliders are replaced.
         const auto t=s.TransformId(c);const auto name=s.Name(t);
-        Need(minghe&&s.Name(o.first)=="MC_minghe_Tail"&&producerContacts.size()==2&&passive.count(t)&&
-            (name=="cloth_L_coat_d_05_jnt_collder"||name=="cloth_R_coat_d_05_jnt_collder"),"auto-collider-producer-feedback");
+        const bool mingheReturn=minghe&&s.Name(o.first)=="MC_minghe_Tail"&&producerContacts.size()==2&&
+            (name=="cloth_L_coat_d_05_jnt_collder"||name=="cloth_R_coat_d_05_jnt_collder");
+        // Sweetpie's original tail touches the skinned c04 coat bones. This
+        // path retains those bones, their skin and collider objects unchanged.
+        const bool sweetpieReturn=sweetpieCoat&&s.Name(o.first)=="MC_sweetpie_Tail"&&producerContacts.size()==7&&
+            (name=="cloth_L_jacket_c_04_jnt"||name=="cloth_R_jacket_c_04_jnt");
+        Need((passive.count(t)&&mingheReturn)||sweetpieReturn,"auto-collider-producer-feedback");
       }
     }
     if(producer)retainedProducers.insert(producer);out->colliders.push_back({text(s.Name(collider)),text(s.Name(s.Parent(t))),s.animatorRoot&&s.Parent(t)==s.animatorRoot});
@@ -490,6 +500,10 @@ inline Generated Generate(const Vfs &vfs,const Manifest &manifest,const Query &c
         result.reports.push_back({"MC_jsspsi_Skirt","shared-skin-independent-sleeves particlesPerSleeve=30 material=pmx-joint-approximation extraSleeveSkirtContacts=0 nativeAndVisual=pending"});}
       catch(const std::exception &e){CheckCancel(vfs.cancel);result.reports.push_back({"MC_jsspsi_Skirt",std::string("shared-skin-original-retained:")+e.what()});}
       for(size_t k=0;k<cloths.size();++k){CheckCancel(vfs.cancel);
+        if(file->sha==SweetpiePrefab&&scene.Name(cloths[k]).find("MC_sweetpie_Sleeve_")==0){
+          // Already separate outer/inner forearm chains with jacket contacts.
+          // Do not replace their shared mesh independently of the two coats.
+          result.reports.push_back({query.cloths[k].name,"original-independent-sleeves-retained nativeSkin=1 nativeJacketContacts=1"});continue;}
         if(JsspsiGroupSource(scene)&&(JsspsiSleeveName(scene.Name(cloths[k]).c_str())||scene.Name(cloths[k])=="MC_jsspsi_Skirt"))continue;try{
           if(RibbonSource(scene,cloths[k])){std::shared_ptr<DenseRecipe> dense;auto p=GenerateRibbon(package,scene,cloths[k],query,dense);result.profiles.push_back(p);result.dense.push_back(dense);continue;}
           SurfaceInput surface;auto p=ApronSource(scene,cloths[k])?GenerateApron(package,scene,cloths[k],query,surface):GenerateConnections(package,scene,cloths[k],query,&surface);

@@ -65,10 +65,12 @@ static bool ClothFinishConsumers(void *parent) {
       "EdgeColliderCollisionConstraintKernel$BurstManaged","System.Void",true,edgeArgs,18);
   auto r=ClothFinishMethod(ClothFinishNested(parent,"SolveEdgeBufferAndClearJobKernels"),
       "SolveEdgeBufferAndClearKernel$BurstManaged","System.Void",true,reduceArgs,10);
-  if(s_clothInputBoundary163) {
+  if(s_clothInputBoundary1125 || s_clothInputBoundary163) {
     using namespace poser_cloth_optional;
-    if(!poser_cloth_boundary::MappedMethodProfile(hGA,e?(unsigned char*)((MInfo*)e)->mp:nullptr,FinishEdgeKernel163)||
-        !poser_cloth_boundary::MappedMethodProfile(hGA,r?(unsigned char*)((MInfo*)r)->mp:nullptr,FinishReduceKernel163))return false;
+    const auto &edge=s_clothInputBoundary1125?FinishEdgeKernel1125:FinishEdgeKernel163;
+    const auto &reduce=s_clothInputBoundary1125?FinishReduceKernel1125:FinishReduceKernel163;
+    if(!poser_cloth_boundary::MappedMethodProfile(hGA,e?(unsigned char*)((MInfo*)e)->mp:nullptr,edge)||
+        !poser_cloth_boundary::MappedMethodProfile(hGA,r?(unsigned char*)((MInfo*)r)->mp:nullptr,reduce))return false;
   } else if(!ClothContactRequireCode("finish-edge-managed",e?((MInfo*)e)->mp:nullptr,3342,0x43342eb86afd45ebULL)||
       !ClothContactRequireCode("finish-reduce-managed",r?((MInfo*)r)->mp:nullptr,427,0xcd936d8d13b83a22ULL))return false;
   static constexpr ClothLayerCode bodies[]{
@@ -92,35 +94,45 @@ static bool ClothFinishConsumers(void *parent) {
   for(size_t n=0;n<dir.Size/sizeof(RUNTIME_FUNCTION);++n) {
     const auto &f=entries[n];if(f.BeginAddress>=f.EndAddress||f.EndAddress>size)return false;
     for(unsigned k=0;k<12;++k) {
-      const auto &current=poser_cloth_optional::FinishBurst163[k];
-      const ClothLayerCode expected=s_clothInputBoundary163?ClothLayerCode{current.bytes,current.hash}:bodies[k];
+      const auto &current=s_clothInputBoundary1125?poser_cloth_optional::FinishBurst1125[k]:poser_cloth_optional::FinishBurst163[k];
+      const ClothLayerCode expected=(s_clothInputBoundary1125||s_clothInputBoundary163)?ClothLayerCode{current.bytes,current.hash}:bodies[k];
       if(f.EndAddress-f.BeginAddress==expected.bytes&&ClothLayerBody(module,base+f.BeginAddress,expected))++matches[k];
     }
   }
   for(auto n:matches)if(n!=1)return false;return true;
 }
 static struct ClothFinishInstallState {bool attempted=false;void *targets[3]{};uint64_t patched[3]{};} s_clothFinishInstall;
-static bool ClothFinishProducer163(unsigned char *step,unsigned char *collision) {
+static bool ClothFinishProducerReviewed(unsigned char *step,unsigned char *collision) {
   using namespace poser_cloth_optional;
   using poser_cloth_boundary::MappedMethodProfile;
   using poser_cloth_boundary::DirectCallAt;
+  const auto &FinishStep=s_clothInputBoundary1125?FinishStep1125:FinishStep163;
+  const auto &FinishDistance=s_clothInputBoundary1125?FinishDistance1125:FinishDistance163;
+  const auto &FinishCollision=s_clothInputBoundary1125?FinishCollision1125:FinishCollision163;
+  const auto &FinishEdgeSchedule=s_clothInputBoundary1125?FinishEdgeSchedule1125:FinishEdgeSchedule163;
+  const auto &FinishReduceSchedule=s_clothInputBoundary1125?FinishReduceSchedule1125:FinishReduceSchedule163;
+  const auto FinishFirstDistanceCall=s_clothInputBoundary1125?FinishFirstDistanceCall1125:FinishFirstDistanceCall163;
+  const auto FinishCollisionCall=s_clothInputBoundary1125?FinishCollisionCall1125:FinishCollisionCall163;
+  const auto FinishSecondDistanceCall=s_clothInputBoundary1125?FinishSecondDistanceCall1125:FinishSecondDistanceCall163;
+  const auto FinishEdgeCall=s_clothInputBoundary1125?FinishEdgeCall1125:FinishEdgeCall163;
+  const auto FinishReduceCall=s_clothInputBoundary1125?FinishReduceCall1125:FinishReduceCall163;
   auto &i=s_clothFinishInstall;auto &h=s_clothFinishHooks;
   const auto base=(unsigned char*)hGA;
-  if(!MappedMethodProfile(hGA,step,FinishStep163)||
-      !MappedMethodProfile(hGA,(unsigned char*)i.targets[0],FinishDistance163)||
-      !MappedMethodProfile(hGA,collision,FinishCollision163)||
-      !MappedMethodProfile(hGA,base+FinishEdgeSchedule163.rva,FinishEdgeSchedule163)||
-      !MappedMethodProfile(hGA,base+FinishReduceSchedule163.rva,FinishReduceSchedule163))return false;
+  if(!MappedMethodProfile(hGA,step,FinishStep)||
+      !MappedMethodProfile(hGA,(unsigned char*)i.targets[0],FinishDistance)||
+      !MappedMethodProfile(hGA,collision,FinishCollision)||
+      !MappedMethodProfile(hGA,base+FinishEdgeSchedule.rva,FinishEdgeSchedule)||
+      !MappedMethodProfile(hGA,base+FinishReduceSchedule.rva,FinishReduceSchedule))return false;
   // The second distance pass still follows edge collision. Schedule2's closed
   // job ABI is also checked at the exact producer call before a view is borrowed.
-  if(!DirectCallAt(step,FinishFirstDistanceCall163+5,FinishFirstDistanceCall163,i.targets[0])||
-      !DirectCallAt(step,FinishCollisionCall163+5,FinishCollisionCall163,collision)||
-      !DirectCallAt(step,FinishSecondDistanceCall163+5,FinishSecondDistanceCall163,i.targets[0])||
-      !DirectCallAt(collision,FinishEdgeCall163+5,FinishEdgeCall163,base+FinishEdgeSchedule163.rva)||
-      !DirectCallAt(collision,FinishReduceCall163+5,FinishReduceCall163,base+FinishReduceSchedule163.rva))return false;
-  i.targets[1]=base+FinishEdgeSchedule163.rva;i.targets[2]=base+FinishReduceSchedule163.rva;
-  h.firstSite=step+FinishFirstDistanceCall163+5;h.secondSite=step+FinishSecondDistanceCall163+5;
-  h.edgeSite=collision+FinishEdgeCall163+5;h.reduceSite=collision+FinishReduceCall163+5;
+  if(!DirectCallAt(step,FinishFirstDistanceCall+5,FinishFirstDistanceCall,i.targets[0])||
+      !DirectCallAt(step,FinishCollisionCall+5,FinishCollisionCall,collision)||
+      !DirectCallAt(step,FinishSecondDistanceCall+5,FinishSecondDistanceCall,i.targets[0])||
+      !DirectCallAt(collision,FinishEdgeCall+5,FinishEdgeCall,base+FinishEdgeSchedule.rva)||
+      !DirectCallAt(collision,FinishReduceCall+5,FinishReduceCall,base+FinishReduceSchedule.rva))return false;
+  i.targets[1]=base+FinishEdgeSchedule.rva;i.targets[2]=base+FinishReduceSchedule.rva;
+  h.firstSite=step+FinishFirstDistanceCall+5;h.secondSite=step+FinishSecondDistanceCall+5;
+  h.edgeSite=collision+FinishEdgeCall+5;h.reduceSite=collision+FinishReduceCall+5;
   return true;
 }
 static bool ClothFinishScheduleSignature(void *method,bool reduce) {
@@ -159,8 +171,8 @@ static bool ClothInstallFinishMainThread() {
   i.targets[0]=distance?((MInfo*)distance)->mp:nullptr;
   if(!ClothFinishLayout(collision,false)||!ClothFinishLayout(collision,true)||!ClothFinishConsumers(collision))
     return ClothFinishReject("native-producer-or-consumer-unconfirmed");
-  if(s_clothInputBoundary163) {
-    if(!ClothFinishProducer163(s,c))return ClothFinishReject("native-163-producer-or-schedule-unconfirmed");
+  if(s_clothInputBoundary1125 || s_clothInputBoundary163) {
+    if(!ClothFinishProducerReviewed(s,c))return ClothFinishReject("native-reviewed-producer-or-schedule-unconfirmed");
   } else {
   if(!ClothContactRequireCode("finish-step-prefix",s,5053,0x62a059b98962ddb5ULL)||
       !ClothContactRequireCode("finish-distance",i.targets[0],1162,0x35520ec184c8f111ULL)||
@@ -197,6 +209,6 @@ static bool ClothInstallFinishMainThread() {
   for(int n=0;n<3;++n)i.patched[n]=eiem_cloth_input::Fingerprint((unsigned char*)i.targets[n],42);
   s_clothFinishSignature=ClothFinishScheduleSignature;h.installed=true;
   Log("[CLOTH-CONTACT-FINISH] stage=installed profile=%s nativeConsumers=12 producerSignatures=verified passes=%d scope=owned-long-panel-Move-edges originalDistancePasses=2 workerHook=0 globalFrequencyChange=0",
-      s_clothInputBoundary163?"1.6.3":"legacy",eiem_cloth_finish::Passes);
+      s_clothInputBoundary1125?"2026-11":s_clothInputBoundary163?"1.6.3":"legacy",eiem_cloth_finish::Passes);
   return true;
 }

@@ -39,8 +39,8 @@ struct SMCActorState {
   int frame = 0;
   volatile bool driving = false;
   bool smcOwnershipVerified = false;
-  SMCMorphBoneEntry capturedExpression[SMC_MAX_BIGLIST]{};
-  int capturedLen = 0;
+  std::vector<SMCMorphBoneEntry> capturedExpression;
+  void *capturedBuffer = nullptr;
   bool bigListCaptured = false;
   SMCFaceBone faceBones[SMC_MAX_FACE_BONES]{};
   SMCFaceBone faceRestPose[SMC_MAX_FACE_BONES]{};
@@ -211,7 +211,7 @@ static SMCActorState *SMCFindActor(void *core);
 #define s_driving (s_activeSMC->driving)
 #define s_smcOwnershipVerified (s_activeSMC->smcOwnershipVerified)
 #define s_capturedExpression (s_activeSMC->capturedExpression)
-#define s_capturedLen (s_activeSMC->capturedLen)
+#define s_capturedLen (static_cast<int>(s_activeSMC->capturedExpression.size()))
 #define s_bigListCaptured (s_activeSMC->bigListCaptured)
 #define s_faceBones (s_activeSMC->faceBones)
 #define s_faceRestPose (s_activeSMC->faceRestPose)

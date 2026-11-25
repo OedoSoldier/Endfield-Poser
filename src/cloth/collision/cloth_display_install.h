@@ -63,8 +63,8 @@ static bool ClothDisplayBurstVerified(HMODULE module) {
   for(size_t n=0;n<dir.Size/sizeof(RUNTIME_FUNCTION);++n) {
     const auto &e=entries[n];if(e.BeginAddress>=e.EndAddress||e.EndAddress>size)return false;
     for(unsigned k=0;k<6;++k) {
-      const auto &current=poser_cloth_optional::DisplayBurst163[k];
-      const ClothLayerCode expected=s_clothInputBoundary163?ClothLayerCode{current.bytes,current.hash}:bodies[k];
+      const auto &current=s_clothInputBoundary1125?poser_cloth_optional::DisplayBurst1125[k]:poser_cloth_optional::DisplayBurst163[k];
+      const ClothLayerCode expected=(s_clothInputBoundary1125||s_clothInputBoundary163)?ClothLayerCode{current.bytes,current.hash}:bodies[k];
       if(e.EndAddress-e.BeginAddress==expected.bytes&&ClothLayerBody(module,base+e.BeginAddress,expected))++matches[k];
     }
   }
@@ -86,13 +86,16 @@ static bool ClothInstallDisplayMainThread() {
   s.producer=producer?(unsigned char*)((MInfo*)producer)->mp:nullptr;
   s.target=setter?(unsigned char*)((MInfo*)setter)->mp:nullptr;
   bool codeVerified=false;
-  if(s_clothInputBoundary163) {
+  if(s_clothInputBoundary1125 || s_clothInputBoundary163) {
     using namespace poser_cloth_optional;
-    codeVerified=poser_cloth_boundary::MappedMethodProfile(hGA,s.producer,DisplayProducer163)&&
-        poser_cloth_boundary::MappedMethodProfile(hGA,kernel?(unsigned char*)((MInfo*)kernel)->mp:nullptr,DisplayKernel163)&&
+    const auto &producerProfile=s_clothInputBoundary1125?DisplayProducer1125:DisplayProducer163;
+    const auto &kernelProfile=s_clothInputBoundary1125?DisplayKernel1125:DisplayKernel163;
+    const auto call=s_clothInputBoundary1125?DisplayCounterCall1125:DisplayCounterCall163;
+    codeVerified=poser_cloth_boundary::MappedMethodProfile(hGA,s.producer,producerProfile)&&
+        poser_cloth_boundary::MappedMethodProfile(hGA,kernel?(unsigned char*)((MInfo*)kernel)->mp:nullptr,kernelProfile)&&
         ClothContactRequireCode("display-counter-setter",s.target,7,0xef625ca43c061f4cULL)&&
-        poser_cloth_boundary::DirectCallAt(s.producer,DisplayCounterCall163+5,DisplayCounterCall163,s.target);
-    if(codeVerified)s_clothDisplayCallsite=s.producer+DisplayCounterCall163+5;
+        poser_cloth_boundary::DirectCallAt(s.producer,call+5,call,s.target);
+    if(codeVerified)s_clothDisplayCallsite=s.producer+call+5;
   } else codeVerified=ClothContactRequireCode("display-producer",s.producer,1081,0xb587141af3068e66ULL)&&
       ClothContactRequireCode("display-counter-setter",s.target,7,0xef625ca43c061f4cULL)&&
       ClothContactRequireCode("display-managed-kernel",kernel?((MInfo*)kernel)->mp:nullptr,1621,0x51880b9d60834732ULL)&&
@@ -107,6 +110,6 @@ static bool ClothInstallDisplayMainThread() {
   }
   s.patched=eiem_cloth_input::Fingerprint(s.target,7);
   Log("[CLOTH-DISPLAY] stage=installed profile=%s scope=exact-main-thread-producer nativeConsumers=6 managedSignature=verified borrowedView=until-master-complete workerHook=0 schedulerChanges=0 sourceArrayWrites=0",
-      s_clothInputBoundary163?"1.6.3":"legacy");
+      s_clothInputBoundary1125?"2026-11":s_clothInputBoundary163?"1.6.3":"legacy");
   return true;
 }

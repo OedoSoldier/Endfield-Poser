@@ -3,6 +3,17 @@
 #include <cstring>
 #include <cstdio>
 namespace eiem_cloth_asset {
+inline int SourceCoatColliderAlias(const ClothBoneProfile &p,int index) {
+  // This source's left jacket lists the very same pelvis ColliderComponent
+  // twice (slots 5 and 12). Preserve its source order and restoration slots;
+  // matching names alone must never authorize a duplicate live object.
+  if(index!=12||!p.runtimeGenerated||!p.prefabSha||!p.component||!p.colliders||p.colliderCount!=13||
+      strcmp(p.prefabSha,"e9127b5b19a416823ea65891c84f078d6d0e92c45bc3625ef447e0e40c00c202")||
+      strcmp(p.component,"MC_sweetpie_jacket_L"))return -1;
+  for(int n:{5,12}){const auto &c=p.colliders[n];if(!c.name||!c.parent||c.parentIsAnimator||
+      strcmp(c.name,"Bip001_Pelvis")||strcmp(c.parent,"Bip001"))return -1;}
+  return 5;
+}
 inline bool SourceMingheCoat(const char *sha,const char *component) {
   return sha&&component&&!strcmp(sha,"9c582aa500cb1f8252e2d0833199ba45ef11fa897b19b3df123dcd769827b59c")&&
       !strcmp(component,"MC_minghe_Skirt");

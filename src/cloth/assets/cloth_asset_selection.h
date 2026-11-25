@@ -4,6 +4,7 @@
 #include "cloth_asset_dense.h"
 
 namespace eiem_cloth_asset {
+constexpr const char *SweetpiePrefab="e9127b5b19a416823ea65891c84f078d6d0e92c45bc3625ef447e0e40c00c202";
 struct SourceBranch {
   std::vector<int64_t> ids,ignored,excluded,prebuildOmitted;
   std::map<int64_t,int> columns;
@@ -85,6 +86,23 @@ inline std::map<int64_t,int> SourceSelection(Scene &s,int64_t component,const Va
   else for(const auto &f:raw.List())flags.push_back(int(f.kind==Value::Integer?f.Int():f.At("Value").Int()));
   const auto inverse=Inverse(s.World(s.TransformId(component)));
   for(auto id:ids){world.push_back(Transform(s.World(id),{0,0,0}));local.push_back(Transform(inverse,world.back()));}
+  if(s.file.sha==SweetpiePrefab&&
+      (s.Name(component)=="MC_sweetpie_jacket_L"||s.Name(component)=="MC_sweetpie_jacket_R")) {
+    // The jacket's unskinned collider leaves moved after selection authoring.
+    // Native nearest-sample selection still gives them Move; the cloth points
+    // themselves retain exact samples. Keep helpers out of the simulated sheet.
+    const bool left=s.Name(component)=="MC_sweetpie_jacket_L";
+    Need(ids.size()==size_t(left?20:16)&&samples.size()==size_t(left?18:16)&&flags.size()==samples.size(),"sweetpie-jacket-selection-count");
+    const double radius=selection.At("maxConnectionDistance").Number();std::map<int64_t,int> out;
+    for(size_t n=0;n<ids.size();++n){double distance=1e100;int attribute=-1;
+      for(size_t k=0;k<samples.size();++k){const double d=Distance(samples[k],local[n]);
+        if(d<distance-1e-6){distance=d;attribute=flags[k];}
+        else if(std::abs(d-distance)<=1e-6)Need(attribute==flags[k],"sweetpie-jacket-selection-ambiguous");}
+      const auto &name=s.Name(ids[n]);const bool helper=name.size()>9&&name.compare(name.size()-9,9,"_collider")==0;
+      Need(distance<radius&&distance<(helper?.04:.001),"sweetpie-jacket-selection-offset");
+      Need(attribute==(s.Name(s.Parent(ids[n]))=="Bip001_Spine2"?1:2),"sweetpie-jacket-selection-attribute");out[ids[n]]=attribute;
+    }return out;
+  }
   if(s.file.sha=="e35214f71bf8886bf2d1ffe31d65e38893d5de2f866f068443b0de0685377f96"&&
       (s.Name(component)=="MC_jsspsi_sleeve_L"||s.Name(component)=="MC_jsspsi_sleeve_R")) {
     Need(ids.size()==7&&samples.size()==7&&flags.size()==7,"si-sleeve-selection-count");std::map<int64_t,int> out;
@@ -170,6 +188,10 @@ inline std::set<int64_t> PassiveSourceLeaves(Scene &s,const std::vector<int64_t>
       const auto &v=s.file.Get(object);verified&=s.file.Class(object)==114&&v.Has("center")&&v.Has("size");}
     if(!verified||!transform)continue;
     const auto &name=s.Name(id);
+    if(s.file.sha==SweetpiePrefab&&
+        name.find("cloth_")==0&&name.find("_jacket_")!=std::string::npos&&
+        name.size()>9&&name.compare(name.size()-9,9,"_collider")==0&&
+        name.substr(0,name.size()-9)==s.Name(parent)){passive.insert(id);continue;}
     // The six offset contact handles on Minghe's back coat are not cloth
     // strands. Keep their local offsets and let the owning coat bone carry
     // them; treating them as extra moving branches joins unrelated surfaces.

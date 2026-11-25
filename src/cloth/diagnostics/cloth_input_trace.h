@@ -67,6 +67,7 @@ constexpr size_t ClothInputAuditedBytes = 809;
 static size_t s_clothInputAuditedBytes = ClothInputAuditedBytes;
 static thread_local unsigned s_clothInputUpdateDepth = 0;
 static bool s_clothInputBoundary163 = false;
+static bool s_clothInputBoundary1125 = false;
 static thread_local poser_cloth_boundary::Context s_clothInputBoundaryContext;
 static void *s_clothInputEarlyTeamCallsite=nullptr,*s_clothInputBoneCallsite=nullptr;
 static void *s_clothInputStaticCloth=nullptr,*s_clothInputStaticTeam=nullptr,*s_clothInputStaticBone=nullptr;

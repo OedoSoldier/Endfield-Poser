@@ -90,6 +90,62 @@ static bool ClothInstallInputBoundary163(void *update,void *read,void *write,voi
   Log("[CLOTH-INPUT-HOOK] installed=1 profile=1.6.3-inline-valid exactCaller=1 identity=Cloth-Team-Bone sameUpdate=1 reentrant=0 forcedComplete=0");
   return true;
 }
+static bool ClothInstallInputBoundary1125(void *update,void *read,void *write,void *valid,void *transforms,void **asms,size_t count) {
+  using namespace poser_cloth_boundary;
+  auto teamClass=FindClass("BeyondDynamicBone","TeamManager",asms,count);
+  auto teamMethod=ClothMethod(teamClass,"AlwaysTeamUpdate","System.Void");
+  auto getTeam=ClothMethod(s_clothInputManagerClass,"get_Team","BeyondDynamicBone.TeamManager",nullptr,true);
+  auto getBone=ClothMethod(s_clothInputManagerClass,"get_Bone","BeyondDynamicBone.DynamicBoneTransformManager",nullptr,true);
+  if(!ClothInputCodeRanges(update,Update1125)||!ClothInputCodeRanges(read,Read1125)||
+      !ClothInputCodeRanges(write,Write1125)||!ClothInputCodeRanges(valid,Valid1125)||
+      !ClothInputCodeRanges(teamMethod,TeamUpdate1125)||!ClothInputCodeRanges(getTeam,GetTeam1125)||
+      !ClothInputCodeRanges(getBone,GetBone1125))return ClothInput163Reject("native-1125-boundary-code-unconfirmed");
+  auto readByteConstant=[&](const char *name) {
+    void *field=CollisionFieldInfo(transforms,name,"System.Byte");
+    if(!field||(il2cpp_field_get_flags(field)&0x50)!=0x50)return -1;
+    unsigned char value[8]{};il2cpp_field_static_get_value(field,value);return int(value[0]);
+  };
+  const int readMask=readByteConstant("Flag_Read"),enableMask=readByteConstant("Flag_Enable");
+  if(readMask<=0||enableMask<=0||(readMask&enableMask))
+    return ClothInput163Reject("native-1125-transform-flags-unconfirmed");
+  auto code=(unsigned char*)((MInfo*)update)->mp;
+  auto validCode=(unsigned char*)((MInfo*)valid)->mp;
+  auto teamCode=(unsigned char*)((MInfo*)teamMethod)->mp;
+  const size_t bytes=Update1125[0].bytes;
+  // Unlike 1.6.3, the second get_Team is before completion. Observe the direct
+  // ValidPosition call after the game's completed Read/Write jobs instead.
+  if(!DirectCallAt(code,bytes,BeforeTeam1125,teamCode)||
+      !DirectCallAt(code,bytes,CompletedValid1125,validCode)||
+      !DirectCallAt(code,bytes,0x2af,((MInfo*)read)->mp)||
+      !DirectCallAt(code,bytes,0x6b8,((MInfo*)read)->mp)||
+      !DirectCallAt(code,bytes,0xf3,((MInfo*)getTeam)->mp)||
+      !DirectCallAt(code,bytes,0x119,((MInfo*)getBone)->mp)||
+      DirectCallCount(code,bytes,teamCode)!=1||DirectCallCount(code,bytes,validCode)!=1||
+      DirectCallCount(code,bytes,((MInfo*)read)->mp)!=2||DirectCallCount(code,bytes,((MInfo*)write)->mp)!=0||
+      DirectCallCount(code,bytes,((MInfo*)getTeam)->mp)!=2||DirectCallCount(code,bytes,((MInfo*)getBone)->mp)!=1||
+      !RequiredChain1125Certified)return ClothInput163Reject("native-1125-boundary-contract-unconfirmed");
+  void *targets[]{code,validCode,teamCode};
+  void *detours[]{(void*)ClothInputNativeUpdate,(void*)ClothInputNativeValid,(void*)ClothSurfaceNativeTeamUpdate};
+  void **originals[]{(void**)&s_clothInputOriginalUpdate,(void**)&s_clothInputOriginalValid,(void**)&s_clothSurfaceOriginalTeamUpdate};
+  const HookFunctions hooks{
+      [](void *target,void *detour,void **original){return int(MH_CreateHook(target,detour,original));},
+      [](void *target){return int(MH_QueueEnableHook(target));},[](){return int(MH_ApplyQueued());},
+      [](void *target){return int(MH_DisableHook(target));},[](void *target){return int(MH_RemoveHook(target));}};
+  unsigned rollbackFailed=0;
+  if(!InstallHooks(targets,detours,originals,std::size(targets),hooks,rollbackFailed)) {
+    if(rollbackFailed)Log("[CLOTH-INPUT-HOOK] installFailed=1 rollbackFailed=%u retainedTrampolines=1 observationEnabled=0",rollbackFailed);
+    return ClothInput163Reject("native-1125-boundary-hook-install-failed");
+  }
+  s_clothInputReadMask=readMask;s_clothInputEnableMask=enableMask;
+  s_clothInputUpdateCode=code;s_clothInputAuditedBytes=bytes;
+  s_clothInputCallsite=code+CompletedValid1125+5;
+  s_clothInputPatchedFingerprint=eiem_cloth_input::Fingerprint(code,bytes);
+  s_clothSurfaceTeamCallsite=code+BeforeTeam1125+5;s_clothSurfaceTeamCode=teamCode;
+  s_clothSurfaceTeamFingerprint=eiem_cloth_input::Fingerprint(teamCode,128);
+  s_clothInputBoundary1125=true;s_clothInputHooks=true;s_clothSurfaceHook=true;
+  Log("[CLOTH-INPUT-HOOK] installed=1 profile=1125-direct-valid exactCaller=1 nativeCompletedInput=1 reentrant=0 forcedComplete=0");
+  return true;
+}
 static void ClothInstallInputTraceMainThread() {
   static bool attempted = false;
   if (attempted || !ClothOnMainThread() || (!s_cloth.active&&!ClothPrefetchNeedsHooks())) return;
@@ -114,6 +170,9 @@ static void ClothInstallInputTraceMainThread() {
   }
   if(ClothInputCodeRanges(update,poser_cloth_boundary::Update163)) {
     ClothInstallInputBoundary163(update,read,write,valid,transforms,asms,count);return;
+  }
+  if(ClothInputCodeRanges(update,poser_cloth_boundary::Update1125)) {
+    ClothInstallInputBoundary1125(update,read,write,valid,transforms,asms,count);return;
   }
   const struct { void *method; size_t bytes; uint64_t hash; } checks[] = {
       {update, ClothInputAuditedBytes, 0x193870b55e754196ULL},

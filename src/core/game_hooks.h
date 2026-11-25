@@ -511,20 +511,32 @@ static void ConsumeCapturedCharacter() {
   SetCharacterEntity(entity);
 }
 
-// Preserve IL2CPP's hidden MethodInfo argument, and stop pose maintenance while
-// the game is tearing down/replacing the model inside SetMainCharacter.
-using SetMainCharacterFn = void (*)(void *, void *, bool, void *);
+// SetLeaderReason is an Int32 enum, not a Boolean. Preserve the game's reason
+// and hidden MethodInfo while suspending pose writes during model replacement.
+using SetMainCharacterFn = void (*)(void *, void *, int32_t, void *);
 static SetMainCharacterFn g_originalSetMainCharacter = nullptr;
-static void HookedSetMainCharacter(void *self, void *entity, bool flag, void *method) {
+static void HookedSetMainCharacter(void *self, void *entity, int32_t reason, void *method) {
   InterlockedCompareExchange(&g_gameLogicThreadId, LONG(GetCurrentThreadId()), 0);
   InterlockedIncrement(&g_characterSwitchDepth);
   __try {
     if (g_originalSetMainCharacter)
-      g_originalSetMainCharacter(self, entity, flag, method);
+      g_originalSetMainCharacter(self, entity, reason, method);
     if (!RuntimeClosing()) QueueCharacterSelection(self, entity);
   } __finally {
     InterlockedDecrement(&g_characterSwitchDepth);
   }
+}
+
+static bool SetMainCharacterSignature(void *method) {
+  if (!method || (il2cpp_method_get_flags(method, nullptr) & 0x10) ||
+      il2cpp_method_get_param_count(method) != 2 ||
+      !MetadataClassIs(il2cpp_method_get_return_type(method), "System", "Void") ||
+      !MetadataClassIs(il2cpp_method_get_param(method, 0), "Beyond.Gameplay.Core", "Entity") ||
+      !MetadataClassIs(il2cpp_method_get_param(method, 1), "Beyond.Gameplay", "SetLeaderReason"))
+    return false;
+  uint32_t alignment = 0;
+  return il2cpp_class_value_size(il2cpp_class_from_type(il2cpp_method_get_param(method, 1)),
+                                 &alignment) == sizeof(int32_t);
 }
 
 // 安装 PlayerController.SetMainCharacter hook（IL2CPP Resolve() 之后调用）
@@ -555,8 +567,8 @@ static void InstallSetMainCharacterHook() {
       Log("[WARN] PlayerController entity field unresolved, fallback 0x70");
 
     void *setMainChar = FindMethod(pcClass, "SetMainCharacter", 2);
-    if (!setMainChar) {
-      Log("[POSER] WARN: SetMainCharacter not found");
+    if (!SetMainCharacterSignature(setMainChar)) {
+      Log("[POSER] WARN: SetMainCharacter(Entity, SetLeaderReason) signature mismatch");
       return;
     }
 

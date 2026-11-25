@@ -150,7 +150,19 @@ def normalize(name):
     return name.translate(str.maketrans('０１２３４５６７８９ＩＫ','0123456789IK'))
 
 
-def game_bone(name):
+def game_bone(name, model=''):
+    # Sweetpie's authored labels run from the mouth corner inward (native
+    # lip 2..8), and include a second row of eyelid creases. The older four-
+    # control faces use the opposite numbering; keep their mapping unchanged.
+    if model.lower()=='sweetpie':
+        m=re.fullmatch('([左右])嘴([上下])([1-7])',name)
+        if m:return 'lip'+('L' if m[1]=='左' else 'R')+('up' if m[2]=='上' else 'dn')+str(int(m[3])+1)+'Joint'
+        m=re.fullmatch('([左右])二重([1-6])',name)
+        if m:return 'browLine'+('Lf' if m[1]=='左' else 'Rt')+('Up' if int(m[2])>3 else '')+f'{(int(m[2])-1)%3+1:02}Joint'
+        m=re.fullmatch('([左右])眼线([1-3])',name)
+        if m:return 'eyeLine'+('Lf' if m[1]=='左' else 'Rt')+f'{int(m[2]):02}Joint'
+        m=re.fullmatch('([左右])睫([12])',name)
+        if m:return 'eye'+('Lf' if m[1]=='左' else 'Rt')+'Eyelash_'+('a' if m[2]=='1' else 'b')+'_01_jnt'
     m = re.fullmatch('([左右])眉毛([1-5])',name)
     if m: return 'brow'+('Lf' if m[1]=='左' else 'Rt')+f'{int(m[2]):02}Joint'
     m = re.fullmatch('([左右])二重([1-3])',name)
@@ -188,7 +200,7 @@ def prepare_mouth_line_retraction(model):
     if model.get('mouth_line_retraction'):
         return model, model['mouth_line_retraction']
     report={'method':'bounded_mouth_line_v1','shapes':[]}
-    names=[game_bone(b['name']).lower() for b in model['bones']]
+    names=[game_bone(b['name'],model.get('name','')).lower() for b in model['bones']]
     if names.count('linejoint')!=1:return model,report
     line=names.index('linejoint');indices=model['indices'];weights=model['weights']
     lw=np.sum(np.where(indices==line,weights,0),axis=1);mask=lw>1e-7
@@ -227,14 +239,20 @@ def prepare_mouth_line_retraction(model):
         direction=float(np.sum(centered*(line_target-line_target.mean(0)))/max(np.sum(centered*centered),1e-20))
         collapsed=extent[0]<=span*.4 and np.linalg.norm(extent)<=span*.45 and \
             direction<=.05 and np.linalg.norm(line_target.mean(0)-vertices[mask].mean(0))<=span*2
-        if not (inward or collapsed):
+        # Partial collapse can retain half of the line's width, while moving
+        # every line vertex inside the lips. Ordinary narrowing has no such
+        # inward separation and must keep its authored shape.
+        inset_collapse=extent[0]<=span*.55 and np.linalg.norm(extent)<=span*.6 and \
+            direction<=.55 and np.min(surplus[:,2])>=span*.08 and \
+            np.median(surplus[:,2])>=span*.1 and np.linalg.norm(line_target.mean(0)-vertices[mask].mean(0))<=span*2
+        if not (inward or collapsed or inset_collapse):
             continue
         full[mask]=full[nearest]+lw[mask,None]*np.array([0.,0.,control_depth])
         morph['ids']=np.union1d(morph['ids'],np.flatnonzero(mask))
         morph['offsets']=full[morph['ids']]
         report['shapes'].append({'name':normalize(morph['name']),
                                 'vertices':int(mask.sum()),'control_depth':control_depth,
-                                'source_hide':'collapse' if collapsed else 'inward'})
+                                'source_hide':'collapse' if collapsed else 'inset-collapse' if inset_collapse else 'inward'})
     if not report['shapes']:return model,report
     result['mouth_line_retraction']=report
     return result,report
@@ -250,10 +268,10 @@ def recover_teeth_weights(model, selected):
     These weights are only used by the offline fit, never applied to the model.
     """
     vertices=model['vertices'];indices=model['indices'].copy();weights=model['weights'].copy()
-    teeth=[i for i in selected if game_bone(model['bones'][i]['name']).lower() in
+    teeth=[i for i in selected if game_bone(model['bones'][i]['name'],model.get('name','')).lower() in
            ('facemdtoothupjoint','facemdtoothdnjoint','line_toothjoint')]
     missing=[i for i in teeth if not np.any((indices==i)&(weights>1e-7))]
-    report={'recovered':[],'unresolved':[game_bone(model['bones'][i]['name']) for i in missing]}
+    report={'recovered':[],'unresolved':[game_bone(model['bones'][i]['name'],model.get('name','')) for i in missing]}
     if not missing or 'faces' not in model:return indices,weights,report
     oral=[]
     for mat in model.get('materials',[]):
@@ -302,7 +320,7 @@ def recover_teeth_weights(model, selected):
         if list(proposed.values()).count(j)!=1:continue
         group=components[j][0];indices[group]=-1;weights[group]=0
         indices[group,0]=i;weights[group,0]=1
-        name=game_bone(model['bones'][i]['name'])
+        name=game_bone(model['bones'][i]['name'],model.get('name',''))
         report['recovered'].append({'bone':name,'vertices':len(group)})
         report['unresolved'].remove(name)
     return indices,weights,report
@@ -331,7 +349,7 @@ def refit_mouth(model, profile, *, vertex_importance=None, fit_jaw=False):
     result=copy.deepcopy(profile)
     targets={}
     for i,b in enumerate(model['bones']):
-        name=game_bone(b['name']).lower()
+        name=game_bone(b['name'],model.get('name','')).lower()
         if name not in targets or name==b['name'].lower():targets[name]=i
     names=[b['name'].lower() for b in profile['bones']]
     if len(set(names))!=len(names) or any(n not in targets for n in names):
@@ -426,7 +444,7 @@ def refit_teeth(model, profile):
         raise ValueError('Tooth refit requires the exact source PMX')
     result=copy.deepcopy(profile);targets={}
     for i,b in enumerate(model['bones']):
-        name=game_bone(b['name']).lower()
+        name=game_bone(b['name'],model.get('name','')).lower()
         if name not in targets or name==b['name'].lower():targets[name]=i
     names=[b['name'].lower() for b in profile['bones']]
     if len(set(names))!=len(names) or any(n not in targets for n in names):
@@ -507,7 +525,7 @@ def prune_unused_face_anchors(model, profile):
         raise ValueError('Face anchor pruning requires the exact source PMX')
     targets={}
     for i,bone in enumerate(model['bones']):
-        name=game_bone(bone['name']).lower()
+        name=game_bone(bone['name'],model.get('name','')).lower()
         if name not in targets or name==bone['name'].lower():targets[name]=i
     names=[bone['name'].lower() for bone in profile['bones']]
     if len(set(names))!=len(names) or any(name not in targets for name in names):
@@ -557,7 +575,7 @@ def compile_profile(model, label):
     # Exact original names take precedence over additional MMD control bones.
     targets={}
     for i,b in enumerate(model['bones']):
-        name=game_bone(b['name']); key=name.lower()
+        name=game_bone(b['name'],model['name']); key=name.lower()
         if region(name) and (key not in targets or name==b['name']): targets[key]=i
     selected=list(targets.values()); names=list(targets)
     if len(selected)>256: raise ValueError('Too many face bones')
@@ -751,7 +769,7 @@ def refit_scaled_shapes(model, profile, reference, shape_names):
     axis_sign=np.diag([np.linalg.det(basis),1.,1.])
     source_bones={}
     for i,bone in enumerate(model['bones']):
-        key=game_bone(bone['name']).lower()
+        key=game_bone(bone['name'],model['name']).lower()
         if key not in source_bones or key==bone['name'].lower():source_bones[key]=i
     source_vertices=model['vertices']
     pmx_names={normalize(m['name']):i for i,m in enumerate(model['morphs'])}

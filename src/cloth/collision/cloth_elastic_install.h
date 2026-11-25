@@ -1,6 +1,6 @@
 #pragma once
 struct ClothElasticInstallState {
-  bool attempted=false,profile163=false;
+  bool attempted=false,profile163=false,profile1125=false;
   unsigned char *producer=nullptr,*target=nullptr;
   uint64_t installedHash=0;
 } static s_clothElasticInstall;
@@ -9,9 +9,10 @@ static bool ClothInstallElasticMainThread() {
   auto &state=s_clothElasticInstall;auto &attempted=state.attempted;
   auto &producer=state.producer;auto &target=state.target;auto &installedHash=state.installedHash;
   if(!ClothOnMainThread() || !s_clothSurfaceAtBoundary || s_clothInputUpdateDepth!=1)return false;
-  if(s_clothTetherConvert)return state.profile163?
-      MappedMethodProfile(hGA,producer,ElasticProducer163)&&
-      MappedCodeRange(hGA,target,{0,42,installedHash})&&MappedCodeRange(hGA,target,ElasticConvertRanges163[1]):
+  if(s_clothTetherConvert)return (state.profile163||state.profile1125)?
+      MappedMethodProfile(hGA,producer,state.profile1125?ElasticProducer1125:ElasticProducer163)&&
+      MappedCodeRange(hGA,target,{0,42,installedHash})&&
+      MappedCodeRange(hGA,target,state.profile1125?ElasticConvertRanges1125[1]:ElasticConvertRanges163[1]):
       ClothContactCode(producer,617,0x1126293357658d32ULL)&&ClothContactCode(target,42,installedHash);
   if(attempted)return false;attempted=true;
   const double started=ClothInstallClockMs();
@@ -30,10 +31,13 @@ static bool ClothInstallElasticMainThread() {
       ClothContactOffset(cls,"stretchLimit","System.Single",8,4,4) &&
       cc && CollisionEnumValue(cc,"BoneCloth",s_clothTetherBoneType) && s_clothTetherBoneType>=0 && s_clothTetherBoneType<=1;
   bool code=false;
-  if(s_clothInputBoundary163) {
-    code=MappedMethodProfile(hGA,producer,ElasticProducer163)&&MappedMethodProfile(hGA,target,ElasticConvert163)&&
-        DirectCallAt(producer,617,ElasticCall163,target)&&DirectCallCount(producer,617,target)==1;
-    if(code)s_clothTetherCallsite=producer+ElasticCall163+5;
+  if(s_clothInputBoundary163||s_clothInputBoundary1125) {
+    const auto &p=s_clothInputBoundary1125?ElasticProducer1125:ElasticProducer163;
+    const auto &t=s_clothInputBoundary1125?ElasticConvert1125:ElasticConvert163;
+    const size_t call=s_clothInputBoundary1125?ElasticCall1125:ElasticCall163;
+    code=MappedMethodProfile(hGA,producer,p)&&MappedMethodProfile(hGA,target,t)&&
+        DirectCallAt(producer,617,call,target)&&DirectCallCount(producer,617,target)==1;
+    if(code)s_clothTetherCallsite=producer+call+5;
   } else code=ClothContactRequireCode("elastic-GetClothParameters",producer,617,0x1126293357658d32ULL)&&
       ClothContactRequireCode("elastic-TetherConvert",target,42,0xaa4d91b218cd4585ULL)&&
       ClothContactUniqueCall(producer,617,42,0xaa4d91b218cd4585ULL,"elastic-tether-call",&s_clothTetherCallsite)==target;
@@ -53,6 +57,7 @@ static bool ClothInstallElasticMainThread() {
   }
   const double createdAt=ClothInstallClockMs();
   state.profile163=s_clothInputBoundary163;
+  state.profile1125=s_clothInputBoundary1125;
   installedHash=eiem_cloth_input::Fingerprint(target,42);
   Log("[CLOTH-INSTALL-COST] adapter=elastic validateMs=%g createMs=%g enableMs=%g enableBatches=1",
       validated-started,createdAt-validated,ClothInstallClockMs()-createdAt);

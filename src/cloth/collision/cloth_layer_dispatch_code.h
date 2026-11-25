@@ -44,8 +44,8 @@ static bool ClothLayerBurstLocate(HMODULE module,unsigned char *(&found)[8]) {
     const auto &e=entries[n];
     if(e.BeginAddress>=e.EndAddress || e.EndAddress>size)return false;
     for(unsigned k=pass*4;k<pass*4+4;++k) {
-      const auto &current=poser_cloth_optional::LayerBurst163[k];
-      const ClothLayerCode expected=s_clothInputBoundary163?ClothLayerCode{current.bytes,current.hash}:ClothLayerBurstBodies[k];
+      const auto &current=s_clothInputBoundary1125?poser_cloth_optional::LayerBurst1125[k]:poser_cloth_optional::LayerBurst163[k];
+      const ClothLayerCode expected=(s_clothInputBoundary1125||s_clothInputBoundary163)?ClothLayerCode{current.bytes,current.hash}:ClothLayerBurstBodies[k];
       if(e.EndAddress-e.BeginAddress!=expected.bytes || !ClothLayerBody(module,base+e.BeginAddress,expected))continue;
       if(pass && (!found[k-4] || !ClothLayerCalls(base+e.BeginAddress,expected.bytes,found[k-4])))continue;
       if(found[k])return false;found[k]=base+e.BeginAddress;

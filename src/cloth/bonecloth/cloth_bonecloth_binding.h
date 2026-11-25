@@ -455,6 +455,11 @@ static bool ClothBoneColliderSourceMatch(const ClothBoneProfile &p,const ClothBo
   }
   return !strcmp(parentName,asset.parent);
 }
+static bool ClothBoneColliderAliasMatch(const ClothBoneRuntime &s,int index,void *collider) {
+  if(!s.profile||!collider||index<0||s.colliders.size()!=size_t(index))return false;
+  int first=-1;for(int n=0;n<index;++n)if(ClothTarget(s.colliders[n])==collider){first=n;break;}
+  return first==eiem_cloth_asset::SourceCoatColliderAlias(*s.profile,index);
+}
 static bool ClothBoneCaptureColliders(void *process,void *list,int team) {
   auto &s=ClothBoneState(); const auto &p=*s.profile;
   const auto fail=[&](const char *reason,int collider=-1,int peer=-1){
@@ -477,7 +482,9 @@ static bool ClothBoneCaptureColliders(void *process,void *list,int team) {
           p.component,n,p.colliders[n].parent,p.colliders[n].name,parent,name,p.colliders[n].parentIsAnimator);
       return fail("source-collider-name-parent-or-owner",n);
     }
-    for(auto &old:s.colliders) if(ClothTarget(old)==c) return fail("duplicate-source-collider",n);
+    if(!ClothBoneColliderAliasMatch(s,n,c))return fail("source-collider-alias-mismatch",n);
+    const int alias=eiem_cloth_asset::SourceCoatColliderAlias(p,n);
+    if(alias>=0)Log("[CLOTH-BONE-COLLIDER-ALIAS] component=%s collider=%d originalSlot=%d sameNativeObject=1 sourceListPreserved=1",p.component,n,alias);
     auto ref=ClothProtect(c); if(!ref.handle) return fail("collider-handle",n); s.colliders.push_back(ref);
     auto tr=ClothProtect(t),pr=ClothProtect(CollisionParent(t));
     s.colliderTransforms.push_back(tr);s.colliderParents.push_back(pr);

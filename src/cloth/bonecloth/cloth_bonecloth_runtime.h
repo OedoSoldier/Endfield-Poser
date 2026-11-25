@@ -1,6 +1,6 @@
 #pragma once
 #include "math/cloth_preparation_budget.h"
-#include "../native/cloth_native_profile.h"
+#include "../native/cloth_native_profile_1125.h"
 #include "../native/cloth_contact_native_profile.h"
 #include "../native/cloth_optional_native_profile.h"
 #include <chrono>
@@ -305,10 +305,11 @@ static bool ClothBoneMethodFingerprint(const char *type,const char *name,const c
   auto cls=SurfaceClass("BeyondDynamicBone",type);
   auto method=isStatic?(second?nullptr:ClothMethod(cls,name,result,argument,true)):SurfaceMethod(cls,name,result,argument,second);
   auto code=method ? *reinterpret_cast<const unsigned char **>(method):nullptr;
-  if(s_clothInputBoundary163) {
-    const auto *profile=poser_cloth_boundary::FindRequiredMethod163(type,name);
+  if(s_clothInputBoundary163||s_clothInputBoundary1125) {
+    const auto *profile=s_clothInputBoundary1125?poser_cloth_boundary::FindRequiredMethod1125(type,name):
+        poser_cloth_boundary::FindRequiredMethod163(type,name);
     const bool ok=profile&&poser_cloth_boundary::MappedMethodProfile(hGA,code,*profile);
-    if(!ok)Log("[CLOTH-BONE-ABI] profile=1.6.3 type=%s method=%s status=unconfirmed",type,name);
+    if(!ok)Log("[CLOTH-BONE-ABI] profile=%s type=%s method=%s status=unconfirmed",s_clothInputBoundary1125?"1125":"1.6.3",type,name);
     return ok;
   }
   const auto actual=code ? eiem_cloth_input::Fingerprint(code,bytes):0;
@@ -323,10 +324,11 @@ static bool ClothBoneCaptureABI() {
   if(!method || !SurfaceMethod(SurfaceClass("BeyondDynamicBone","BeyondBoneCloth"),"DisposeTeleportResources","System.Void") ||
       !SurfaceMethod(SurfaceClass("BeyondDynamicBone","ClothProcess"),"Dispose","System.Void") ||
       !CollisionEnumValue(SurfaceClass("Unity.Jobs.LowLevel.Unsafe","ScheduleMode"),"Run",run) || run!=0) return false;
-  if(s_clothInputBoundary163)for(const auto &profile:poser_cloth_boundary::RequiredSupport163) {
+  if(s_clothInputBoundary163||s_clothInputBoundary1125)for(const auto &profile:
+      s_clothInputBoundary1125?poser_cloth_boundary::RequiredSupport1125:poser_cloth_boundary::RequiredSupport163) {
     auto code=reinterpret_cast<const unsigned char*>(uintptr_t(hGA)+profile.rva);
     if(!poser_cloth_boundary::MappedMethodProfile(hGA,code,profile)) {
-      Log("[CLOTH-BONE-ABI] profile=1.6.3 producer=%s status=unconfirmed",profile.name);return false;
+      Log("[CLOTH-BONE-ABI] profile=%s producer=%s status=unconfirmed",s_clothInputBoundary1125?"1125":"1.6.3",profile.name);return false;
     }
   }
   return ClothBoneMethodFingerprint("VirtualMesh","ImportBoneType","System.Void","BeyondDynamicBone.RenderSetupData",12628,0x229ddc69cf1e43d9ULL,"System.Int32[]") &&
@@ -1780,9 +1782,16 @@ static constexpr unsigned ClothNativeAdapterMask163() {
       (poser_cloth_optional::DisplayAdapter163Reviewed?8u:0u) |
       (poser_cloth_optional::FinishAdapter163Reviewed?16u:0u);
 }
+static unsigned ClothNativeAdapterMask() {
+  if(!s_clothInputBoundary1125)return ClothNativeAdapterMask163();
+  return 4u | (poser_cloth_contact_native::ContactAdapter1125Reviewed?1u:0u) |
+      (poser_cloth_optional::LayerAdapter1125Reviewed?2u:0u) |
+      (poser_cloth_optional::DisplayAdapter1125Reviewed?8u:0u) |
+      (poser_cloth_optional::FinishAdapter1125Reviewed?16u:0u);
+}
 static bool ClothBoneOptionalAdapterSupported(const ClothBoneProfile &profile,
-    unsigned adapters=ClothNativeAdapterMask163()) {
-  if(!s_clothInputBoundary163)return true;
+    unsigned adapters=ClothNativeAdapterMask()) {
+  if(!s_clothInputBoundary163&&!s_clothInputBoundary1125)return true;
   const auto *r=ClothBoneLocalRecipeFor(profile);
   if(!r)return true;
   unsigned required=0;
@@ -1803,8 +1812,8 @@ static void ClothBoneOptionalPreserved(const ClothBoneProfile &profile) {
     Log("[CLOTH-COMPAT] component=%s decision=optional-job-adapter-unavailable-original-retained motionBlocked=0",profile.component);
 }
 template<class Match> static size_t ClothBoneFilterOptionalProfiles(std::vector<Match> &found,
-    unsigned adapters=ClothNativeAdapterMask163()) {
-  if(!s_clothInputBoundary163)return 0;
+    unsigned adapters=ClothNativeAdapterMask()) {
+  if(!s_clothInputBoundary163&&!s_clothInputBoundary1125)return 0;
   std::set<const ClothBoneProfile*> rejected;
   for(const auto &m:found)if(!ClothBoneOptionalAdapterSupported(*m.profile,adapters))rejected.insert(m.profile);
   // Dependencies and shared renderers are atomic: no partially rebound group.
@@ -2027,6 +2036,12 @@ static void ClothBoneAutoAppendBoundary() {
     ClothAutoCancel();Log("[CLOTH-AUTO] stage=deferred-failed reason=%s authoredPreserved=1",e.what());
   }
 }
+static bool ClothBoneAbortFailedBatch() {
+  bool failed=false,release=s_clothAutoDeferred;
+  for(int n=0;n<s_clothBoneCount;++n){const auto &s=s_clothBoneSlots[n];failed|=s.failed;release|=(s.pending||s.lease)&&!s.stopRequested;}
+  if(failed&&release)ClothBoneRelease("batch-member-failed-restoring-original");
+  return failed;
+}
 static void ClothBoneBatchBoundaryImpl() {
   using namespace eiem_cloth_rebuild;
   if(!s_clothBoneResolved) {
@@ -2040,7 +2055,7 @@ static void ClothBoneBatchBoundaryImpl() {
       });return;
     }
   }
-  ClothBoneAutoAppendBoundary();
+  if(!ClothBoneAbortFailedBatch())ClothBoneAutoAppendBoundary();
   auto nodes=ClothBoneBatchNodes();
   for(int n=0;n<s_clothBoneCount;++n) {
     auto &s=s_clothBoneSlots[n];if(!s.pending) continue;
@@ -2061,11 +2076,15 @@ static void ClothBoneBatchBoundaryImpl() {
     const auto &s=s_clothBoneSlots[selected];
     if(!s.pending || !s.lease || s.tx.phase==Phase::Active || ClothBoneBatchNodes()[selected].resourcesOnly) s_clothBoneMutating=-1;
   }
+  // Preparation may reject before leasing or publishing anything. That still
+  // fails this playback batch: do not start another member on the next frame.
+  ClothBoneAbortFailedBatch();
   ClothBonePollResourceCleanup(selected);
   nodes=ClothBoneBatchNodes();
   for(int n=0;n<s_clothBoneCount;++n) if(n!=selected && nodes[n].pending && nodes[n].active && !nodes[n].cancelling) {
     if(BatchDependenciesLost(nodes,n,s_clothBoneCount)) { s_clothBoneSlots[n].stopRequested=true;continue; }
     ClothBoneInSlot(n,ClothBoneBoundaryOne);
+    if(ClothBoneAbortFailedBatch())break;
   }
 }
 static void ClothBoneBoundary() {

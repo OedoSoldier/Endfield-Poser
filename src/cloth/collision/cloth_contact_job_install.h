@@ -157,7 +157,7 @@ static bool ClothInstallContactJobsMainThread() {
   auto method=SurfaceMethod(cls,"UpdateBroadPhase","Unity.Jobs.JobHandle","Unity.Jobs.JobHandle");
   auto untyped=FindClass("Unity.Collections.LowLevel.Unsafe","UntypedUnsafeList",asms,count);
   updateCode=method?(unsigned char*)((MInfo*)method)->mp:nullptr;
-  for(auto profile:{&poser_cloth_contact_native::Legacy,&poser_cloth_contact_native::Native163})
+  for(auto profile:{&poser_cloth_contact_native::Legacy,&poser_cloth_contact_native::Native163,&poser_cloth_contact_native::Native1125})
     if(ClothContactProfileCode(updateCode,profile->update)) {s.profile=profile;break;}
   if(!s.profile)return ClothContactInstallReject("UpdateBroadPhase-profile");
   const auto &profile=*s.profile;
