@@ -9,6 +9,7 @@
 #include "game/smc_morph.h"
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
+#include "math/mmd_edited_eyes.h"
 #include "math/blender_bridge.h"
 #include "math/mmd_thumb.h"
 #include "math/mmd_calibration.h"
@@ -327,6 +328,7 @@ static int MmdChildCount(void *transform) {
 #include "game/mmd_secondary_motion.h"
 struct MmdSession {
   mmd_visibility::State visibility;
+  std::array<bool,2> previousEyes{};
   poser_secondary::State secondary;
   bool bodyOwned = false;
   uint64_t cameraSession = 0;
@@ -423,6 +425,7 @@ struct MmdMotionOverride {
 };
 struct MmdPlayer {
   std::shared_ptr<const blender_bridge::Clip> editedBody,editedCamera;
+  mmd::EditedEyes editedEyes;
   std::vector<bool> editedScaleTracks;
   std::vector<int> editedBoneMap;
   Quat editedRootRotation;
@@ -571,6 +574,7 @@ static bool MmdBindEditedSkeleton() {
     std::vector<std::string> names;std::vector<int> parents;
     for(const auto &b:s_allBones){names.push_back(b.name);parents.push_back(b.parentIdx);}
     m.editedBoneMap=m.editedBody->bindSkeleton(CurrentCharModelKey(),names,parents);
+    m.editedEyes.bind(m.rig,m.clip,m.profile,mmd::AdaptedRoles(m.adaptation),m.adaptation.tracks);
     return true;
   } catch(const std::exception &e) {m.status=std::string(u8"Blender 动作骨架无法匹配：")+e.what();return false;}
 }
@@ -1156,10 +1160,8 @@ static void MmdPollLoad() {
     m.autoScale = true;
     m.referenceFile = r.file;
   } else if (r.kind == 1) {
-    if(m.editedBody) {
-      for(const auto &track:r.clip.morphs) {m.clip.morphs[track.first]=track.second;m.editedFaceOverrides.insert(track.first);}
-      mmd::Recount(m.clip);
-    } else mmd::AppendFace(m.clip, r.clip);
+    if(m.editedBody)for(const auto &track:r.clip.morphs)m.editedFaceOverrides.insert(track.first);
+    mmd::AppendFace(m.clip,r.clip);
   }
   else {
     if (!r.clip.cameras.empty()) {
@@ -1442,7 +1444,8 @@ static void MmdSampleBody(double seconds) {
     basis=mmd::BodyBasis(p(13),p(14),p(0),p(10));
   }
   Vec3 root=Conj(frame.hasAnchor?frame.anchor:Quat{})*frame.root;
-  mmd::MirrorNative(m.profile,m.playbackProfile,rotations,writes,basis,&m.editedScaleTracks,m.mirrorMotion);
+  m.editedEyes.compose(m.profile,m.playbackProfile,rotations,writes,basis,m.editedScaleTracks,
+                       m.mirrorMotion,false,seconds*30,m.ikMode);
   if(m.mirrorMotion)root=mmd::MirrorX(root);
   m.mapper.sampleNative(m.playbackProfile,rotations,writes,root,basis,m.amplitude,m.motionCalibration);
   if(m.inPlace){m.mapper.output.rootOffset.x=0;m.mapper.output.rootOffset.z=0;}
@@ -1474,10 +1477,10 @@ static void MmdApplyFrame() {
   if(mmd::Inverse(s.anchorWorld,anchorInverse))groundLocal=mmd::terrain::Vector(anchorInverse,{0,ground,0});
   MmdRawPose(s.root, s.rootPos + s.rootRot * (p.rootOffset+groundLocal), s.rootRot);
   if(m.editedBody&&m.editedHasRootRotation)mmd_camera::Write(g_transform_set_rotation,s.root,mmd::Rotation(world));
-  for (size_t i = 0; i < p.write.size(); i++) {
-    if (!p.write[i] || i >= s_allBones.size())
-      continue;
+  std::array<bool,2> drivenEyes{};
+  for (size_t i = 0; i < p.write.size() && i < s_allBones.size(); i++) {
     int role = m.profile.bones[i].role;
+    if(!p.writeBone(i,role,s.previousEyes))continue;
     const auto twistRoles=m.mapper.armTwistRoles(int(i));
     bool locked = false;
     for (int h = 0; h < s_humanBoneCount; h++)
@@ -1487,6 +1490,7 @@ static void MmdApplyFrame() {
         locked |= s_humanBones[h].locked;
     if (locked)
       continue;
+    if(role==21||role==22)drivenEyes[role-21]=p.eyeDriven[role-21];
     void *t = s_allBones[i].transform;
     const auto position=m.editedBody?m.playbackProfile.bones[i].localPos:m.profile.bones[i].localPos;
     MmdRawPose(t, position, p.localRot[i]);
@@ -1498,6 +1502,7 @@ static void MmdApplyFrame() {
         s_humanBones[h].localRot = p.localRot[i];
       }
   }
+  s.previousEyes=drivenEyes;
   SMCMotionFrame face;
   face.gazeCamera=poser_gaze::motionLock;face.gazeStrength=poser_gaze::motionStrength;
   face.active = true; // Missing tracks mean zero weights, including body-only VMDs.
@@ -1514,7 +1519,7 @@ static void MmdApplyFrame() {
   }
   for (int e = 0; e < 2; e++) {
     int idx = m.profile.roles[21 + e];
-    if (idx >= 0 && p.write[idx]) {
+    if (idx >= 0 && drivenEyes[e]) {
       face.active = true;
       face.eyeDriven[e] = true;
       face.eyes[e] = s_allBones[idx].transform;

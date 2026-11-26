@@ -51,7 +51,7 @@ if(WIN32)
     src/poser.rc
     src/config.h
     src/core/user_agreement.h src/editor/panel_agreement.h
-    src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
+    src/math/mmd_bone_names.h src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_edited_eyes.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
     src/math/mmd_control_rig.h src/math/mmd_motion_issues.h src/editor/panel_mmd_motion_issues.h
     src/editor/mmd_adaptation_draft.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h

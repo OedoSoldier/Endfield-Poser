@@ -123,6 +123,7 @@ static void DrawSMCSection() {
   int count = SMCSliderCount();
   auto catalog=SMCManualCatalog();
   for (int i = 0; i < count; i++) {
+    if(!SMCNativeChannelReady(i))continue;
     auto label=mmd_face_controls::Label(catalog[i].name,catalog[i].panel,i);
     float v = SMCSliderValue(i);
     ImGui::PushID(i);

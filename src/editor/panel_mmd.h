@@ -527,7 +527,7 @@ static void DrawMmdPanel() {
     if (ImGui::Button(u8"打开 VMD"))
       MmdBeginLoad(0);
     ImGui::SameLine();
-    if (ImGui::Button(m.editedBody?u8"追加口型 / 表情":u8"追加口型 / 表情 / 眼神"))
+    if (ImGui::Button(u8"追加口型 / 表情 / 眼神"))
       MmdBeginLoad(1);
     ImGui::EndDisabled();
     if (m.loading)

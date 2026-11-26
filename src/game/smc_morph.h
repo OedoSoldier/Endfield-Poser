@@ -1342,8 +1342,10 @@ static bool SMCNativeChannelReady(int channel) {
   if(channel<0||channel>=SMC_NUM_MOUTH+s_extraMorphCount||!s_boneMapReady)return false;
   if(channel<SMC_NUM_MOUTH)return s_mouthResolved&&s_mouthShapes[channel].resolved&&s_mouthShapes[channel].jobCount>0;
   const auto &m=s_extraMorphs[channel-SMC_NUM_MOUTH];
-  for(int i=0;i<m.targetCount;++i)if(m.targets[i].resolved&&m.targets[i].count>0)return true;
-  return false;
+  // A bilateral expression is one channel, not a best-effort collection of
+  // sides. Single-eye channels still require only their one authored target.
+  for(int i=0;i<m.targetCount;++i)if(!m.targets[i].resolved||m.targets[i].count<=0)return false;
+  return m.targetCount>0;
 }
 // 0 unavailable, 1 character calibration, 2 optional fixed mapping.
 static int SMCManualSource(const mmd_face_controls::Control &control) {
@@ -1516,7 +1518,7 @@ static void SMCGazeBind(Vec3 origin,const std::vector<void *> &parents) {
   SMCGazeContext().binding=b;
   Log("[GAZE] neutral eyes ready=%d optical=%d generation=%llu",b.basis.ready,b.opticalReady,(unsigned long long)b.generation);
 }
-static void SMCGazeTick(const SMCMotionFrame *sample=nullptr) {
+static void SMCGazeTick(const SMCMotionFrame *sample=nullptr,bool afterCamera=false) {
   auto &gaze=SMCGazeContext();
   const auto &motion=sample?*sample:s_motionFaceCurrent;
   const bool motionValid=motion.active&&motion.animator==SMCAnimator()&&motion.generation==s_faceGeneration;
@@ -1536,8 +1538,16 @@ static void SMCGazeTick(const SMCMotionFrame *sample=nullptr) {
   if(motionValid&&motion.gazeCamera) {
     settings.mode=eye_gaze::Mode::Camera;settings.strength=motion.gazeStrength;
   }
-  poser_gaze::Update(SMCFrozen()&&s_faceBonesCaptured&&!s_captureNeutral&&s_smcOwnershipVerified,
-                     s_faceGeneration,haveFallback?fallback:nullptr,gaze,SMCAnimator(),&settings);
+  const bool allowed=SMCFrozen()&&s_faceBonesCaptured&&!s_captureNeutral&&s_smcOwnershipVerified;
+  poser_gaze::Update(allowed,s_faceGeneration,haveFallback?fallback:nullptr,gaze,SMCAnimator(),&settings);
+  // A busy SMC callback runs the game's update without restoring the MMD pose.
+  // At camera completion restore only keyed eyes from this actor's latest frame.
+  if(afterCamera&&allowed&&motionValid&&settings.mode==eye_gaze::Mode::Follow&&
+     gaze.binding.owner==motion.animator&&gaze.binding.generation==motion.generation&&
+     !CharacterSwitchInProgress()&&!poser_close::Closing())
+    for(int e=0;e<2;++e)
+      if(motion.eyeDriven[e]&&motion.eyes[e]&&motion.eyes[e]==gaze.binding.eyes[e])
+        poser_gaze::Write(motion.eyes[e],motion.eyeRotation[e]);
 }
 static void SMCBlushTick() {
   if(poser_close::Closing()||!poser_blush::enabled){poser_blush::RestoreAll();return;}
@@ -1568,7 +1578,7 @@ static void SMCGazeCameraTick(void *camera) {
     // Camera callbacks must not reinstate the preceding frame's lock/settings.
     SMCMotionFrame sample;
     AcquireSRWLockShared(&s_motionFaceLock);sample=s_motionFaceMailbox;ReleaseSRWLockShared(&s_motionFaceLock);
-    SMCGazeTick(&sample);
+    SMCGazeTick(&sample,true);
   };
   apply(&s_editorSMC);
   for(auto actor:s_squadSMC)if(actor&&actor!=&s_editorSMC)apply(actor);
@@ -1682,7 +1692,7 @@ static bool SMCMotionNativeDeltas(const float *weights,SMCMotionNativeDeltaArray
     for(int c=0;c<SMC_NUM_MOUTH+s_extraMorphCount;++c) {
       bool mouth=c<SMC_NUM_MOUTH;
       float weight=face_geometry::Clamp(weights[c],0,1)*(mouth?norm:1.f);
-      if(weight<.001f||(!mouth&&!s_extraMorphsResolved))continue;
+      if(weight<.001f||(!mouth&&(!s_extraMorphsResolved||!SMCNativeChannelReady(c))))continue;
       int targets=mouth?1:s_extraMorphs[c-SMC_NUM_MOUTH].targetCount;
       for(int t=0;t<targets;++t) {
         int start,count;

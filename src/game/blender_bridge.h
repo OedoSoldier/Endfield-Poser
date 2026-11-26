@@ -319,6 +319,7 @@ static void Service() {
           g_mmd.editedBody=clip;g_mmd.editedBodyFile=loadedFile;g_mmd.editedFaceOverrides.clear();
           g_mmd.editedBoneMap.clear();
           g_mmd.clip.bones.clear();
+          g_mmd.clip.ik.clear();
           if(clip->hasFaces) {
             g_mmd.clip.morphs.clear();
             for(const auto &face:clip->frames.front().faces)g_mmd.clip.morphs[face.first]={{0,face.second}};

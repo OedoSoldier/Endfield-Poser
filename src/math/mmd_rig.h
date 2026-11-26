@@ -288,58 +288,6 @@ inline RigDefinition ReadPmx(const std::vector<uint8_t> &data,
   rig.finish();
   return rig;
 }
-// Same numeric roles as Unity HumanBodyBones; independent of game headers.
-inline const std::array<const char *, 55> &RoleNames() {
-  static const std::array<const char *, 55> n = {
-      {u8"下半身",   u8"左足",    u8"右足",    u8"左ひざ",  u8"右ひざ",
-       u8"左足首",   u8"右足首",  u8"上半身",  u8"上半身2", u8"首",
-       u8"頭",       u8"左肩",    u8"右肩",    u8"左腕",    u8"右腕",
-       u8"左ひじ",   u8"右ひじ",  u8"左手首",  u8"右手首",  u8"左つま先",
-       u8"右つま先", u8"左目",    u8"右目",    u8"あご",    u8"左親指0",
-       u8"左親指1",  u8"左親指2", u8"左人指1", u8"左人指2", u8"左人指3",
-       u8"左中指1",  u8"左中指2", u8"左中指3", u8"左薬指1", u8"左薬指2",
-       u8"左薬指3",  u8"左小指1", u8"左小指2", u8"左小指3", u8"右親指0",
-       u8"右親指1",  u8"右親指2", u8"右人指1", u8"右人指2", u8"右人指3",
-       u8"右中指1",  u8"右中指2", u8"右中指3", u8"右薬指1", u8"右薬指2",
-       u8"右薬指3",  u8"右小指1", u8"右小指2", u8"右小指3", u8"上半身3"}};
-  return n;
-}
-// Only explicit naming equivalents are automatic. A name containing "hand"
-// or "parent" does not establish a control's purpose or its rotation centre.
-inline std::string MotionBoneKey(std::string name) {
-  name=Name(std::move(name));std::string key;
-  for(unsigned char c:name) {
-    if(c==' '||c=='_'||c=='-'||c=='.')continue;
-    key+=char(c>='A'&&c<='Z'?c+('a'-'A'):c);
-  }
-  for(const auto &pair:{std::pair<const char *,const char *>{u8"肘",u8"ひじ"},{u8"膝",u8"ひざ"}}) {
-    size_t at=0;while((at=key.find(pair.first,at))!=key.npos){key.replace(at,std::strlen(pair.first),pair.second);at+=std::strlen(pair.second);}
-  }
-  return key;
-}
-inline std::string NativeRoleBone(int role) {
-  static const char *body[]={"Pelvis","L_Thigh","R_Thigh","L_Calf","R_Calf","L_Foot","R_Foot",
-    "Spine","Spine1","Neck","Head","L_Clavicle","R_Clavicle","L_UpperArm","R_UpperArm",
-    "L_Forearm","R_Forearm","L_Hand","R_Hand","L_Toe0","R_Toe0","L_Eye","R_Eye","Jaw"};
-  if(role<24)return std::string("Bip001_")+body[role];
-  if(role==54)return "Bip001_Spine2";
-  int joint=(role-24)%15,finger=joint/3,segment=joint%3;
-  return std::string(role<39?"Bip001_L_Finger":"Bip001_R_Finger")+std::to_string(finger)+(segment?std::to_string(segment):"");
-}
-inline std::array<std::string,3> SourceRoleKeys(int role) {
-  static const char *body[]={"Hips","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot",
-    "Spine","Chest","Neck","Head","LeftShoulder","RightShoulder","LeftUpperArm","RightUpperArm",
-    "LeftLowerArm","RightLowerArm","LeftHand","RightHand","LeftToes","RightToes","LeftEye","RightEye","Jaw"};
-  std::string human;
-  if(role<24)human=body[role];
-  else if(role==54)human="UpperChest";
-  else {
-    const char *fingers[]={"Thumb","Index","Middle","Ring","Little"};
-    const char *segments[]={"Proximal","Intermediate","Distal"};int k=(role-24)%15;
-    human=std::string(role<39?"Left":"Right")+fingers[k/3]+segments[k%3];
-  }
-  return {MotionBoneKey(RoleNames()[role]),MotionBoneKey(NativeRoleBone(role)),MotionBoneKey(human)};
-}
 inline int FindSourceRole(const RigDefinition &rig,int role) {
   int exact=rig.find(RoleNames()[role]);if(exact>=0)return exact;
   const auto keys=SourceRoleKeys(role);int found=-1;
@@ -360,15 +308,6 @@ inline std::array<int,55> DefaultSourceRoles(const RigDefinition &rig) {
     roles[24+side*15]=rig.find(prefix+u8"親指1");roles[25+side*15]=rig.find(prefix+u8"親指2");roles[26+side*15]=-1;
   }
   return roles;
-}
-inline std::string MotionBindingKey(const std::string &name) {
-  const auto key=MotionBoneKey(name);
-  static const auto aliases=[] {
-    std::map<std::string,std::string> result;
-    for(int role=0;role<55;++role)for(const auto &alias:SourceRoleKeys(role))result[alias]=MotionBoneKey(RoleNames()[role]);
-    return result;
-  }();
-  auto found=aliases.find(key);return found==aliases.end()?key:found->second;
 }
 inline std::map<std::string,std::string> ResolvedTrackBindings(const RigDefinition &rig,const MotionClip &clip,
                                                            const std::map<std::string,std::string> &manual) {
@@ -534,6 +473,7 @@ class RigEvaluator {
   std::vector<Quat> appendRot_;
   std::vector<Vec3> appendPos_;
   std::vector<int> controllers_;
+  std::vector<int> aimedBones_;
   std::vector<bool> needed_;
   void world() {
     for (int i : rig_->order) {
@@ -687,22 +627,23 @@ public:
     for(const auto &kv:clip.ik)if(!usedIk.count(kv.first)&&!rig.ignoredTracks.count(kv.first))unmappedIk.push_back(kv.first);
   }
   bool hasTrack(int bone,bool mirror=false) const { return bone >= 0 && size_t(bone) < tracks_.size() && (mirror?mirrorTracks_:tracks_)[bone]; }
-  bool controlTracked(int bone) const {
+  bool controlTracked(int bone,bool mirror) const {
     for (int i = bone; i >= 0; i = rig_->bones[i].parent) {
       if (i != bone && !rig_->bones[i].motionControl) break;
-      if (hasTrack(i, mirrored_)) return true;
-      const auto &name=(mirrored_?mirrorNames_:trackNames_)[i];
+      if (hasTrack(i, mirror)) return true;
+      const auto &name=(mirror?mirrorNames_:trackNames_)[i];
       if(!rig_->ignoredTracks.count(name)&&clip_->ik.count(name))return true;
     }
     return false;
   }
+  bool aimed(int bone) const { return std::find(aimedBones_.begin(),aimedBones_.end(),bone)!=aimedBones_.end(); }
   bool ikEnabled(int controller, double frame, IkMode mode) const {
     if (std::find(controllers_.begin(), controllers_.end(), controller) == controllers_.end())
       return false;
     // Follow mode preserves FK-only clips. Force-on uses even stationary IK
     // targets from the selected rig; force-off bypasses every IK chain.
     return SampleIk(*clip_, (mirrored_?mirrorNames_:trackNames_)[controller], frame, mode) &&
-           (!rig_->builtin || (rig_->bones[controller].controlIk ? controlTracked(controller) : hasTrack(controller,mirrored_)) || mode == IkMode::ForceOn);
+           (!rig_->builtin || (rig_->bones[controller].controlIk ? controlTracked(controller,mirrored_) : hasTrack(controller,mirrored_)) || mode == IkMode::ForceOn);
   }
   void sample(double frame, IkMode mode = IkMode::FollowMotion,bool mirror=false) {
     mirrored_=mirror;const auto &tracks=mirror?mirrorTracks_:tracks_;
@@ -783,8 +724,9 @@ public:
       if (controller.copyIkRotation)
         setWorld(controller.effector, pose.rotations[c]);
     }
+    aimedBones_.clear();
     for (const auto &a : rig_->aims) {
-      if (!needed_[a.bone] || !controlTracked(a.source) ||
+      if (!needed_[a.bone] || !controlTracked(a.source,mirrored_) ||
           !SampleIk(*clip_,(mirrored_?mirrorNames_:trackNames_)[a.source],frame,mode)) continue;
       const int parent = rig_->bones[a.bone].parent;
       const Quat pr = parent >= 0 ? pose.rotations[parent] : Quat{};
@@ -795,6 +737,7 @@ public:
       // A gaze target must never roll the eye or flip it backward.
       e.x=Clamp(e.x,-.45f,.45f);e.y=Clamp(e.y,-.6f,.6f);e.z=0;
       setWorld(a.bone,NormQ(pr*FromXYZ(e)));
+      aimedBones_.push_back(a.bone);
     }
   }
 };

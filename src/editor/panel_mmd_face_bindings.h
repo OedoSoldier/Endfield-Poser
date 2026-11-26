@@ -79,6 +79,7 @@ static void DrawMmdFaceBindings() {
         auto &t=targets[row];ImGui::PushID(row);
         auto targetLabel=t.name.empty()?std::string(u8"选择表情"):MmdBindingLabel(t.name,t.index,native,catalog);
         if(!t.name.empty()&&t.index<0)targetLabel=u8"缺失表情";
+        else if(native&&t.index>=0&&!MmdBindingUsable(t.index,true))targetLabel+=u8"（当前角色不可用）";
         ImGui::SetNextItemWidth((std::max)(poser_ui::Scale(130),ImGui::GetContentRegionAvail().x-poser_ui::Scale(155)));
         if(ImGui::BeginCombo("##target",targetLabel.c_str())) {
           const int count=native?int(catalog.size()):m.characterFace?int(m.characterFace->morphs.size()):0;
@@ -87,6 +88,7 @@ static void DrawMmdFaceBindings() {
             if(!native&&!m.characterFace->morphs[i].supported)continue;
             const auto &name=native?catalog[i].name:m.characterFace->morphs[i].name;
             auto option=MmdBindingLabel(name,id,native,catalog);
+            if(native&&!MmdBindingUsable(id,true))option+=u8"（当前角色不可用）";
             ImGui::PushID(i);
             if(ImGui::Selectable(option.c_str(),t.index==id,0,ImVec2(poser_ui::Scale(160),0))) {
               t.name=name;t.index=id;changed=true;

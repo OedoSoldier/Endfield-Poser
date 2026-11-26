@@ -1,6 +1,7 @@
 #pragma once
 // VMD reader and time-domain sampling. No game or Windows dependencies.
 #include "math/quat_math.h"
+#include "math/mmd_bone_names.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -102,21 +103,6 @@ struct Reader {
     return decode(s, 932);
   }
 };
-// Normalize common ASCII/full-width variants without changing Japanese names.
-inline std::string Name(std::string s) {
-  const char *from[] = {u8"０", u8"１", u8"２", u8"３", u8"４", u8"５",
-                        u8"６", u8"７", u8"８", u8"９", u8"Ｉ", u8"Ｋ"};
-  const char *to[] = {"0", "1", "2", "3", "4", "5",
-                      "6", "7", "8", "9", "I", "K"};
-  for (size_t i = 0; i < 12; i++) {
-    size_t p = 0;
-    while ((p = s.find(from[i], p)) != s.npos) {
-      s.replace(p, std::strlen(from[i]), to[i]);
-      p++;
-    }
-  }
-  return s;
-}
 struct Curve {
   float x1 = 0, y1 = 0, x2 = 1, y2 = 1;
 };
@@ -401,19 +387,34 @@ inline bool SampleIk(const MotionClip &clip, const std::string &name,
   size_t n = Upper(it->second, frame);
   return n ? it->second[n - 1].enabled : true;
 }
-inline bool EyeBone(const std::string &n) {
-  if(n==u8"両目"||n==u8"左目"||n==u8"右目"||n==u8"視線"||n==u8"視線先"||n==u8"視線IK")return true;
-  const std::string prefix=u8"視線IK親";
-  return n.compare(0,prefix.size(),prefix)==0 &&
-    std::all_of(n.begin()+prefix.size(),n.end(),[](char c){return c>='0'&&c<='9';});
+inline bool EyeBone(const std::string &name) {
+  const auto key=MotionBindingKey(name);
+  if(key==u8"両目"||key==u8"左目"||key==u8"右目"||key==u8"視線"||key==u8"視線先"||key==u8"視線ik")return true;
+  const std::string prefix=u8"視線ik親";
+  return key.compare(0,prefix.size(),prefix)==0 &&
+    std::all_of(key.begin()+prefix.size(),key.end(),[](char c){return c>='0'&&c<='9';});
 }
 inline void AppendFace(MotionClip &to, const MotionClip &from) {
   for (const auto &kv : from.morphs)
     to.morphs[kv.first] = kv.second;
-  for (const auto &kv : from.bones)
-    if (EyeBone(kv.first))
-      to.bones[kv.first] = kv.second;
-  for(const auto &kv:from.ik)if(EyeBone(kv.first))to.ik[kv.first]=kv.second;
+  // Keep the spelling already bound by the body clip, e.g. replace 左目
+  // when a subsequent VMD calls the same eye LeftEye. Don't collapse
+  // distinct authored tracks when either source has ambiguous aliases.
+  auto eyeNames=[](const MotionClip &clip) {
+    std::map<std::string,std::string> names;
+    auto add=[&](const auto &tracks){for(const auto &kv:tracks)if(EyeBone(kv.first)){
+      auto p=names.emplace(MotionBindingKey(kv.first),kv.first);
+      if(!p.second&&p.first->second!=kv.first)p.first->second.clear();
+    }};
+    add(clip.bones);add(clip.ik);return names;
+  };
+  const auto old=eyeNames(to),incoming=eyeNames(from);
+  auto append=[&](auto &dst,const auto &src){for(const auto &kv:src) {
+    auto key=MotionBindingKey(kv.first);auto add=incoming.find(key);if(add==incoming.end())continue;
+    auto prev=old.find(key);
+    dst[!add->second.empty()&&prev!=old.end()&&!prev->second.empty()?prev->second:kv.first]=kv.second;
+  }};
+  append(to.bones,from.bones);append(to.ik,from.ik);
   Recount(to);
 }
 enum class PlayState { Stopped, Playing, Paused };

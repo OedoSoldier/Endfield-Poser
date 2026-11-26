@@ -29,6 +29,7 @@ struct MmdSquadActor {
   std::vector<bool> nativeScaleTracks;
   mmd::RetargetProfile playbackProfile;
   std::vector<int> editedBoneMap;
+  mmd::EditedEyes editedEyes;
   blender_bridge::Frame sample;
   bool nativeSample=false;
   mmd::Retargeter mapper;
@@ -284,6 +285,7 @@ static void MmdSquadLoadActorCalibration(int slot) {
     std::vector<std::string> names;std::vector<int> parents;
     for(const auto &b:a.bones){names.push_back(b.name);parents.push_back(b.parentIdx);}
     a.editedBoneMap=s.slots[slot].edited->bindSkeleton(a.profile.model,names,parents);
+    a.editedEyes.bind(s.rig,s.slots[slot].clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
     if(std::any_of(s.slots[slot].edited->frames.front().bones.begin(),s.slots[slot].edited->frames.front().bones.end(),[](const auto &b){return b.hasScale;})&&
        (!g_transform_get_localScale||!g_transform_set_localScale))throw std::runtime_error(u8"骨骼缩放接口不可用");
   }
@@ -504,9 +506,10 @@ static void MmdSquadSampleActor(int index, double frame) {
   Vec3 root=Conj(a.sample.hasAnchor?a.sample.anchor:Quat{})*a.sample.root;
   if(!preview) {
     root=root*slot.scale;
-    mmd::MirrorNative(a.profile,a.playbackProfile,rotations,writes,basis,&a.nativeScaleTracks,slot.mirrorMotion);
     if(slot.mirrorMotion)root=mmd::MirrorX(root);
   }
+  a.editedEyes.compose(a.profile,a.playbackProfile,rotations,writes,basis,a.nativeScaleTracks,
+                       !preview&&slot.mirrorMotion,preview,frame,s.ikMode);
   a.mapper.sampleNative(a.playbackProfile,rotations,writes,root,basis,
       preview?mmd::MotionAmplitude{}:settings.amplitude,preview?mmd::MotionCalibration{}:settings.motion);
   a.mapper.output.rootOffset=basis*a.mapper.output.rootOffset;
@@ -566,8 +569,9 @@ static void MmdSquadApply() {
       mmd::TRS(placement.position,placement.rotation),mmd::TRS(base.position,base.rotation),MmdSimulationNow(),s.timeline.seconds);
     placement.position.y+=ground;
     if(!MmdSquadWorldPose(a.saved.root,placement.position,placement.rotation)) {MmdSquadStop();s.status=u8"无法设置队员位置，已停止";return;}
-    for(size_t j=1;j<pose.write.size()&&j<a.bones.size();++j)if(pose.write[j])
+    for(size_t j=1;j<pose.write.size()&&j<a.bones.size();++j)if(pose.writeBone(j,a.profile.bones[j].role,a.saved.previousEyes))
       MmdRawPose(a.bones[j].transform,(slot.edited||s.editing?a.playbackProfile:a.profile).bones[j].localPos,pose.localRot[j]);
+    a.saved.previousEyes=pose.eyeDriven;
     if(slot.edited||s.editing)for(size_t i=0;i<a.nativeScaleTracks.size();++i)if(a.nativeScaleTracks[i])
       MmdSquadScale(a,int(i),a.playbackProfile.bones[i].localScale);
     // Preserve the editor's snapshot for saving a paused squad pose.
@@ -601,7 +605,7 @@ static void MmdSquadApply() {
             s_characterBindingGeneration==s_faceGeneration&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id];
         });
       }
-      for(int e=0;e<2;++e) {int j=a.profile.roles[21+e];if(j>=0&&j<int(pose.write.size())&&pose.write[j]) {
+      for(int e=0;e<2;++e) {int j=a.profile.roles[21+e];if(j>=0&&pose.eyeDriven[e]) {
         face.eyeDriven[e]=true;face.eyes[e]=a.bones[j].transform;face.eyeRotation[e]=pose.localRot[j];
       }}
       if(!s.editing||!a.sample.preserveFace){SMCMotionPublish(face);SMCGazeTick(&face);}

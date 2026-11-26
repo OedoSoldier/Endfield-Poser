@@ -13,11 +13,17 @@ struct Limits {
 };
 inline int Side(const std::string &name) {
   auto n=face_geometry::Canonical(name);
-  static constexpr const char *prefixes[]={"eyelf","browlinelf","eyert","eyerf","browlinert","browlinerf"};
-  for(int i=0;i<6;++i) {
-    size_t length=std::strlen(prefixes[i]);
-    if(n.compare(0,length,prefixes[i])==0&&n.size()>length&&
-       n[length]>='0'&&n[length]<='9')return i<2?0:1;
+  // Include independently skinned eyelid rows, liner and lash controls in
+  // the same closure correction. Eye-root/gaze bones are not eyelids.
+  static constexpr struct {const char *name;int side;} prefixes[]={
+    {"eyelf",0},{"browlinelf",0},{"eyert",1},{"eyerf",1},{"browlinert",1},{"browlinerf",1},
+    {"browlinelfup",0},{"browlinertup",1},{"eyelinelf",0},{"eyelinert",1},
+    {"eyelidlf",0},{"eyelidrt",1},{"eyelfeyelash_a_",0},{"eyelfeyelash_b_",0},
+    {"eyerteyelash_a_",1},{"eyerteyelash_b_",1}};
+  for(const auto &prefix:prefixes) {
+    size_t length=std::strlen(prefix.name);
+    if(n.compare(0,length,prefix.name)==0&&n.size()>length&&
+       n[length]>='0'&&n[length]<='9')return prefix.side;
   }
   return -1;
 }

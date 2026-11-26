@@ -297,6 +297,11 @@ struct SampledPose {
   std::vector<Vec3> worldPos;
   std::vector<Matrix> worldMatrix;
   std::vector<bool> write;
+  std::array<bool,2> eyeDriven{}; // Authored local gaze, not inherited head motion or mirror cleanup.
+  bool writeBone(size_t i,int role,const std::array<bool,2> &previousEyes) const {
+    if(role==21||role==22)return eyeDriven[role-21]||previousEyes[role-21];
+    return write[i];
+  }
   Vec3 rootOffset;
   std::array<bool, 2> legIkActive{false, false};
   // 0: no adjustment, 1: applied, 2: unreachable endpoint clamped, -1: unmapped.
@@ -310,6 +315,7 @@ class Retargeter {
   std::array<int, 55> sourceRole_;
   std::array<Quat, 55> alignedRest_;
   std::array<bool, 55> mirrorAffected_{}, affected_;
+  std::array<std::array<bool,2>,2> eyeFk_{};
   std::vector<Quat> neutralLocal_;
   std::vector<ArmTwistBinding> armTwists_;
   std::array<bool,30> nativeFingers_{};
@@ -436,6 +442,7 @@ public:
     target_=&profile;basis_=bodyBasis;armTwists_.clear();
     neutralLocal_.clear();for(const auto &b:profile.bones)neutralLocal_.push_back(b.localRot);
     output.localRot=rotations;output.write=writes;
+    for(int e=0;e<2;++e)output.eyeDriven[e]=profile.roles[21+e]>=0&&writes[profile.roles[21+e]];
     output.worldRot.resize(profile.bones.size());output.worldPos.resize(profile.bones.size());
     output.worldMatrix.resize(profile.bones.size());output.legIkActive={false,false};
     output.rootOffset=CalibratedTravel(root,calibration);
@@ -445,6 +452,7 @@ public:
   float suggestedScale = .08f;
   Quat sourceBasis() const { return basis_; }
   const RigPose &sourcePose() const { return eval_.pose; }
+  bool drivesEye(int side,bool mirror) const { return (mirror?mirrorAffected_:affected_)[21+side]; }
   const std::vector<std::string> &unmapped() const { return eval_.unmapped; }
   size_t armTwistChannels() const { return armTwists_.size(); }
   size_t nativeFingerCount() const { return std::count(nativeFingers_.begin(),nativeFingers_.end(),true); }
@@ -462,6 +470,7 @@ public:
     target_ = &target;
     sourceRole_.fill(-1);
     affected_.fill(false);mirrorAffected_.fill(false);
+    eyeFk_={};
     bool bodyMotion = false;
     for (const auto &track : clip.bones)
       bodyMotion = bodyMotion || !EyeBone(track.first);
@@ -551,6 +560,10 @@ public:
                            -1, -1, 25, 26, -1, 28, 29, -1, 31, 32, -1,
                            34, 35, -1, 37, 38, -1, 40, 41, -1, 43, 44,
                            -1, 46, 47, -1, 49, 50, -1, 52, 53, -1, 9};
+    // Parents at/above the head move the eyes in world space, not in their sockets.
+    std::set<int> headChain;
+    for(int role : {10,9,8,7,0})
+      for(int i=sourceRole_[role];i>=0&&headChain.insert(i).second;i=source.bones[i].parent) {}
     for (int r = 0; r < 55; r++) {
       int si = sourceRole_[r], ti = target.roles[r];
       if (si < 0 || ti < 0)
@@ -596,6 +609,26 @@ public:
       }
       alignedRest_[r] = rest;
       for(bool mirror:{false,true}) {
+      if(r==21||r==22) {
+        bool fk=false;
+        for(int i=si;i>=0&&(i==si||!headChain.count(i));i=source.bones[i].parent) {
+          const auto &b=source.bones[i];
+          if(eval_.hasTrack(i,mirror))fk=true;
+          for(const auto &d:b.drivers)if(eval_.hasTrack(d.source,mirror))fk=true;
+          // PMX rotational grants consume local/append rotations, never the
+          // grant source's entire world-space parent chain.
+          for(const RigBone *g=&b;g->grant>=0&&g->grantRotation&&g->grantWeight!=0;) {
+            const auto &parent=source.bones[g->grant];
+            if(g->grantLocal||parent.grant<0) {fk|=eval_.hasTrack(g->grant,mirror);break;}
+            g=&parent;
+          }
+        }
+        eyeFk_[mirror][r-21]=fk;
+        bool aim=false;
+        for(const auto &a:source.aims)if(a.bone==si&&eval_.controlTracked(a.source,mirror))aim=true;
+        (mirror?mirrorAffected_:affected_)[r]=fk||aim;
+        continue;
+      }
       std::set<int> seen;
       std::function<bool(int)> affects = [&](int i) {
         if (i < 0 || !seen.insert(i).second)
@@ -636,6 +669,8 @@ public:
               const MotionCalibration &calibration = {},bool mirror=false) {
     eval_.sample(frame, mode,mirror);
     const auto &affected=mirror?mirrorAffected_:affected_;
+    for(int e=0;e<2;++e)output.eyeDriven[e]=target_->roles[21+e]>=0&&
+        (eyeFk_[mirror][e]||eval_.aimed(sourceRole_[21+e]));
     output.legIkActive = {false, false};
     output.rootOffset = {};
     output.sizingStatus.fill(0);
@@ -654,7 +689,8 @@ public:
       output.localRot[i] = b.localRot;
       output.write[i] = false;
       int r = b.role;
-      if (r >= 0 && sourceRole_[r] >= 0 && affected[r]) {
+      if (r >= 0 && sourceRole_[r] >= 0 &&
+          ((r==21||r==22)?output.eyeDriven[r-21]:affected[r])) {
         Quat desired = NormQ(basis_ * eval_.pose.rotations[sourceRole_[r]] *
                              Conj(basis_) * alignedRest_[r]);
         const int side=r>=39?1:0,hand=17+side;
@@ -677,9 +713,6 @@ public:
         output.localRot[i] = NormQ(Conj(parent) * desired);
         output.write[i] = true;
       }
-      // When toggling mirror, an eye keyed only on the other side must return
-      // to neutral rather than retain the previous mirrored frame.
-      if((r==21||r==22)&&(affected_[r]||mirrorAffected_[r]))output.write[i]=true;
       output.worldRot[i] =
           b.parent >= 0 ? NormQ(output.worldRot[b.parent] * output.localRot[i])
                         : output.localRot[i];
